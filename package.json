@@ -22,7 +22,7 @@
     "bcryptjs": "^3.0.3",
     "expo": "~54.0.26",
     "expo-constants": "~18.0.10",
-    "expo-dev-client": "~6.0.19",
+    "expo-dev-client": "^6.0.19",
     "expo-device": "~8.0.9",
     "expo-font": "~14.0.9",
     "expo-haptics": "~15.0.7",
