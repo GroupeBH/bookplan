@@ -9,12 +9,45 @@ import { RatingProvider } from '../context/RatingContext';
 import { NotificationProvider } from '../context/NotificationContext';
 import { MessageProvider } from '../context/MessageContext';
 import { BlockProvider } from '../context/BlockContext';
+import { OfferProvider } from '../context/OfferContext';
+import { AlbumProvider } from '../context/AlbumContext';
+import { isNetworkError } from '../lib/errorUtils';
+
+// Déclaration pour ErrorUtils (disponible globalement dans React Native)
+declare const ErrorUtils: {
+  getGlobalHandler: () => ((error: Error, isFatal?: boolean) => void) | null;
+  setGlobalHandler: (handler: (error: Error, isFatal?: boolean) => void) => void;
+} | undefined;
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   useEffect(() => {
+    // Handler global pour les erreurs non capturées (notamment les erreurs réseau)
+    const errorHandler = (error: Error, isFatal?: boolean) => {
+      // Filtrer les erreurs réseau pour ne pas polluer les logs
+      if (isNetworkError(error)) {
+        console.log('⚠️ Erreur réseau non capturée (ignorée):', error.message);
+        return;
+      }
+      
+      // Logger les autres erreurs
+      console.error('❌ Erreur non capturée:', error);
+    };
+
+    // S'abonner aux erreurs globales (si disponible)
+    if (ErrorUtils?.setGlobalHandler) {
+      const originalHandler = ErrorUtils.getGlobalHandler();
+      ErrorUtils.setGlobalHandler((error: Error, isFatal?: boolean) => {
+        errorHandler(error, isFatal);
+        // Appeler le handler original pour les erreurs non-réseau
+        if (!isNetworkError(error) && originalHandler) {
+          originalHandler(error, isFatal);
+        }
+      });
+    }
+
     // Hide splash screen after app is ready
     const hideSplash = async () => {
       try {
@@ -38,7 +71,11 @@ export default function RootLayout() {
               <RatingProvider>
                 <MessageProvider>
                   <BlockProvider>
-                    <Slot />
+                    <OfferProvider>
+                      <AlbumProvider>
+                        <Slot />
+                      </AlbumProvider>
+                    </OfferProvider>
                   </BlockProvider>
                 </MessageProvider>
               </RatingProvider>

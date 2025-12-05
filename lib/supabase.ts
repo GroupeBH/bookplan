@@ -8,8 +8,14 @@ const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || process.env.EXPO
 const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
 
 if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn('⚠️ Supabase URL ou Anon Key manquants. Vérifiez votre configuration dans app.json ou .env');
-  console.warn('📝 Ajoutez EXPO_PUBLIC_SUPABASE_URL et EXPO_PUBLIC_SUPABASE_ANON_KEY dans votre fichier .env');
+  console.error('❌ ERREUR CRITIQUE: Supabase URL ou Anon Key manquants!');
+  console.error('📝 Vérifiez votre configuration dans app.json ou .env');
+  console.error('📝 Ajoutez EXPO_PUBLIC_SUPABASE_URL et EXPO_PUBLIC_SUPABASE_ANON_KEY');
+  console.error('🔗 URL Supabase actuelle:', supabaseUrl || 'VIDE');
+  console.error('🔑 Anon Key actuelle:', supabaseAnonKey ? 'PRÉSENTE' : 'VIDE');
+} else {
+  console.log('✅ Configuration Supabase chargée');
+  console.log('🔗 URL:', supabaseUrl);
 }
 
 // Créer le client Supabase

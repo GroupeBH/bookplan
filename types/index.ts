@@ -7,6 +7,7 @@ export interface User {
   phone?: string;
   photo: string;
   description: string;
+  specialty?: string; // Savoir-faire particulier (ex: avocat, médecin, etc.)
   distance?: number;
   rating: number;
   reviewCount: number;
@@ -18,6 +19,15 @@ export interface User {
   lng?: number;
   isAvailable?: boolean;
   currentBookingId?: string;
+}
+
+export interface AlbumPhoto {
+  id: string;
+  userId: string;
+  photoUrl: string;
+  displayOrder: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface Message {
@@ -123,5 +133,42 @@ export interface Rating {
   updatedAt: string;
   rater?: User;
   rated?: User;
+}
+
+export type OfferType = 'drink' | 'food' | 'transport' | 'gift';
+
+export interface Offer {
+  id: string;
+  authorId: string;
+  offerType: OfferType;
+  title: string;
+  description?: string;
+  notes?: string;
+  offerDate: string;
+  durationHours: number;
+  location?: string;
+  lat?: number;
+  lng?: number;
+  status: 'active' | 'closed' | 'cancelled' | 'expired';
+  selectedApplicationId?: string;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+  author?: User;
+  selectedApplication?: OfferApplication;
+  applicationCount?: number;
+}
+
+export interface OfferApplication {
+  id: string;
+  offerId: string;
+  applicantId: string;
+  message: string;
+  status: 'pending' | 'selected' | 'rejected' | 'expired';
+  rejectionMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+  applicant?: User;
+  offer?: Offer;
 }
 

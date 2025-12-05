@@ -16,6 +16,7 @@ export default function EditProfileScreen() {
   const [pseudo, setPseudo] = useState('');
   const [age, setAge] = useState('');
   const [description, setDescription] = useState('');
+  const [specialty, setSpecialty] = useState('');
   const [photo, setPhoto] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -31,6 +32,7 @@ export default function EditProfileScreen() {
         setPseudo(authUser.pseudo || '');
         setAge(authUser.age?.toString() || '');
         setDescription(authUser.description || '');
+        setSpecialty(authUser.specialty || '');
         setPhoto(authUser.photo || '');
         setIsLoading(false);
         setIsInitialized(true);
@@ -44,6 +46,7 @@ export default function EditProfileScreen() {
             prevUser.pseudo !== authUser.pseudo ||
             prevUser.age !== authUser.age ||
             prevUser.description !== authUser.description ||
+            prevUser.specialty !== authUser.specialty ||
             prevUser.photo !== authUser.photo;
           
           // Ne mettre à jour que si c'est un changement important (pas juste la position)
@@ -51,6 +54,7 @@ export default function EditProfileScreen() {
             setPseudo(authUser.pseudo || '');
             setAge(authUser.age?.toString() || '');
             setDescription(authUser.description || '');
+            setSpecialty(authUser.specialty || '');
             setPhoto(authUser.photo || '');
             prevAuthUserRef.current = authUser;
           }
@@ -144,6 +148,7 @@ export default function EditProfileScreen() {
         pseudo: pseudo.trim(),
         age: Number(age),
         description: description.trim(),
+        specialty: specialty.trim() || undefined,
         photo: photo || authUser.photo,
       };
 
@@ -247,6 +252,17 @@ export default function EditProfileScreen() {
               numberOfLines={6}
               style={styles.textArea}
               containerStyle={styles.inputContainer}
+            />
+          </View>
+
+          <View style={styles.field}>
+            <Text style={styles.label}>Savoir-faire particulier</Text>
+            <Input
+              placeholder="Ex: Avocat, Médecin, Ingénieur..."
+              value={specialty}
+              onChangeText={setSpecialty}
+              containerStyle={styles.inputContainer}
+              leftIcon={<Ionicons name="briefcase-outline" size={20} color={colors.textTertiary} />}
             />
           </View>
 

@@ -25,6 +25,10 @@ export default function ScreensLayout() {
       <Stack.Screen name="kyc" />
       <Stack.Screen name="chat" />
       <Stack.Screen name="admin" />
+      <Stack.Screen name="offers" />
+      <Stack.Screen name="create-offer" />
+      <Stack.Screen name="offer-details" />
+      <Stack.Screen name="my-offers" />
     </Stack>
   );
 }

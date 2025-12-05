@@ -11,7 +11,7 @@ import { useAuth } from '../../context/AuthContext';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 
 type AuthMode = 'signup' | 'login';
-type AuthStep = 'phone' | 'otp' | 'pseudo' | 'age' | 'gender' | 'password';
+type AuthStep = 'phone' | 'otp' | 'pseudo' | 'age' | 'gender' | 'specialty' | 'password';
 
 export default function AuthScreen() {
   const router = useRouter();
@@ -23,9 +23,11 @@ export default function AuthScreen() {
   const [pseudo, setPseudo] = useState('');
   const [age, setAge] = useState('');
   const [gender, setGender] = useState<'male' | 'female' | ''>('');
+  const [specialty, setSpecialty] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [otpCode, setOtpCode] = useState<string | null>(null); // Code OTP généré pour affichage
 
   // Rediriger si déjà authentifié (mais pas immédiatement après déconnexion)
   React.useEffect(() => {
@@ -63,7 +65,7 @@ export default function AuthScreen() {
     // En mode signup, envoyer l'OTP
     setIsLoading(true);
     try {
-      const { error } = await sendOTP(phone);
+      const { error, otpCode: generatedOtp } = await sendOTP(phone);
       
       if (error) {
         Alert.alert(
@@ -72,6 +74,11 @@ export default function AuthScreen() {
         );
         setIsLoading(false);
         return;
+      }
+
+      // Stocker le code OTP généré pour l'afficher dans l'interface
+      if (generatedOtp) {
+        setOtpCode(generatedOtp);
       }
 
       setStep('otp');
@@ -189,7 +196,12 @@ export default function AuthScreen() {
       return;
     }
 
-    // Passer à l'étape mot de passe
+    // Passer à l'étape savoir-faire
+    setStep('specialty');
+  };
+
+  const handleSpecialtySubmit = async () => {
+    // Le savoir-faire est optionnel, on peut passer directement à l'étape mot de passe
     setStep('password');
   };
 
@@ -232,7 +244,9 @@ export default function AuthScreen() {
           pseudo.trim(),
           lat,
           lng,
-          password // Passer le mot de passe saisi par l'utilisateur
+          password, // Passer le mot de passe saisi par l'utilisateur
+          undefined, // password paramètre
+          specialty.trim() || undefined // Passer le savoir-faire
         );
         
         if (error) {
@@ -274,7 +288,10 @@ export default function AuthScreen() {
             password, 
             pseudo.trim(),
             Number(age),
-            gender as 'male' | 'female'
+            gender as 'male' | 'female',
+            undefined, // lat
+            undefined, // lng
+            specialty.trim() || undefined // specialty
           );
           
           if (signUpError) {
@@ -312,10 +329,14 @@ export default function AuthScreen() {
   const handleResendOTP = async () => {
     setIsLoading(true);
     try {
-      const { error } = await sendOTP(phone);
+      const { error, otpCode: generatedOtp } = await sendOTP(phone);
       if (error) {
         Alert.alert('Erreur', 'Impossible de renvoyer le code');
       } else {
+        // Mettre à jour le code OTP affiché
+        if (generatedOtp) {
+          setOtpCode(generatedOtp);
+        }
         Alert.alert('Code renvoyé', 'Un nouveau code a été envoyé');
       }
     } catch (error) {
@@ -434,9 +455,17 @@ export default function AuthScreen() {
                 <View style={styles.stepHeader}>
                   <Text style={styles.title}>Code de vérification</Text>
                   <Text style={styles.subtitle}>Entrez le code envoyé au {phone}</Text>
-                  <Text style={styles.devHint}>
-                    💡 Mode développement : Utilisez le code <Text style={styles.devCode}>123456</Text>
-                  </Text>
+                  {otpCode && (
+                    <View style={styles.otpCodeContainer}>
+                      <Text style={styles.otpCodeLabel}>Code OTP généré :</Text>
+                      <Text style={styles.otpCodeValue}>{otpCode}</Text>
+                    </View>
+                  )}
+                  {!otpCode && (
+                    <Text style={styles.devHint}>
+                      💡 Mode développement : Utilisez le code <Text style={styles.devCode}>123456</Text>
+                    </Text>
+                  )}
                 </View>
 
                 <View style={styles.form}>
@@ -607,6 +636,38 @@ export default function AuthScreen() {
               </Animated.View>
             )}
 
+            {step === 'specialty' && (
+              <Animated.View entering={FadeIn} exiting={FadeOut} style={styles.stepContainer}>
+                <TouchableOpacity
+                  style={styles.backButton}
+                  onPress={() => setStep('gender')}
+                >
+                  <Ionicons name="arrow-back" size={24} color={colors.textSecondary} />
+                </TouchableOpacity>
+                <View style={styles.stepHeader}>
+                  <Text style={styles.title}>Votre savoir-faire particulier</Text>
+                  <Text style={styles.subtitle}>Ex: Avocat, Médecin, Ingénieur, etc. (optionnel)</Text>
+                </View>
+
+                <View style={styles.form}>
+                  <Input
+                    placeholder="Ex: Avocat, Médecin, Ingénieur..."
+                    value={specialty}
+                    onChangeText={setSpecialty}
+                    containerStyle={styles.inputContainer}
+                    leftIcon={<Ionicons name="briefcase-outline" size={20} color={colors.textTertiary} />}
+                  />
+
+                  <Button
+                    title="Continuer"
+                    onPress={handleSpecialtySubmit}
+                    loading={isLoading}
+                    style={styles.button}
+                  />
+                </View>
+              </Animated.View>
+            )}
+
             {step === 'password' && (
               <Animated.View entering={FadeIn} exiting={FadeOut} style={styles.stepContainer}>
                 {/* Bouton retour pour le mode signup et login */}
@@ -614,8 +675,8 @@ export default function AuthScreen() {
                   style={styles.backButton}
                   onPress={() => {
                     if (mode === 'signup') {
-                      // Retour à l'étape précédente (genre)
-                      setStep('gender');
+                      // Retour à l'étape précédente (specialty)
+                      setStep('specialty');
                     } else {
                       // Retour au téléphone pour le login
                       setStep('phone');
@@ -724,6 +785,7 @@ export default function AuthScreen() {
             <View style={[styles.progressBar, step === 'pseudo' && styles.progressBarActive]} />
             <View style={[styles.progressBar, step === 'age' && styles.progressBarActive]} />
             <View style={[styles.progressBar, step === 'gender' && styles.progressBarActive]} />
+            <View style={[styles.progressBar, step === 'specialty' && styles.progressBarActive]} />
             <View style={[styles.progressBar, step === 'password' && styles.progressBarActive]} />
           </View>
         )}
@@ -815,6 +877,28 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.pink400,
     fontFamily: 'monospace',
+  },
+  otpCodeContainer: {
+    backgroundColor: colors.pink50,
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 16,
+    borderWidth: 2,
+    borderColor: colors.pink200,
+    alignItems: 'center',
+  },
+  otpCodeLabel: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    marginBottom: 8,
+    fontWeight: '500',
+  },
+  otpCodeValue: {
+    fontSize: 32,
+    fontWeight: '700',
+    color: colors.pink600,
+    fontFamily: 'monospace',
+    letterSpacing: 4,
   },
   form: {
     gap: 16,

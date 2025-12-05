@@ -11,9 +11,9 @@ interface AuthContextType {
   user: User | null;
   // Authentification par téléphone avec OTP interne
   sendOTP: (phone: string) => Promise<{ error: any; otpCode?: string }>;
-  verifyOTP: (phone: string, token: string, pseudo?: string, lat?: number, lng?: number) => Promise<{ error: any; user: User | null }>;
+  verifyOTP: (phone: string, token: string, pseudo?: string, lat?: number, lng?: number, password?: string, specialty?: string) => Promise<{ error: any; user: User | null }>;
   // Authentification par mot de passe
-  signUpWithPassword: (phone: string, password: string, pseudo: string, age?: number, gender?: 'male' | 'female', lat?: number, lng?: number) => Promise<{ error: any; user: User | null }>;
+  signUpWithPassword: (phone: string, password: string, pseudo: string, age?: number, gender?: 'male' | 'female', lat?: number, lng?: number, specialty?: string) => Promise<{ error: any; user: User | null }>;
   loginWithPassword: (phone: string, password: string) => Promise<{ error: any; user: User | null }>;
   // Réinitialisation de mot de passe
   resetPassword: (phone: string) => Promise<{ error: any }>;
@@ -114,7 +114,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .single();
 
       if (error) {
-        if (!isNetworkError(error)) {
+        // Gérer spécifiquement les erreurs réseau
+        const isNetworkErr = isNetworkError(error) || 
+                            error?.message?.includes('Network request failed') || 
+                            error?.message?.includes('Failed to fetch');
+        
+        if (isNetworkErr) {
+          console.log('⚠️ Erreur réseau lors du chargement du profil. Vérifiez votre connexion internet.');
+        } else if (!isNetworkError(error)) {
           console.error('Error loading user profile:', error);
         }
         setIsAuthenticated(false);
@@ -138,6 +145,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           phone: data.phone || '',
           photo: data.photo || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400',
           description: data.description !== null && data.description !== undefined ? data.description : '',
+          specialty: data.specialty || undefined,
           rating: parseFloat(data.rating) || 0,
           reviewCount: data.review_count || 0,
           isSubscribed: data.is_subscribed || false,
@@ -159,7 +167,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setIsAuthenticated(true);
       }
     } catch (error: any) {
-      if (!isNetworkError(error)) {
+      // Capturer toutes les erreurs réseau, y compris les TypeError et AuthRetryableFetchError
+      const isNetworkErr = isNetworkError(error) || 
+                          error?.name === 'AuthRetryableFetchError' ||
+                          error?.name === 'AuthPKCEGrantCodeExchangeError' ||
+                          error?.message?.includes('Network request failed') || 
+                          error?.message?.includes('Failed to fetch') ||
+                          error?.name === 'TypeError';
+      
+      if (isNetworkErr) {
+        console.log('⚠️ Erreur réseau lors du chargement du profil. Vérifiez votre connexion internet.');
+        console.log('🔍 Type d\'erreur:', error?.name || 'Unknown');
+      } else if (!isNetworkError(error)) {
         console.error('Error in loadUserProfile:', error);
       }
       setIsAuthenticated(false);
@@ -179,7 +198,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const { data: { session }, error } = await supabase.auth.getSession();
 
       if (error) {
-        if (!isNetworkError(error)) {
+        // Gérer spécifiquement les erreurs réseau
+        const isNetworkErr = isNetworkError(error) || 
+                            error?.message?.includes('Network request failed') || 
+                            error?.message?.includes('Failed to fetch');
+        
+        if (isNetworkErr) {
+          console.log('⚠️ Erreur réseau lors de la vérification de session. Vérifiez votre connexion internet.');
+        } else if (!isNetworkError(error)) {
           console.error('Error getting session:', error);
         }
         setIsAuthenticated(false);
@@ -202,7 +228,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(null);
       }
     } catch (error: any) {
-      if (!isNetworkError(error)) {
+      // Capturer toutes les erreurs réseau, y compris les TypeError et AuthRetryableFetchError
+      const isNetworkErr = isNetworkError(error) || 
+                          error?.name === 'AuthRetryableFetchError' ||
+                          error?.name === 'AuthPKCEGrantCodeExchangeError' ||
+                          error?.message?.includes('Network request failed') || 
+                          error?.message?.includes('Failed to fetch') ||
+                          error?.name === 'TypeError';
+      
+      if (isNetworkErr) {
+        console.log('⚠️ Erreur réseau lors de la vérification de session. Vérifiez votre connexion internet.');
+        console.log('🔍 Type d\'erreur:', error?.name || 'Unknown');
+      } else if (!isNetworkError(error)) {
         console.error('Error checking auth:', error);
       }
       setIsAuthenticated(false);
@@ -251,7 +288,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     pseudo?: string,
     lat?: number,
     lng?: number,
-    password?: string // Nouveau paramètre : mot de passe optionnel
+    password?: string, // Nouveau paramètre : mot de passe optionnel
+    specialty?: string // Savoir-faire particulier
   ): Promise<{ error: any; user: User | null }> => {
     try {
       const formattedPhone = phone.startsWith('+') ? phone : `+${phone}`;
@@ -573,6 +611,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         p_lat: userLat,
         p_lng: userLng,
         p_is_available: true,
+        p_specialty: specialty || null,
       });
 
       if (profileError) {
@@ -586,7 +625,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await loadUserProfile(authUser.id);
       return { error: null, user: user };
     } catch (error: any) {
-      if (!isNetworkError(error)) {
+      // Gérer spécifiquement les erreurs réseau Supabase
+      const isNetworkErr = isNetworkError(error) || 
+                          error?.name === 'AuthRetryableFetchError' ||
+                          error?.name === 'AuthPKCEGrantCodeExchangeError';
+      
+      if (isNetworkErr) {
+        console.log('⚠️ Erreur réseau lors de la vérification OTP. Vérifiez votre connexion internet.');
+        return { error: { message: 'Erreur de connexion. Vérifiez votre connexion internet et réessayez.' }, user: null };
+      } else if (!isNetworkError(error)) {
         console.error('Error in verifyOTP:', error);
       }
       return { error, user: null };
@@ -601,7 +648,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     age?: number,
     gender?: 'male' | 'female',
     lat?: number,
-    lng?: number
+    lng?: number,
+    specialty?: string
   ): Promise<{ error: any; user: User | null }> => {
     try {
       const formattedPhone = phone.startsWith('+') ? phone : `+${phone}`;
@@ -750,6 +798,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             p_lat: userLat,
             p_lng: userLng,
             p_is_available: true,
+            p_specialty: null, // Le specialty sera mis à jour plus tard si nécessaire
           });
 
           if (profileError) {
@@ -799,6 +848,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         p_lat: userLat,
         p_lng: userLng,
         p_is_available: true,
+        p_specialty: specialty || null,
       });
 
       if (profileError) {
@@ -1200,7 +1250,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       console.log('========== FIN CONNEXION (SUCCÈS) ==========');
       return { error: null, user: user };
     } catch (error: any) {
-      if (!isNetworkError(error)) {
+      // Gérer spécifiquement les erreurs réseau Supabase
+      const isNetworkErr = isNetworkError(error) || 
+                          error?.name === 'AuthRetryableFetchError' ||
+                          error?.name === 'AuthPKCEGrantCodeExchangeError';
+      
+      if (isNetworkErr) {
+        console.log('⚠️ Erreur réseau lors de la connexion. Vérifiez votre connexion internet.');
+        return { error: { message: 'Erreur de connexion. Vérifiez votre connexion internet et réessayez.' }, user: null };
+      } else if (!isNetworkError(error)) {
         console.error('❌ Error in loginWithPassword:', error);
       }
       return { error, user: null };
@@ -1242,6 +1300,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         p_lat: userData.lat !== undefined ? userData.lat : (user?.lat || null),
         p_lng: userData.lng !== undefined ? userData.lng : (user?.lng || null),
         p_is_available: userData.isAvailable !== undefined ? userData.isAvailable : (user?.isAvailable !== false),
+        p_specialty: userData.specialty !== undefined ? userData.specialty : (user?.specialty || null),
       };
 
       console.log('💾 updateUserProfile - Paramètres envoyés:', {

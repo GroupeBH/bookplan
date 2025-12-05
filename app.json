@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "bookplan",
-    "slug": "bookplan",
+    "name": "kutana",
+    "slug": "kutana",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "bookplan",
+    "scheme": "kutana",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
@@ -14,9 +14,10 @@
         "NSLocationWhenInUseUsageDescription": "Cette application a besoin de votre localisation pour afficher les utilisateurs à proximité et mettre à jour votre position sur la carte.",
         "NSLocationAlwaysUsageDescription": "Cette application a besoin de votre localisation pour afficher les utilisateurs à proximité et mettre à jour votre position sur la carte."
       },
-      "bundleIdentifier": "com.bookplan.app"
+      "bundleIdentifier": "com.kutana.app"
     },
     "android": {
+      "package": "com.kutana.app",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -70,9 +71,11 @@
     "extra": {
       "supabaseUrl": "https://etmfpkoghsvkrvbxazlt.supabase.co",
       "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV0bWZwa29naHN2a3J2Ynhhemx0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjMzNzQxMTgsImV4cCI6MjA3ODk1MDExOH0.DSloLRedesuW-upMu8eMxzO3eHA3eONCy2B_QkH7qDY",
+      "router": {},
       "eas": {
-        "projectId": "YOUR_PROJECT_ID_HERE"
+        "projectId": "4f1f2d3b-815d-48ff-9d5a-0e61d16ae278"
       }
-    }
+    },
+    "owner": "joscript01"
   }
 }

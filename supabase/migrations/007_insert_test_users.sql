@@ -29,7 +29,7 @@ BEGIN
   ) VALUES (
     amina_id,
     '00000000-0000-0000-0000-000000000000',
-    'amina.test@bookplan.com',
+    'amina.test@kutana.com',
     crypt('test123456', gen_salt('bf')), -- Mot de passe: test123456
     NOW(),
     '+243900000001',
@@ -61,7 +61,7 @@ BEGIN
   ) VALUES (
     joel_id,
     '00000000-0000-0000-0000-000000000000',
-    'joel.test@bookplan.com',
+    'joel.test@kutana.com',
     crypt('test123456', gen_salt('bf')), -- Mot de passe: test123456
     NOW(),
     '+243900000002',

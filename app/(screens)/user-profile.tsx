@@ -15,6 +15,7 @@ import { useRating } from '../../context/RatingContext';
 import { useAuth } from '../../context/AuthContext';
 import { useBooking } from '../../context/BookingContext';
 import { useBlock } from '../../context/BlockContext';
+import { useAlbum } from '../../context/AlbumContext';
 import { supabase } from '../../lib/supabase';
 import Animated, { FadeIn } from 'react-native-reanimated';
 
@@ -26,7 +27,10 @@ export default function UserProfileScreen() {
   const { createRating, getUserRatings, updateRating, getUserAverageRating } = useRating();
   const { getActiveBookingWithUser, cancelBooking } = useBooking();
   const { blockUser, unblockUser, isUserBlocked, blockedUsers } = useBlock();
+  const { getUserAlbumPhotos } = useAlbum();
   const [isBlocked, setIsBlocked] = useState(false);
+  const [userAlbumPhotos, setUserAlbumPhotos] = useState<any[]>([]);
+  const [isLoadingAlbum, setIsLoadingAlbum] = useState(false);
   const [showAccessDialog, setShowAccessDialog] = useState(false);
   const [showRatingDialog, setShowRatingDialog] = useState(false);
   const [showBookingDialog, setShowBookingDialog] = useState(false);
@@ -48,6 +52,8 @@ export default function UserProfileScreen() {
     if (!selectedUser?.id || !currentUser?.id) {
       setActiveBooking(null);
       lastSelectedUserIdRef.current = null;
+      setIsLoadingBooking(false);
+      isLoadingBookingRef.current = false;
       return;
     }
 
@@ -70,14 +76,26 @@ export default function UserProfileScreen() {
     lastLoadTimeRef.current = now;
     lastSelectedUserIdRef.current = selectedUser.id;
 
+    // Ajouter un timeout pour éviter que la fonction reste bloquée indéfiniment
+    const timeoutId = setTimeout(() => {
+      if (isLoadingBookingRef.current) {
+        console.log('⏱️ Timeout lors du chargement de la demande active');
+        setIsLoadingBooking(false);
+        isLoadingBookingRef.current = false;
+      }
+    }, 10000); // 10 secondes timeout
+
     try {
       const booking = await getActiveBookingWithUser(selectedUser.id);
+      clearTimeout(timeoutId);
       console.log('📋 Demande active chargée:', booking ? `${booking.id} - ${booking.status}` : 'Aucune demande');
       setActiveBooking(booking);
     } catch (error) {
+      clearTimeout(timeoutId);
       console.error('Error loading active booking:', error);
       setActiveBooking(null);
     } finally {
+      clearTimeout(timeoutId);
       setIsLoadingBooking(false);
       isLoadingBookingRef.current = false;
     }
@@ -140,6 +158,13 @@ export default function UserProfileScreen() {
       setIsLoadingRatings(false);
     }
   }, [selectedUser?.id, currentUser?.id, getUserRatings, getUserAverageRating]);
+
+  // Charger les photos d'album au montage
+  React.useEffect(() => {
+    if (selectedUser?.id) {
+      loadUserAlbumPhotos();
+    }
+  }, [selectedUser?.id]);
 
   // Charger les avis au montage
   React.useEffect(() => {
@@ -371,6 +396,21 @@ export default function UserProfileScreen() {
     setShowRatingDialog(true);
   };
 
+  const loadUserAlbumPhotos = async () => {
+    if (!selectedUser?.id) return;
+    
+    setIsLoadingAlbum(true);
+    try {
+      const photos = await getUserAlbumPhotos(selectedUser.id);
+      setUserAlbumPhotos(photos);
+    } catch (error) {
+      console.error('Error loading album photos:', error);
+      setUserAlbumPhotos([]);
+    } finally {
+      setIsLoadingAlbum(false);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       {/* Header */}
@@ -429,6 +469,34 @@ export default function UserProfileScreen() {
             <Text style={styles.sectionTitle}>À propos</Text>
             <Text style={styles.description}>{selectedUser.description || 'Aucune description'}</Text>
           </View>
+
+          {/* Specialty */}
+          {selectedUser.specialty && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Savoir-faire particulier</Text>
+              <View style={styles.specialtyCard}>
+                <Ionicons name="briefcase" size={20} color={colors.pink400} />
+                <Text style={styles.specialtyText}>{selectedUser.specialty}</Text>
+              </View>
+            </View>
+          )}
+
+          {/* Album Photos Section */}
+          {userAlbumPhotos.length > 0 && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Album ({userAlbumPhotos.length})</Text>
+              <View style={styles.albumGrid}>
+                {userAlbumPhotos.map((photo) => (
+                  <Animated.View key={photo.id} entering={FadeIn} style={styles.albumPhotoContainer}>
+                    <ImageWithFallback
+                      source={{ uri: photo.photoUrl }}
+                      style={styles.albumPhoto}
+                    />
+                  </Animated.View>
+                ))}
+              </View>
+            </View>
+          )}
 
           {/* Access Request Section */}
           {!hasFullAccess && !accessRequested && currentUser?.id !== selectedUser.id && (
@@ -631,8 +699,7 @@ export default function UserProfileScreen() {
                 onPress={handleBooking}
                 icon={<Ionicons name="heart" size={20} color="#ffffff" />}
                 style={styles.actionButton}
-                disabled={!selectedUser.isAvailable || isLoadingBooking}
-                loading={isLoadingBooking}
+                disabled={!selectedUser.isAvailable}
               />
               <Button
                 title="Envoyer un message"
@@ -1351,6 +1418,38 @@ const styles = StyleSheet.create({
   },
   bookingActionButton: {
     marginTop: 0,
+  },
+  albumGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  albumPhotoContainer: {
+    width: '30%',
+    aspectRatio: 1,
+  },
+  albumPhoto: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+  },
+  specialtyCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: `${colors.backgroundSecondary}80`,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+    borderRadius: 16,
+    padding: 16,
+  },
+  specialtyText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text,
+    flex: 1,
   },
 });
 

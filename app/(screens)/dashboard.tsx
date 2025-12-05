@@ -340,12 +340,20 @@ export default function Dashboard() {
     <SafeAreaView style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>BOOKPLAN</Text>
-        {currentUser?.isSubscribed && (
-          <Badge variant="info" style={styles.badge}>
-            Abonné
-          </Badge>
-        )}
+        <Text style={styles.headerTitle}>KUTANA</Text>
+        <View style={styles.headerRight}>
+          {currentUser?.isSubscribed && (
+            <Badge variant="info" style={styles.badge}>
+              Abonné
+            </Badge>
+          )}
+          <TouchableOpacity
+            style={styles.offersButton}
+            onPress={() => router.push('/(screens)/offers')}
+          >
+            <Ionicons name="gift-outline" size={24} color={colors.pink500} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Map Section */}
@@ -589,8 +597,16 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.text,
   },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
   badge: {
     marginLeft: 8,
+  },
+  offersButton: {
+    padding: 4,
   },
   mapSection: {
     height: 256,

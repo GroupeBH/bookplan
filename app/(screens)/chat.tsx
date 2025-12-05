@@ -111,6 +111,9 @@ export default function ChatScreen() {
     if (selectedConversation) {
       loadConversationMessages(selectedConversation.id);
       markAsRead(selectedConversation.id);
+    } else {
+      // Réinitialiser les messages si aucune conversation n'est sélectionnée
+      setConversationMessages([]);
     }
   }, [selectedConversation?.id]);
 
@@ -118,7 +121,20 @@ export default function ChatScreen() {
   useEffect(() => {
     if (selectedConversation) {
       const unsubscribe = subscribeToConversation(selectedConversation.id, (message) => {
-        setConversationMessages((prev) => [...prev, message]);
+        setConversationMessages((prev) => {
+          // Vérifier si le message n'est pas déjà présent (éviter les doublons)
+          const exists = prev.some(msg => msg.id === message.id);
+          if (exists) {
+            return prev;
+          }
+          // Ajouter le message et trier par date
+          const updated = [...prev, message];
+          return updated.sort((a, b) => {
+            const dateA = new Date(a.createdAt).getTime();
+            const dateB = new Date(b.createdAt).getTime();
+            return dateA - dateB;
+          });
+        });
         // Faire défiler vers le bas
         setTimeout(() => {
           scrollViewRef.current?.scrollToEnd({ animated: true });
@@ -139,12 +155,23 @@ export default function ChatScreen() {
   }, [selectedConversation?.id, subscribeToConversation, markAsRead, currentUser?.id]);
 
   const loadConversationMessages = async (conversationId: string) => {
-    const loadedMessages = await getMessages(conversationId);
-    setConversationMessages(loadedMessages);
-    // Faire défiler vers le bas après le chargement
-    setTimeout(() => {
-      scrollViewRef.current?.scrollToEnd({ animated: false });
-    }, 100);
+    try {
+      const loadedMessages = await getMessages(conversationId);
+      // S'assurer que les messages sont bien triés par date
+      const sortedMessages = loadedMessages.sort((a, b) => {
+        const dateA = new Date(a.createdAt).getTime();
+        const dateB = new Date(b.createdAt).getTime();
+        return dateA - dateB;
+      });
+      setConversationMessages(sortedMessages);
+      // Faire défiler vers le bas après le chargement
+      setTimeout(() => {
+        scrollViewRef.current?.scrollToEnd({ animated: false });
+      }, 100);
+    } catch (error) {
+      console.error('Error loading conversation messages:', error);
+      setConversationMessages([]);
+    }
   };
 
   const handleOpenConversationWithUser = async (userId: string) => {
@@ -174,7 +201,16 @@ export default function ChatScreen() {
     const sentMessage = await sendMessage(selectedConversation.id, recipientId, content);
     
     if (sentMessage) {
-      // Le message sera ajouté automatiquement via l'abonnement en temps réel
+      // Ajouter le message immédiatement au state local pour un affichage instantané
+      setConversationMessages((prev) => {
+        // Vérifier si le message n'est pas déjà présent (éviter les doublons)
+        const exists = prev.some(msg => msg.id === sentMessage.id);
+        if (exists) {
+          return prev;
+        }
+        return [...prev, sentMessage];
+      });
+      
       // Faire défiler vers le bas
       setTimeout(() => {
         scrollViewRef.current?.scrollToEnd({ animated: true });

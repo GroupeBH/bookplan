@@ -17,7 +17,7 @@ DECLARE
   temp_password TEXT;
 BEGIN
   -- Générer un email temporaire basé sur le téléphone
-  temp_email := 'user' || regexp_replace(user_phone, '[^0-9]', '', 'g') || '@bookplan.app';
+  temp_email := 'user' || regexp_replace(user_phone, '[^0-9]', '', 'g') || '@kutana.app';
   
   -- Si pas de mot de passe fourni, en générer un
   IF user_password IS NULL THEN

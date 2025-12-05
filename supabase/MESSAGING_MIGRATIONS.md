@@ -128,3 +128,5 @@ Une fois les migrations exécutées, la messagerie sera fonctionnelle dans l'app
 
 
 
+
+

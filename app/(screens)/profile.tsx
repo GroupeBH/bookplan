@@ -11,7 +11,9 @@ import { ImageWithFallback } from '../../components/ImageWithFallback';
 import { useUser } from '../../context/UserContext';
 import { useAuth } from '../../context/AuthContext';
 import { useRating } from '../../context/RatingContext';
+import { useAlbum } from '../../context/AlbumContext';
 import { supabase } from '../../lib/supabase';
+import * as ImagePicker from 'expo-image-picker';
 import Animated, { FadeIn } from 'react-native-reanimated';
 
 export default function ProfileScreen() {
@@ -19,9 +21,11 @@ export default function ProfileScreen() {
   const { currentUser } = useUser();
   const { logout, isAuthenticated, user: authUser } = useAuth();
   const { getUserRatings, getUserAverageRating } = useRating();
+  const { albumPhotos, getUserAlbumPhotos, addAlbumPhoto, deleteAlbumPhoto, isLoading: isLoadingAlbum } = useAlbum();
   const [userRatings, setUserRatings] = useState<any[]>([]);
   const [isLoadingRatings, setIsLoadingRatings] = useState(false);
   const [averageRating, setAverageRating] = useState({ average: 0, count: 0 });
+  const [showAlbumModal, setShowAlbumModal] = useState(false);
 
   // Refs pour éviter les appels multiples
   const isLoadingRatingsRef = React.useRef(false);
@@ -90,6 +94,13 @@ export default function ProfileScreen() {
     }
   }, [authUser?.id, getUserRatings, getUserAverageRating]);
 
+  // Charger les photos d'album au montage
+  React.useEffect(() => {
+    if (authUser?.id) {
+      getUserAlbumPhotos(authUser.id);
+    }
+  }, [authUser?.id, getUserAlbumPhotos]);
+
   // Charger les avis au montage
   React.useEffect(() => {
     if (authUser?.id) {
@@ -137,6 +148,63 @@ export default function ProfileScreen() {
             } catch (error) {
               console.error('Error logging out:', error);
               Alert.alert('Erreur', 'Une erreur est survenue lors de la déconnexion');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleAddPhoto = async () => {
+    if (!authUser?.id) return;
+
+    if (albumPhotos.length >= 5) {
+      Alert.alert('Limite atteinte', 'Vous ne pouvez ajouter que 5 photos maximum');
+      return;
+    }
+
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission requise', 'Nous avons besoin de l\'accès à vos photos');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+
+    if (!result.canceled && result.assets[0]) {
+      // Pour l'instant, utiliser l'URI locale directement
+      // En production, il faudrait uploader vers Supabase Storage
+      const photoUrl = result.assets[0].uri;
+      
+      const { error } = await addAlbumPhoto(authUser.id, photoUrl);
+      if (error) {
+        Alert.alert('Erreur', error.message || 'Impossible d\'ajouter la photo');
+      } else {
+        Alert.alert('Succès', 'Photo ajoutée à votre album');
+      }
+    }
+  };
+
+  const handleDeletePhoto = async (photoId: string) => {
+    Alert.alert(
+      'Supprimer la photo',
+      'Êtes-vous sûr de vouloir supprimer cette photo ?',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Supprimer',
+          style: 'destructive',
+          onPress: async () => {
+            const { error } = await deleteAlbumPhoto(photoId);
+            if (error) {
+              Alert.alert('Erreur', error.message || 'Impossible de supprimer la photo');
+            } else {
+              Alert.alert('Succès', 'Photo supprimée');
             }
           },
         },
@@ -223,6 +291,76 @@ export default function ProfileScreen() {
           </View>
         </View>
 
+        {/* Specialty */}
+        {currentUser.specialty && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Savoir-faire particulier</Text>
+            <View style={styles.specialtyCard}>
+              <Ionicons name="briefcase" size={20} color={colors.pink400} />
+              <Text style={styles.specialtyText}>{currentUser.specialty}</Text>
+            </View>
+          </View>
+        )}
+
+        {/* Album Photos Section */}
+        <View style={styles.section}>
+          <View style={styles.albumHeader}>
+            <Text style={styles.sectionTitle}>Mon Album ({albumPhotos.length}/5)</Text>
+            {albumPhotos.length < 5 && (
+              <TouchableOpacity
+                onPress={handleAddPhoto}
+                style={styles.addPhotoButton}
+                disabled={isLoadingAlbum}
+              >
+                <Ionicons name="add-circle-outline" size={24} color={colors.pink400} />
+              </TouchableOpacity>
+            )}
+          </View>
+          {isLoadingAlbum ? (
+            <Text style={styles.loadingText}>Chargement des photos...</Text>
+          ) : albumPhotos.length === 0 ? (
+            <View style={styles.emptyAlbum}>
+              <Ionicons name="images-outline" size={48} color={colors.textTertiary} />
+              <Text style={styles.emptyAlbumText}>Aucune photo dans votre album</Text>
+              <Text style={styles.emptyAlbumSubtext}>Ajoutez jusqu'à 5 photos</Text>
+              <Button
+                title="Ajouter une photo"
+                onPress={handleAddPhoto}
+                icon={<Ionicons name="add" size={20} color="#ffffff" />}
+                style={styles.addPhotoButtonFull}
+              />
+            </View>
+          ) : (
+            <View style={styles.albumGrid}>
+              {albumPhotos.map((photo) => (
+                <View key={photo.id} style={styles.albumPhotoContainer}>
+                  <ImageWithFallback
+                    source={{ uri: photo.photoUrl }}
+                    style={styles.albumPhoto}
+                  />
+                  <TouchableOpacity
+                    style={styles.deletePhotoButton}
+                    onPress={() => handleDeletePhoto(photo.id)}
+                    disabled={isLoadingAlbum}
+                  >
+                    <Ionicons name="close-circle" size={24} color={colors.red500} />
+                  </TouchableOpacity>
+                </View>
+              ))}
+              {albumPhotos.length < 5 && (
+                <TouchableOpacity
+                  style={styles.addPhotoSlot}
+                  onPress={handleAddPhoto}
+                  disabled={isLoadingAlbum}
+                >
+                  <Ionicons name="add-circle-outline" size={48} color={colors.textTertiary} />
+                  <Text style={styles.addPhotoText}>Ajouter</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+        </View>
+
           {/* Action Buttons */}
           <View style={styles.actions}>
             <Button
@@ -237,6 +375,20 @@ export default function ProfileScreen() {
               onPress={() => router.push('/(screens)/my-requests')}
               variant="outline"
               icon={<Ionicons name="paper-plane-outline" size={20} color={colors.text} />}
+              style={styles.actionButton}
+            />
+            <Button
+              title="Mes offres"
+              onPress={() => router.push('/(screens)/my-offers')}
+              variant="outline"
+              icon={<Ionicons name="gift-outline" size={20} color={colors.text} />}
+              style={styles.actionButton}
+            />
+            <Button
+              title="Offres disponibles"
+              onPress={() => router.push('/(screens)/offers')}
+              variant="outline"
+              icon={<Ionicons name="gift" size={20} color={colors.pink500} />}
               style={styles.actionButton}
             />
             <Button
@@ -588,6 +740,88 @@ const styles = StyleSheet.create({
   },
   ratingsList: {
     gap: 12,
+  },
+  albumHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  addPhotoButton: {
+    padding: 8,
+  },
+  albumGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  albumPhotoContainer: {
+    position: 'relative',
+    width: '30%',
+    aspectRatio: 1,
+  },
+  albumPhoto: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+  },
+  deletePhotoButton: {
+    position: 'absolute',
+    top: -8,
+    right: -8,
+    backgroundColor: colors.background,
+    borderRadius: 12,
+  },
+  addPhotoSlot: {
+    width: '30%',
+    aspectRatio: 1,
+    backgroundColor: `${colors.backgroundSecondary}80`,
+    borderWidth: 2,
+    borderColor: colors.borderSecondary,
+    borderStyle: 'dashed',
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 8,
+  },
+  addPhotoText: {
+    fontSize: 12,
+    color: colors.textTertiary,
+  },
+  emptyAlbum: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 32,
+    gap: 12,
+  },
+  emptyAlbumText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  emptyAlbumSubtext: {
+    fontSize: 14,
+    color: colors.textTertiary,
+  },
+  addPhotoButtonFull: {
+    marginTop: 8,
+  },
+  specialtyCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: `${colors.backgroundSecondary}80`,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+    borderRadius: 16,
+    padding: 16,
+  },
+  specialtyText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text,
+    flex: 1,
   },
 });
 

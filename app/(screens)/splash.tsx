@@ -35,7 +35,7 @@ export default function SplashScreen() {
 
       {/* Title */}
       <View style={styles.textContainer}>
-        <Text style={styles.title}>BOOKPLAN</Text>
+        <Text style={styles.title}>KUTANA</Text>
         <Text style={styles.subtitle}>Votre compagnie à portée de main</Text>
       </View>
 
