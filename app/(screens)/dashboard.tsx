@@ -5,7 +5,8 @@ import { useRouter, usePathname } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
-import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import Mapbox, { MapView, PointAnnotation, Camera } from '@rnmapbox/maps';
+import '../../lib/mapbox'; // Initialiser Mapbox avec le token
 import { colors } from '../../constants/colors';
 import { Badge } from '../../components/ui/Badge';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
@@ -360,39 +361,28 @@ export default function Dashboard() {
       <View style={styles.mapSection}>
         {userLocation ? (
           <MapView
-            provider={PROVIDER_GOOGLE}
+            styleURL={Mapbox.StyleURL.Street}
             style={styles.map}
-            initialRegion={{
-              latitude: userLocation.lat,
-              longitude: userLocation.lng,
-              latitudeDelta: 0.05,
-              longitudeDelta: 0.05,
-            }}
-            region={{
-              latitude: userLocation.lat,
-              longitude: userLocation.lng,
-              latitudeDelta: 0.05,
-              longitudeDelta: 0.05,
-            }}
-            showsUserLocation={false}
-            showsMyLocationButton={false}
-            toolbarEnabled={false}
+            logoEnabled={false}
+            attributionEnabled={false}
           >
+            <Camera
+              centerCoordinate={[userLocation.lng, userLocation.lat]}
+              zoomLevel={13}
+              animationMode="flyTo"
+              animationDuration={2000}
+            />
+            
             {/* Marker pour l'utilisateur actuel - zIndex élevé pour être au-dessus */}
-            <Marker
-              coordinate={{
-                latitude: userLocation.lat,
-                longitude: userLocation.lng,
-              }}
-              title="Je suis ici"
-              pinColor={colors.pink500}
-              zIndex={1000}
+            <PointAnnotation
+              id="current-user"
+              coordinate={[userLocation.lng, userLocation.lat]}
               anchor={{ x: 0.5, y: 0.5 }}
             >
               <View style={styles.currentUserMarker}>
                 <Ionicons name="person" size={20} color="#ffffff" />
               </View>
-            </Marker>
+            </PointAnnotation>
 
             {/* Markers pour les utilisateurs disponibles - zIndex plus bas pour être sous le marqueur utilisateur */}
             {(() => {
@@ -443,17 +433,12 @@ export default function Dashboard() {
                 
                 console.log(`📍 Affichage marqueur pour ${user.pseudo} à (${user.lat}, ${user.lng}), distance: ${user.distance?.toFixed(3)} km, offset: (${latOffset.toFixed(6)}, ${lngOffset.toFixed(6)})`);
                 return (
-                  <Marker
+                  <PointAnnotation
                     key={user.id}
-                    coordinate={{
-                      latitude: (user.lat || 0) + latOffset,
-                      longitude: (user.lng || 0) + lngOffset,
-                    }}
-                    title={user.pseudo}
-                    description={`${user.distance?.toFixed(1) || 'N/A'} km - ${user.rating.toFixed(1)} ⭐`}
-                    onPress={() => handleViewProfile(user)}
-                    zIndex={100}
+                    id={`user-${user.id}`}
+                    coordinate={[(user.lng || 0) + lngOffset, (user.lat || 0) + latOffset]}
                     anchor={{ x: 0.5, y: 0.5 }}
+                    onSelected={() => handleViewProfile(user)}
                   >
                     <View style={styles.userMarker}>
                       <ImageWithFallback
@@ -462,7 +447,7 @@ export default function Dashboard() {
                       />
                       <View style={styles.onlineIndicator} />
                     </View>
-                  </Marker>
+                  </PointAnnotation>
                 );
               });
             })()}

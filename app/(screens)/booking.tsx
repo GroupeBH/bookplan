@@ -4,7 +4,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
-import MapView, { Marker, PROVIDER_GOOGLE, Region } from 'react-native-maps';
+import Mapbox, { MapView, PointAnnotation, Camera } from '@rnmapbox/maps';
+import '../../lib/mapbox'; // Initialiser Mapbox avec le token
 import { colors } from '../../constants/colors';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
@@ -35,7 +36,7 @@ export default function BookingScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [showMapPicker, setShowMapPicker] = useState(false);
   const [selectedLocation, setSelectedLocation] = useState<{ lat: number; lng: number } | null>(null);
-  const [mapRegion, setMapRegion] = useState<Region | null>(null);
+  const [mapRegion, setMapRegion] = useState<{ latitude: number; longitude: number; latitudeDelta: number; longitudeDelta: number } | null>(null);
   const [isLoadingAddress, setIsLoadingAddress] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
@@ -194,10 +195,13 @@ export default function BookingScreen() {
     }
   };
 
-  // Gérer le clic sur la carte
+  // Gérer le clic sur la carte (Mapbox)
   const handleMapPress = (event: any) => {
-    const { latitude, longitude } = event.nativeEvent.coordinate;
-    setSelectedLocation({ lat: latitude, lng: longitude });
+    const { geometry } = event;
+    if (geometry && geometry.coordinates) {
+      const [longitude, latitude] = geometry.coordinates;
+      setSelectedLocation({ lat: latitude, lng: longitude });
+    }
   };
 
   // Confirmer la sélection de la carte
@@ -750,30 +754,37 @@ export default function BookingScreen() {
           {mapRegion ? (
             <View style={styles.mapContainer}>
               <MapView
-                provider={PROVIDER_GOOGLE}
+                styleURL={Mapbox.StyleURL.Street}
                 style={styles.map}
-                initialRegion={mapRegion}
-                region={mapRegion}
+                logoEnabled={false}
+                attributionEnabled={false}
                 onPress={handleMapPress}
-                showsUserLocation={true}
-                showsMyLocationButton={true}
-                toolbarEnabled={false}
               >
+                <Camera
+                  centerCoordinate={[mapRegion.longitude, mapRegion.latitude]}
+                  zoomLevel={Math.log2(360 / mapRegion.longitudeDelta)}
+                  animationMode="flyTo"
+                  animationDuration={2000}
+                />
+                
                 {selectedLocation && (
-                  <Marker
-                    coordinate={{
-                      latitude: selectedLocation.lat,
-                      longitude: selectedLocation.lng,
-                    }}
-                    pinColor={colors.pink500}
+                  <PointAnnotation
+                    id="selected-location"
+                    coordinate={[selectedLocation.lng, selectedLocation.lat]}
                     draggable
-                    onDragEnd={(e) => {
+                    onDragEnd={(feature) => {
+                      const [longitude, latitude] = feature.geometry.coordinates;
                       setSelectedLocation({
-                        lat: e.nativeEvent.coordinate.latitude,
-                        lng: e.nativeEvent.coordinate.longitude,
+                        lat: latitude,
+                        lng: longitude,
                       });
                     }}
-                  />
+                    anchor={{ x: 0.5, y: 0.5 }}
+                  >
+                    <View style={styles.selectedLocationMarker}>
+                      <Ionicons name="location" size={24} color={colors.pink500} />
+                    </View>
+                  </PointAnnotation>
                 )}
               </MapView>
 
@@ -1185,6 +1196,16 @@ const styles = StyleSheet.create({
   },
   map: {
     flex: 1,
+  },
+  selectedLocationMarker: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.pink50,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 3,
+    borderColor: colors.pink500,
   },
   mapFooter: {
     backgroundColor: colors.backgroundSecondary,

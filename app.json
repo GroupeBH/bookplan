@@ -33,8 +33,8 @@
         "VIBRATE"
       ],
       "config": {
-        "googleMaps": {
-          "apiKey": "YOUR_GOOGLE_MAPS_API_KEY_HERE"
+        "mapbox": {
+          "accessToken": "pk.eyJ1IjoiZ2Joc2FybCIsImEiOiJjbWlvbWdvOTUwM2lqM2VxbzhlMnk3YmRnIn0.nroScN5w8bLu6OXHZgO_kw"
         }
       }
     },
