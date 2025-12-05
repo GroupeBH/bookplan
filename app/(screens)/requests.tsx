@@ -1,18 +1,17 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { colors } from '../../constants/colors';
-import { Button } from '../../components/ui/Button';
-import { Badge } from '../../components/ui/Badge';
+import { useRouter } from 'expo-router';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
-import { useBooking } from '../../context/BookingContext';
+import { Badge } from '../../components/ui/Badge';
+import { Button } from '../../components/ui/Button';
+import { colors } from '../../constants/colors';
 import { useAccessRequest } from '../../context/AccessRequestContext';
 import { useAuth } from '../../context/AuthContext';
+import { useBooking } from '../../context/BookingContext';
 import { useUser } from '../../context/UserContext';
 import { supabase } from '../../lib/supabase';
-import { Booking, InfoAccessRequest } from '../../types';
 
 type RequestTab = 'bookings' | 'access';
 
@@ -26,6 +25,8 @@ export default function RequestsScreen() {
   const [statusFilter, setStatusFilter] = useState<'pending' | 'accepted' | 'all'>('all');
   const [isLoading, setIsLoading] = useState(false);
   const [enrichedAccessRequests, setEnrichedAccessRequests] = useState<any[]>([]);
+  const isEnrichingRef = useRef(false);
+  const lastEnrichKeyRef = useRef<string>('');
 
   useEffect(() => {
     refreshBookings();
@@ -33,16 +34,28 @@ export default function RequestsScreen() {
   }, []);
 
   // Filtrer les bookings où l'utilisateur est le provider (demandes reçues)
-  const allReceivedBookings = bookings.filter(b => b.providerId === user?.id);
-  const receivedBookings = statusFilter === 'all' 
-    ? allReceivedBookings 
-    : allReceivedBookings.filter(b => b.status === statusFilter);
+  const allReceivedBookings = useMemo(() => 
+    bookings.filter(b => b.providerId === user?.id),
+    [bookings, user?.id]
+  );
+  const receivedBookings = useMemo(() => 
+    statusFilter === 'all' 
+      ? allReceivedBookings 
+      : allReceivedBookings.filter(b => b.status === statusFilter),
+    [allReceivedBookings, statusFilter]
+  );
 
   // Filtrer les demandes d'accès reçues
-  const allReceivedAccessRequests = accessRequests.filter(r => r.targetId === user?.id);
-  const receivedAccessRequests = statusFilter === 'all'
-    ? allReceivedAccessRequests
-    : allReceivedAccessRequests.filter(r => r.status === statusFilter);
+  const allReceivedAccessRequests = useMemo(() => 
+    accessRequests.filter(r => r.targetId === user?.id),
+    [accessRequests, user?.id]
+  );
+  const receivedAccessRequests = useMemo(() =>
+    statusFilter === 'all'
+      ? allReceivedAccessRequests
+      : allReceivedAccessRequests.filter(r => r.status === statusFilter),
+    [allReceivedAccessRequests, statusFilter]
+  );
 
   // Enrichir les demandes d'accès avec les profils des requester
   useEffect(() => {
@@ -52,63 +65,69 @@ export default function RequestsScreen() {
         return;
       }
 
-      console.log('🔍 Debug requests:', {
-        allReceivedAccessRequests: allReceivedAccessRequests.length,
-        receivedAccessRequests: receivedAccessRequests.length,
-        statusFilter,
-        accessRequestsTotal: accessRequests.length,
-      });
-
-      if (receivedAccessRequests.length === 0) {
-        setEnrichedAccessRequests([]);
+      // Créer une clé unique pour cette requête d'enrichissement
+      const enrichKey = `${receivedAccessRequests.length}-${receivedAccessRequests.map(r => r.id).join(',')}-${statusFilter}`;
+      
+      // Éviter les appels multiples avec la même clé
+      if (isEnrichingRef.current || lastEnrichKeyRef.current === enrichKey) {
         return;
       }
 
-      console.log('🔍 Enriching access requests:', receivedAccessRequests.length, receivedAccessRequests.map(r => ({ id: r.id, status: r.status, requesterId: r.requesterId })));
+      if (receivedAccessRequests.length === 0) {
+        setEnrichedAccessRequests([]);
+        lastEnrichKeyRef.current = enrichKey;
+        return;
+      }
 
-      const enriched = await Promise.all(
-        receivedAccessRequests.map(async (request) => {
-          // Pour les demandes acceptées, toujours charger le requester
-          // Pour les autres, charger seulement si requesterInfoRevealed est true
-          const shouldLoadRequester = request.status === 'accepted' || request.requesterInfoRevealed;
-          
-          if (shouldLoadRequester && request.requesterId && !request.requester) {
-            try {
-              const { data: requesterProfile } = await supabase
-                .from('profiles')
-                .select('*')
-                .eq('id', request.requesterId)
-                .single();
+      isEnrichingRef.current = true;
+      lastEnrichKeyRef.current = enrichKey;
 
-              if (requesterProfile) {
-                return {
-                  ...request,
-                  requester: {
-                    id: requesterProfile.id,
-                    pseudo: requesterProfile.pseudo || 'Utilisateur',
-                    age: requesterProfile.age || 25,
-                    photo: requesterProfile.photo || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400',
-                    description: requesterProfile.description || '',
-                    rating: parseFloat(requesterProfile.rating) || 0,
-                    reviewCount: requesterProfile.review_count || 0,
-                    gender: requesterProfile.gender || 'female',
-                  },
-                };
+      try {
+        const enriched = await Promise.all(
+          receivedAccessRequests.map(async (request) => {
+            // Pour les demandes acceptées, toujours charger le requester
+            // Pour les autres, charger seulement si requesterInfoRevealed est true
+            const shouldLoadRequester = request.status === 'accepted' || request.requesterInfoRevealed;
+            
+            if (shouldLoadRequester && request.requesterId && !request.requester) {
+              try {
+                const { data: requesterProfile } = await supabase
+                  .from('profiles')
+                  .select('*')
+                  .eq('id', request.requesterId)
+                  .single();
+
+                if (requesterProfile) {
+                  return {
+                    ...request,
+                    requester: {
+                      id: requesterProfile.id,
+                      pseudo: requesterProfile.pseudo || 'Utilisateur',
+                      age: requesterProfile.age || 25,
+                      photo: requesterProfile.photo || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400',
+                      description: requesterProfile.description || '',
+                      rating: parseFloat(requesterProfile.rating) || 0,
+                      reviewCount: requesterProfile.review_count || 0,
+                      gender: requesterProfile.gender || 'female',
+                    },
+                  };
+                }
+              } catch (error) {
+                console.error('Error fetching requester profile:', error);
               }
-            } catch (error) {
-              console.error('Error fetching requester profile:', error);
             }
-          }
-          return request;
-        })
-      );
+            return request;
+          })
+        );
 
-      console.log('✅ Enriched access requests:', enriched.length, enriched.map(r => ({ id: r.id, status: r.status, hasRequester: !!r.requester })));
-      setEnrichedAccessRequests(enriched);
+        setEnrichedAccessRequests(enriched);
+      } finally {
+        isEnrichingRef.current = false;
+      }
     };
 
     enrichRequests();
-  }, [receivedAccessRequests, user?.id, statusFilter, allReceivedAccessRequests.length, accessRequests.length]);
+  }, [receivedAccessRequests, user?.id, statusFilter]);
 
   const handleAcceptBooking = async (bookingId: string) => {
     setIsLoading(true);

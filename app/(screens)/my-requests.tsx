@@ -1,18 +1,19 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors } from '../../constants/colors';
+import { useFocusEffect } from '@react-navigation/native';
+import { useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import Animated, { FadeIn } from 'react-native-reanimated';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { ImageWithFallback } from '../../components/ImageWithFallback';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
-import { ImageWithFallback } from '../../components/ImageWithFallback';
+import { colors } from '../../constants/colors';
 import { useAccessRequest } from '../../context/AccessRequestContext';
-import { useBooking } from '../../context/BookingContext';
 import { useAuth } from '../../context/AuthContext';
+import { useBooking } from '../../context/BookingContext';
+import { getProfileImage } from '../../lib/defaultImages';
 import { supabase } from '../../lib/supabase';
-import Animated, { FadeIn } from 'react-native-reanimated';
 
 type RequestType = 'access' | 'booking';
 
@@ -35,76 +36,137 @@ export default function MyRequestsScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState<'all' | 'pending' | 'accepted' | 'rejected'>('all');
+  const isLoadingRef = useRef(false);
+  const lastLoadKeyRef = useRef<string>('');
 
-  const loadRequests = useCallback(async () => {
-    if (!currentUser?.id) return;
+  // Mémoriser les demandes filtrées pour éviter les recalculs
+  const sentAccessRequests = useMemo(() => 
+    accessRequests.filter(r => r.requesterId === currentUser?.id),
+    [accessRequests, currentUser?.id]
+  );
 
+  const sentBookings = useMemo(() => 
+    bookings.filter(b => b.requesterId === currentUser?.id),
+    [bookings, currentUser?.id]
+  );
+
+  const loadRequests = useCallback(async (force: boolean = false) => {
+    if (!currentUser?.id) {
+      setIsLoading(false);
+      return;
+    }
+
+    // Créer une clé unique pour cette requête (sans le filtre car le filtre est appliqué après)
+    const accessRequestIds = sentAccessRequests.map(r => r.id).sort().join(',');
+    const bookingIds = sentBookings.map(b => b.id).sort().join(',');
+    const loadKey = `${currentUser.id}-${accessRequestIds}-${bookingIds}`;
+    
+    console.log('🔄 loadRequests appelé:', { force, loadKey, lastKey: lastLoadKeyRef.current, isLoading: isLoadingRef.current });
+    
+    // Éviter les appels multiples (sauf si forcé)
+    if (!force && (isLoadingRef.current || lastLoadKeyRef.current === loadKey)) {
+      console.log('⏭️ loadRequests ignoré (déjà en cours ou même clé)');
+      return;
+    }
+
+    isLoadingRef.current = true;
+    lastLoadKeyRef.current = loadKey;
     setIsLoading(true);
+    
+    console.log('✅ loadRequests démarre:', { 
+      accessRequestsCount: sentAccessRequests.length, 
+      bookingsCount: sentBookings.length 
+    });
+
     try {
       const allRequests: RequestItem[] = [];
 
       // Charger les demandes d'accès envoyées
-      const sentAccessRequests = accessRequests.filter(
-        r => r.requesterId === currentUser.id
-      );
-
       for (const accessRequest of sentAccessRequests) {
-        // Charger le profil du target
-        const { data: targetProfile } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', accessRequest.targetId)
-          .single();
+        try {
+          // Charger le profil du target avec timeout amélioré
+          const profileQuery = supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', accessRequest.targetId)
+            .single();
 
-        if (targetProfile) {
-          allRequests.push({
-            id: accessRequest.id,
-            type: 'access',
-            status: accessRequest.status,
-            targetUser: {
-              id: targetProfile.id,
-              pseudo: targetProfile.pseudo || 'Utilisateur',
-              photo: targetProfile.photo || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400',
-              age: targetProfile.age || 25,
-            },
-            createdAt: accessRequest.createdAt,
-            updatedAt: accessRequest.updatedAt,
-          });
+          // Utiliser Promise.race avec timeout
+          const timeoutPromise = new Promise<{ data: null; error: { message: string } }>((resolve) =>
+            setTimeout(() => resolve({ data: null, error: { message: 'Timeout' } }), 10000)
+          );
+
+          const result = await Promise.race([profileQuery, timeoutPromise]) as any;
+          const { data: targetProfile, error: profileError } = result;
+
+          if (!profileError && targetProfile) {
+            allRequests.push({
+              id: accessRequest.id,
+              type: 'access',
+              status: accessRequest.status,
+              targetUser: {
+                id: targetProfile.id,
+                pseudo: targetProfile.pseudo || 'Utilisateur',
+                photo: getProfileImage(targetProfile.photo, targetProfile.gender),
+                age: targetProfile.age || 25,
+              },
+              createdAt: accessRequest.createdAt,
+              updatedAt: accessRequest.updatedAt,
+            });
+          } else if (profileError?.message === 'Timeout') {
+            console.warn('⚠️ Timeout lors du chargement du profil target:', accessRequest.targetId);
+            // Continuer sans cette demande
+          }
+        } catch (err) {
+          console.error('Error loading target profile:', err);
+          // Continuer avec les autres demandes même si une échoue
         }
       }
 
       // Charger les demandes de compagnie envoyées
-      const sentBookings = bookings.filter(
-        b => b.requesterId === currentUser.id
-      );
-
       for (const booking of sentBookings) {
-        // Charger le profil du provider
-        const { data: providerProfile } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', booking.providerId)
-          .single();
+        try {
+          // Charger le profil du provider avec timeout amélioré
+          const profileQuery = supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', booking.providerId)
+            .single();
 
-        if (providerProfile) {
-          allRequests.push({
-            id: booking.id,
-            type: 'booking',
-            status: booking.status,
-            targetUser: {
-              id: providerProfile.id,
-              pseudo: providerProfile.pseudo || 'Utilisateur',
-              photo: providerProfile.photo || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400',
-              age: providerProfile.age || 25,
-            },
-            createdAt: booking.createdAt,
-            updatedAt: booking.updatedAt,
-            data: {
-              bookingDate: booking.bookingDate,
-              durationHours: booking.durationHours,
-              location: booking.location,
-            },
-          });
+          // Utiliser Promise.race avec timeout
+          const timeoutPromise = new Promise<{ data: null; error: { message: string } }>((resolve) =>
+            setTimeout(() => resolve({ data: null, error: { message: 'Timeout' } }), 10000)
+          );
+
+          const result = await Promise.race([profileQuery, timeoutPromise]) as any;
+          const { data: providerProfile, error: profileError } = result;
+
+          if (!profileError && providerProfile) {
+            allRequests.push({
+              id: booking.id,
+              type: 'booking',
+              status: booking.status,
+              targetUser: {
+                id: providerProfile.id,
+                pseudo: providerProfile.pseudo || 'Utilisateur',
+                photo: getProfileImage(providerProfile.photo, providerProfile.gender),
+                age: providerProfile.age || 25,
+              },
+              createdAt: booking.createdAt,
+              updatedAt: booking.updatedAt,
+              data: {
+                bookingDate: booking.bookingDate,
+                durationHours: booking.durationHours,
+                location: booking.location,
+              },
+            });
+          } else if (profileError?.message === 'Timeout') {
+            console.warn('⚠️ Timeout lors du chargement du profil provider:', booking.providerId);
+            // Continuer sans cette demande
+          }
+        } catch (err) {
+          console.error('Error loading provider profile:', err);
+          // Continuer avec les autres demandes même si une échoue
         }
       }
 
@@ -113,41 +175,100 @@ export default function MyRequestsScreen() {
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       );
 
+      console.log('✅ loadRequests terminé:', { requestsCount: allRequests.length });
       setRequests(allRequests);
     } catch (error) {
       console.error('Error loading requests:', error);
+      setRequests([]); // Afficher une liste vide plutôt que de rester en chargement
     } finally {
+      isLoadingRef.current = false;
       setIsLoading(false);
     }
-  }, [currentUser?.id, accessRequests, bookings]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentUser?.id, sentAccessRequests, sentBookings]);
 
+  // Charger les demandes au montage initial et quand les données changent
   useEffect(() => {
-    if (currentUser?.id) {
-      loadRequests();
+    if (!currentUser?.id) {
+      setIsLoading(false);
+      setRequests([]);
+      return;
     }
-  }, [currentUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Vérifier si les IDs ont changé
+    const accessRequestIds = sentAccessRequests.map(r => r.id).sort().join(',');
+    const bookingIds = sentBookings.map(b => b.id).sort().join(',');
+    const newKey = `${currentUser.id}-${accessRequestIds}-${bookingIds}`;
+    
+    // Si la clé est vide, c'est le premier chargement - forcer
+    const isFirstLoad = lastLoadKeyRef.current === '';
+    
+    console.log('🔍 useEffect check:', { 
+      isFirstLoad, 
+      newKey, 
+      lastKey: lastLoadKeyRef.current, 
+      isLoading: isLoadingRef.current,
+      hasAccessRequests: sentAccessRequests.length > 0,
+      hasBookings: sentBookings.length > 0
+    });
+    
+    // Éviter les appels multiples (sauf si c'est le premier chargement)
+    if (!isFirstLoad && (isLoadingRef.current || lastLoadKeyRef.current === newKey)) {
+      console.log('⏭️ useEffect ignoré');
+      return;
+    }
+
+    const hasRequests = sentAccessRequests.length > 0 || sentBookings.length > 0;
+    if (hasRequests) {
+      // Forcer le premier chargement
+      console.log('🚀 Démarrage du chargement des demandes');
+      loadRequests(isFirstLoad);
+    } else {
+      console.log('📭 Aucune demande, mise à jour de l\'état');
+      setIsLoading(false);
+      setRequests([]);
+      // Mettre à jour la clé même si pas de demandes pour éviter les rechargements
+      if (lastLoadKeyRef.current !== newKey) {
+        lastLoadKeyRef.current = newKey;
+      }
+    }
+  }, [currentUser?.id, sentAccessRequests, sentBookings]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useFocusEffect(
     useCallback(() => {
-      if (currentUser?.id) {
-        refreshRequests();
-        refreshBookings();
-        // Recharger les demandes après un court délai pour éviter les re-renders
-        const timer = setTimeout(() => {
-          loadRequests();
-        }, 300);
-        return () => clearTimeout(timer);
-      }
-    }, [currentUser?.id, refreshRequests, refreshBookings]) // eslint-disable-line react-hooks/exhaustive-deps
+      if (!currentUser?.id || isLoadingRef.current) return;
+      
+      // Rafraîchir les données seulement une fois au focus
+      refreshRequests();
+      refreshBookings();
+      
+      // Recharger après un délai seulement si on a des données
+      const timer = setTimeout(() => {
+        if (!isLoadingRef.current) {
+          lastLoadKeyRef.current = ''; // Réinitialiser pour forcer le rechargement
+          loadRequests(false);
+        }
+      }, 800);
+      return () => clearTimeout(timer);
+    }, [currentUser?.id]) // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   const onRefresh = useCallback(async () => {
+    if (isLoadingRef.current) return; // Éviter les refresh multiples
+    
     setRefreshing(true);
+    // Réinitialiser la clé de chargement pour forcer le rechargement
+    lastLoadKeyRef.current = '';
+    isLoadingRef.current = false;
+    
     await refreshRequests();
     await refreshBookings();
-    await loadRequests();
-    setRefreshing(false);
-  }, [refreshRequests, refreshBookings, loadRequests]);
+    
+    // Attendre un peu pour que les données soient mises à jour
+    setTimeout(() => {
+      loadRequests(true);
+      setRefreshing(false);
+    }, 500);
+  }, [refreshRequests, refreshBookings]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const filteredRequests = requests.filter(req => {
     if (filter === 'all') return true;
@@ -205,7 +326,7 @@ export default function MyRequestsScreen() {
         case 'cancelled':
           return colors.red500;
         case 'completed':
-          return colors.blue500;
+          return colors.green500;
         default:
           return colors.textSecondary;
       }

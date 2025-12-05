@@ -1,25 +1,26 @@
-import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors } from '../../constants/colors';
-import { Button } from '../../components/ui/Button';
-import { Badge } from '../../components/ui/Badge';
+import { useFocusEffect } from '@react-navigation/native';
+import * as ImagePicker from 'expo-image-picker';
+import { useRouter } from 'expo-router';
+import React, { useCallback, useState } from 'react';
+import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import Animated, { FadeIn } from 'react-native-reanimated';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
-import { useUser } from '../../context/UserContext';
+import { Badge } from '../../components/ui/Badge';
+import { Button } from '../../components/ui/Button';
+import { colors } from '../../constants/colors';
+import { useAlbum } from '../../context/AlbumContext';
 import { useAuth } from '../../context/AuthContext';
 import { useRating } from '../../context/RatingContext';
-import { useAlbum } from '../../context/AlbumContext';
+import { useUser } from '../../context/UserContext';
+import { getProfileImage } from '../../lib/defaultImages';
 import { supabase } from '../../lib/supabase';
-import * as ImagePicker from 'expo-image-picker';
-import Animated, { FadeIn } from 'react-native-reanimated';
 
 export default function ProfileScreen() {
   const router = useRouter();
   const { currentUser } = useUser();
-  const { logout, isAuthenticated, user: authUser } = useAuth();
+  const { logout, isAuthenticated, user: authUser, updateUserProfile } = useAuth();
   const { getUserRatings, getUserAverageRating } = useRating();
   const { albumPhotos, getUserAlbumPhotos, addAlbumPhoto, deleteAlbumPhoto, isLoading: isLoadingAlbum } = useAlbum();
   const [userRatings, setUserRatings] = useState<any[]>([]);
@@ -212,6 +213,36 @@ export default function ProfileScreen() {
     );
   };
 
+  const handleEditProfilePhoto = async () => {
+    if (!authUser?.id) return;
+
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission requise', 'Nous avons besoin de l\'accès à vos photos');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+
+    if (!result.canceled && result.assets[0]) {
+      const photoUrl = result.assets[0].uri;
+      
+      // Mettre à jour la photo de profil via updateUserProfile
+      try {
+        await updateUserProfile({ photo: photoUrl });
+        Alert.alert('Succès', 'Photo de profil mise à jour');
+      } catch (err: any) {
+        console.error('Error updating profile photo:', err);
+        Alert.alert('Erreur', err.message || 'Une erreur est survenue lors de la mise à jour de la photo');
+      }
+    }
+  };
+
   // Ne pas rendre si pas d'utilisateur (évite les erreurs)
   if (!isAuthenticated || !currentUser) {
     return null;
@@ -245,10 +276,10 @@ export default function ProfileScreen() {
         <View style={styles.profileHeader}>
           <View style={styles.avatarContainer}>
             <ImageWithFallback
-              source={{ uri: currentUser.photo }}
+              source={{ uri: getProfileImage(currentUser.photo, currentUser.gender) }}
               style={styles.avatar}
             />
-            <TouchableOpacity style={styles.editButton}>
+            <TouchableOpacity style={styles.editButton} onPress={handleEditProfilePhoto}>
               <Ionicons name="pencil" size={20} color="#ffffff" />
             </TouchableOpacity>
           </View>

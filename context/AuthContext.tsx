@@ -3,6 +3,7 @@ import React, { createContext, ReactNode, useContext, useEffect, useState } from
 import { Alert } from 'react-native';
 import { isNetworkError } from '../lib/errorUtils';
 import { supabase } from '../lib/supabase';
+import { getDefaultProfileImage } from '../lib/defaultImages';
 import { User } from '../types';
 
 interface AuthContextType {
@@ -143,7 +144,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           pseudo: data.pseudo || 'Utilisateur',
           age: data.age || 25,
           phone: data.phone || '',
-          photo: data.photo || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400',
+          photo: data.photo || getDefaultProfileImage(data.gender),
           description: data.description !== null && data.description !== undefined ? data.description : '',
           specialty: data.specialty || undefined,
           rating: parseFloat(data.rating) || 0,
@@ -601,7 +602,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         p_phone: formattedPhone,
         p_pseudo: pseudo || authUser.user_metadata?.pseudo || 'Utilisateur',
         p_age: 25,
-        p_photo: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400',
+        p_photo: null, // Pas de photo par défaut - utilisera l'image par défaut selon le genre
         p_description: '',
         p_rating: 0,
         p_review_count: 0,
@@ -1290,7 +1291,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         p_phone: userData.phone !== undefined ? userData.phone : (user?.phone || ''),
         p_pseudo: userData.pseudo !== undefined ? userData.pseudo : (user?.pseudo || 'Utilisateur'),
         p_age: userData.age !== undefined ? userData.age : (user?.age || 25),
-        p_photo: userData.photo !== undefined ? userData.photo : (user?.photo || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400'),
+        p_photo: userData.photo !== undefined ? userData.photo : (user?.photo || getDefaultProfileImage(user?.gender)),
         p_description: userData.description !== undefined ? userData.description : (user?.description || ''),
         p_rating: userData.rating !== undefined ? userData.rating : (user?.rating || 0),
         p_review_count: userData.reviewCount !== undefined ? userData.reviewCount : (user?.reviewCount || 0),

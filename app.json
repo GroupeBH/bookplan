@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "kutana",
-    "slug": "bookplan",
+    "slug": "kutana",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -73,9 +73,9 @@
       "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV0bWZwa29naHN2a3J2Ynhhemx0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjMzNzQxMTgsImV4cCI6MjA3ODk1MDExOH0.DSloLRedesuW-upMu8eMxzO3eHA3eONCy2B_QkH7qDY",
       "router": {},
       "eas": {
-        "projectId": "4f1f2d3b-815d-48ff-9d5a-0e61d16ae278"
+        "projectId": "df84af22-016e-434a-b1c0-3bd9ea1bc992"
       }
     },
-    "owner": "joscript01"
+
   }
 }
