@@ -24,8 +24,11 @@
       }
     },
     "production": {
+      "distribution": "store",
+      "autoIncrement": true,
       "android": {
-        "buildType": "app-bundle"
+        "buildType": "app-bundle",
+        "image": "latest"
       },
       "ios": {
         "buildType" : "archive"
