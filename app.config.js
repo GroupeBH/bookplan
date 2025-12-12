@@ -12,7 +12,10 @@ export default {
       supportsTablet: true,
       infoPlist: {
         NSLocationWhenInUseUsageDescription: "Cette application a besoin de votre localisation pour afficher les utilisateurs à proximité et mettre à jour votre position sur la carte.",
-        NSLocationAlwaysUsageDescription: "Cette application a besoin de votre localisation pour afficher les utilisateurs à proximité et mettre à jour votre position sur la carte."
+        NSLocationAlwaysUsageDescription: "Cette application a besoin de votre localisation pour afficher les utilisateurs à proximité et mettre à jour votre position sur la carte.",
+        NSLocationAlwaysAndWhenInUseUsageDescription: "Cette application utilise votre localisation même en arrière-plan pour améliorer l'expérience sur la carte.",
+        NSUserTrackingUsageDescription: "Cette application utilise un identifiant pour offrir une meilleure expérience.",
+        UIBackgroundModes: ["location"]
       },
       bundleIdentifier: "com.kutana.app"
     },

@@ -9,19 +9,26 @@
       "android": {
         "buildType": "app-bundle"
       },
-      // "ios": {
-      //   "simulator": true
-      // }
+      "ios": {
+        "buildType" : "development",
+        "simulator": false
+      }
     },
     "preview": {
       "distribution": "internal",
       "android": {
         "buildType": "app-bundle"
+      },
+      "ios": {
+        "buildType" : "archive"
       }
     },
     "production": {
       "android": {
         "buildType": "app-bundle"
+      },
+      "ios": {
+        "buildType" : "archive"
       }
     }
   },
