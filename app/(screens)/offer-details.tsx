@@ -11,6 +11,7 @@ import { Badge } from '../../components/ui/Badge';
 import { useOffer } from '../../context/OfferContext';
 import { useAuth } from '../../context/AuthContext';
 import { Offer, OfferApplication, OfferType } from '../../types';
+import { supabase } from '../../lib/supabase';
 import Animated, { FadeIn } from 'react-native-reanimated';
 
 const OFFER_TYPE_LABELS: Record<OfferType, string> = {
@@ -31,7 +32,7 @@ export default function OfferDetailsScreen() {
   const router = useRouter();
   const { offerId } = useLocalSearchParams<{ offerId: string }>();
   const { user } = useAuth();
-  const { getOfferById, applyToOffer, getOfferApplications } = useOffer();
+  const { getOfferById, applyToOffer, getOfferApplications, cancelMyApplication, selectApplication, rejectApplication, cancelOffer, deleteOffer, reactivateOffer, refreshMyOffers } = useOffer();
   const [offer, setOffer] = useState<Offer | null>(null);
   const [applications, setApplications] = useState<OfferApplication[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -39,6 +40,12 @@ export default function OfferDetailsScreen() {
   const [showApplicationModal, setShowApplicationModal] = useState(false);
   const [applicationMessage, setApplicationMessage] = useState('');
   const [hasApplied, setHasApplied] = useState(false);
+  const [myApplication, setMyApplication] = useState<OfferApplication | null>(null);
+  const [showApplicationsModal, setShowApplicationsModal] = useState(false);
+  const [selectedApplication, setSelectedApplication] = useState<OfferApplication | null>(null);
+  const [showRejectModal, setShowRejectModal] = useState(false);
+  const [rejectionMessage, setRejectionMessage] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
 
   useEffect(() => {
     loadOffer();
@@ -51,6 +58,27 @@ export default function OfferDetailsScreen() {
     try {
       const loadedOffer = await getOfferById(offerId);
       if (loadedOffer) {
+        // Vérifier si l'offre est expirée et mettre à jour le statut si nécessaire
+        const expiresAt = new Date(loadedOffer.expiresAt);
+        const now = new Date();
+        const isExpired = expiresAt <= now && (loadedOffer.status === 'active' || loadedOffer.status === 'closed');
+        
+        if (isExpired && loadedOffer.status !== 'expired') {
+          // Mettre à jour le statut dans la base de données
+          try {
+            const { error: updateError } = await supabase
+              .from('offers')
+              .update({ status: 'expired', updated_at: new Date().toISOString() })
+              .eq('id', offerId);
+            
+            if (!updateError) {
+              loadedOffer.status = 'expired';
+            }
+          } catch (updateError) {
+            console.error('Error updating expired offer status:', updateError);
+          }
+        }
+        
         setOffer(loadedOffer);
         
         // Vérifier si l'utilisateur a déjà candidaté
@@ -60,6 +88,9 @@ export default function OfferDetailsScreen() {
         const userApplication = loadedApplications.find(
           (app) => app.applicantId === user?.id
         );
+        setMyApplication(userApplication || null);
+        // L'utilisateur a candidaté si la candidature existe et n'est pas annulée
+        // (les candidatures annulées sont supprimées, donc si elle existe, elle n'est pas annulée)
         setHasApplied(!!userApplication);
       }
     } catch (error) {
@@ -122,6 +153,184 @@ export default function OfferDetailsScreen() {
     }
   };
 
+  const getApplicationStatusBadge = (status: string) => {
+    switch (status) {
+      case 'pending':
+        return <Badge variant="warning">En attente</Badge>;
+      case 'selected':
+        return <Badge variant="success">Sélectionnée</Badge>;
+      case 'rejected':
+        return <Badge variant="error">Refusée</Badge>;
+      case 'expired':
+        return <Badge variant="default">Expirée</Badge>;
+      default:
+        return <Badge variant="default">{status}</Badge>;
+    }
+  };
+
+  const handleViewApplications = async () => {
+    if (!offerId) return;
+    const apps = await getOfferApplications(offerId);
+    setApplications(apps);
+    setShowApplicationsModal(true);
+  };
+
+  const handleSelectApplication = async (applicationId: string) => {
+    if (!offerId) return;
+
+    Alert.alert(
+      'Sélectionner ce candidat',
+      'Êtes-vous sûr de vouloir sélectionner ce candidat ? Les autres candidatures seront automatiquement refusées.',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Sélectionner',
+          onPress: async () => {
+            setIsProcessing(true);
+            try {
+              const { error } = await selectApplication(offerId, applicationId);
+              if (error) {
+                Alert.alert('Erreur', error.message || 'Impossible de sélectionner ce candidat');
+              } else {
+                Alert.alert('Succès', 'Candidat sélectionné avec succès');
+                await loadOffer();
+                setShowApplicationsModal(false);
+              }
+            } catch (error) {
+              Alert.alert('Erreur', 'Une erreur est survenue');
+            } finally {
+              setIsProcessing(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleRejectApplication = async () => {
+    if (!selectedApplication || !rejectionMessage.trim()) {
+      Alert.alert('Erreur', 'Veuillez écrire un message de refus');
+      return;
+    }
+
+    setIsProcessing(true);
+    try {
+      const { error } = await rejectApplication(selectedApplication.id, rejectionMessage.trim());
+      if (error) {
+        Alert.alert('Erreur', error.message || 'Impossible de rejeter cette candidature');
+      } else {
+        Alert.alert('Succès', 'Candidature rejetée');
+        setShowRejectModal(false);
+        setRejectionMessage('');
+        setSelectedApplication(null);
+        await loadOffer();
+        if (showApplicationsModal) {
+          const apps = await getOfferApplications(offerId!);
+          setApplications(apps);
+        }
+      }
+    } catch (error) {
+      Alert.alert('Erreur', 'Une erreur est survenue');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleDeleteOffer = async () => {
+    if (!offerId) return;
+
+    Alert.alert(
+      'Supprimer l\'offre',
+      'Êtes-vous sûr de vouloir supprimer définitivement cette offre ? Cette action est irréversible et supprimera également toutes les candidatures associées.',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Supprimer',
+          style: 'destructive',
+          onPress: async () => {
+            setIsProcessing(true);
+            try {
+              const { error } = await deleteOffer(offerId);
+              if (error) {
+                Alert.alert('Erreur', error.message || 'Impossible de supprimer l\'offre');
+              } else {
+                Alert.alert('Succès', 'Offre supprimée définitivement');
+                router.back();
+              }
+            } catch (error) {
+              Alert.alert('Erreur', 'Une erreur est survenue');
+            } finally {
+              setIsProcessing(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleCancelOffer = async () => {
+    if (!offerId) return;
+
+    Alert.alert(
+      'Annuler l\'offre',
+      'Êtes-vous sûr de vouloir annuler cette offre ? Les candidats en attente seront notifiés.',
+      [
+        { text: 'Non', style: 'cancel' },
+        {
+          text: 'Oui, annuler',
+          style: 'destructive',
+          onPress: async () => {
+            setIsProcessing(true);
+            try {
+              const { error } = await cancelOffer(offerId, 'L\'offre a été annulée par l\'auteur.');
+              if (error) {
+                Alert.alert('Erreur', error.message || 'Impossible d\'annuler l\'offre');
+              } else {
+                Alert.alert('Succès', 'Offre annulée');
+                await loadOffer();
+              }
+            } catch (error) {
+              Alert.alert('Erreur', 'Une erreur est survenue');
+            } finally {
+              setIsProcessing(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleReactivateOffer = async () => {
+    if (!offerId) return;
+
+    Alert.alert(
+      'Réactiver l\'offre',
+      'Êtes-vous sûr de vouloir réactiver cette offre ?',
+      [
+        { text: 'Non', style: 'cancel' },
+        {
+          text: 'Oui, réactiver',
+          onPress: async () => {
+            setIsProcessing(true);
+            try {
+              const { error } = await reactivateOffer(offerId);
+              if (error) {
+                Alert.alert('Erreur', error.message || 'Impossible de réactiver l\'offre');
+              } else {
+                Alert.alert('Succès', 'Offre réactivée');
+                await loadOffer();
+              }
+            } catch (error) {
+              Alert.alert('Erreur', 'Une erreur est survenue');
+            } finally {
+              setIsProcessing(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   if (isLoading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -159,7 +368,8 @@ export default function OfferDetailsScreen() {
   }
 
   const isAuthor = offer.authorId === user?.id;
-  const canApply = !isAuthor && !hasApplied && offer.status === 'active';
+  const isExpired = offer.status === 'expired';
+  const canApply = !isAuthor && !hasApplied && offer.status === 'active' && !isExpired;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -255,18 +465,18 @@ export default function OfferDetailsScreen() {
             </View>
           )}
 
-          {/* Applications Count */}
-          {isAuthor && applications.length > 0 && (
+          {/* Applications Section */}
+          {isAuthor && (
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>
                 Candidatures ({applications.length})
               </Text>
-              <View style={styles.infoCard}>
-                <Ionicons name="information-circle-outline" size={20} color={colors.pink400} />
-                <Text style={styles.infoText}>
-                  Vous pouvez gérer les candidatures depuis "Mes offres"
-                </Text>
-              </View>
+              <Button
+                title="Voir les candidatures"
+                onPress={handleViewApplications}
+                icon={<Ionicons name="people-outline" size={20} color="#ffffff" />}
+                style={styles.button}
+              />
             </View>
           )}
 
@@ -280,23 +490,307 @@ export default function OfferDetailsScreen() {
             />
           )}
 
-          {hasApplied && (
+          {hasApplied && myApplication && (
             <View style={styles.appliedCard}>
-              <Ionicons name="checkmark-circle" size={24} color={colors.green500} />
-              <Text style={styles.appliedText}>Vous avez déjà candidaté à cette offre</Text>
+              {myApplication.status === 'selected' ? (
+                <>
+                  <Ionicons name="checkmark-circle" size={24} color={colors.green500} />
+                  <Text style={styles.appliedText}>Votre candidature a été acceptée ! 🎉</Text>
+                  <View style={styles.appliedActions}>
+                    <Button
+                      title="Commencer une conversation"
+                      onPress={() => {
+                        if (offer?.authorId) {
+                          router.push(`/(screens)/chat?userId=${offer.authorId}`);
+                        }
+                      }}
+                      icon={<Ionicons name="chatbubbles-outline" size={20} color="#ffffff" />}
+                      style={[styles.button, { marginTop: 12 }]}
+                    />
+                    <Button
+                      title="Annuler ma candidature"
+                      variant="outline"
+                      onPress={async () => {
+                        Alert.alert(
+                          'Annuler votre candidature',
+                          'Êtes-vous sûr de vouloir annuler votre candidature ?',
+                          [
+                            { text: 'Non', style: 'cancel' },
+                            {
+                              text: 'Oui, annuler',
+                              style: 'destructive',
+                              onPress: async () => {
+                                setIsApplying(true);
+                                try {
+                                  const { error } = await cancelMyApplication(myApplication.id);
+                                  if (error) {
+                                    Alert.alert('Erreur', error.message || 'Impossible d\'annuler la candidature');
+                                  } else {
+                                    Alert.alert('Succès', 'Candidature annulée');
+                                    await loadOffer();
+                                  }
+                                } catch (error) {
+                                  Alert.alert('Erreur', 'Une erreur est survenue');
+                                } finally {
+                                  setIsApplying(false);
+                                }
+                              },
+                            },
+                          ]
+                        );
+                      }}
+                      disabled={isApplying}
+                      style={[styles.button, { marginTop: 8, borderColor: colors.red500 }]}
+                      textStyle={{ color: colors.red500 }}
+                    />
+                  </View>
+                </>
+              ) : myApplication.status === 'rejected' ? (
+                <>
+                  <Ionicons name="close-circle" size={24} color={colors.red500} />
+                  <Text style={styles.appliedText}>Votre candidature a été refusée</Text>
+                  {myApplication.rejectionMessage && (
+                    <Text style={[styles.appliedText, { marginTop: 8, fontSize: 14, color: colors.textSecondary }]}>
+                      {myApplication.rejectionMessage}
+                    </Text>
+                  )}
+                </>
+              ) : (
+                <>
+                  <Ionicons name="checkmark-circle" size={24} color={colors.green500} />
+                  <Text style={styles.appliedText}>Vous avez déjà candidaté à cette offre</Text>
+                  {myApplication.status === 'pending' && !isExpired && (
+                    <Button
+                      title="Annuler ma candidature"
+                      variant="outline"
+                      onPress={async () => {
+                        Alert.alert(
+                          'Annuler votre candidature',
+                          'Êtes-vous sûr de vouloir annuler votre candidature ?',
+                          [
+                            { text: 'Non', style: 'cancel' },
+                            {
+                              text: 'Oui, annuler',
+                              style: 'destructive',
+                              onPress: async () => {
+                                setIsApplying(true);
+                                try {
+                                  const { error } = await cancelMyApplication(myApplication.id);
+                                  if (error) {
+                                    Alert.alert('Erreur', error.message || 'Impossible d\'annuler la candidature');
+                                  } else {
+                                    Alert.alert('Succès', 'Candidature annulée');
+                                    await loadOffer();
+                                  }
+                                } catch (error) {
+                                  Alert.alert('Erreur', 'Une erreur est survenue');
+                                } finally {
+                                  setIsApplying(false);
+                                }
+                              },
+                            },
+                          ]
+                        );
+                      }}
+                      disabled={isApplying}
+                      style={[styles.button, { marginTop: 12, borderColor: colors.red500 }]}
+                      textStyle={{ color: colors.red500 }}
+                    />
+                  )}
+                </>
+              )}
             </View>
           )}
 
           {isAuthor && (
-            <View style={styles.infoCard}>
-              <Ionicons name="information-circle-outline" size={20} color={colors.pink400} />
-              <Text style={styles.infoText}>
-                C'est votre offre. Vous pouvez la gérer depuis "Mes offres"
-              </Text>
+            <View style={styles.section}>
+              {offer.status === 'active' && (
+                <>
+                  <Button
+                    title="Modifier l'offre"
+                    onPress={() => {
+                      router.push({
+                        pathname: '/(screens)/create-offer',
+                        params: { offerId: offer.id },
+                      });
+                    }}
+                    variant="outline"
+                    icon={<Ionicons name="pencil-outline" size={20} color={colors.text} />}
+                    style={styles.button}
+                  />
+                  <Button
+                    title="Annuler l'offre"
+                    onPress={handleCancelOffer}
+                    variant="outline"
+                    icon={<Ionicons name="close-circle-outline" size={20} color={colors.orange500} />}
+                    style={[styles.button, { marginTop: 12, borderColor: colors.orange500 }]}
+                    textStyle={{ color: colors.orange500 }}
+                    loading={isProcessing}
+                    disabled={isProcessing}
+                  />
+                </>
+              )}
+              {isExpired && (
+                <Button
+                  title="Supprimer l'offre"
+                  onPress={handleDeleteOffer}
+                  variant="outline"
+                  icon={<Ionicons name="trash-outline" size={20} color={colors.red500} />}
+                  style={[styles.button, { borderColor: colors.red500 }]}
+                  textStyle={{ color: colors.red500 }}
+                  loading={isProcessing}
+                  disabled={isProcessing}
+                />
+              )}
+              {offer.status === 'cancelled' && (
+                <Button
+                  title="Réactiver l'offre"
+                  onPress={handleReactivateOffer}
+                  icon={<Ionicons name="refresh-outline" size={20} color="#ffffff" />}
+                  style={styles.button}
+                  loading={isProcessing}
+                  disabled={isProcessing}
+                />
+              )}
             </View>
           )}
         </Animated.View>
       </ScrollView>
+
+      {/* Applications Modal */}
+      <Modal
+        visible={showApplicationsModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowApplicationsModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                Candidatures ({applications.length})
+              </Text>
+              <TouchableOpacity onPress={() => setShowApplicationsModal(false)}>
+                <Ionicons name="close" size={24} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.applicationsList}>
+              {applications.length === 0 ? (
+                <View style={styles.emptyModalContainer}>
+                  <Ionicons name="people-outline" size={48} color={colors.textTertiary} />
+                  <Text style={styles.emptyModalText}>Aucune candidature</Text>
+                </View>
+              ) : (
+                applications.map((application) => (
+                  <View key={application.id} style={styles.applicationItem}>
+                    <ImageWithFallback
+                      source={{ uri: application.applicant?.photo || '' }}
+                      style={styles.applicantImage}
+                    />
+                    <View style={styles.applicantInfo}>
+                      <Text style={styles.applicantName}>
+                        {application.applicant?.pseudo || 'Utilisateur'}
+                      </Text>
+                      <Text style={styles.applicantMessage} numberOfLines={2}>
+                        {application.message}
+                      </Text>
+                      {getApplicationStatusBadge(application.status)}
+                    </View>
+                    {application.status === 'pending' && !isExpired && (
+                      <View style={styles.applicationActions}>
+                        <TouchableOpacity
+                          style={styles.selectButton}
+                          onPress={() => handleSelectApplication(application.id)}
+                          disabled={isProcessing}
+                        >
+                          <Ionicons name="checkmark" size={18} color="#ffffff" />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.rejectButton}
+                          onPress={() => {
+                            setSelectedApplication(application);
+                            setShowRejectModal(true);
+                          }}
+                          disabled={isProcessing}
+                        >
+                          <Ionicons name="close" size={18} color="#ffffff" />
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                    {application.status === 'selected' && (
+                      <View style={styles.applicationActions}>
+                        <TouchableOpacity
+                          style={[styles.selectButton, { backgroundColor: colors.purple500 }]}
+                          onPress={() => {
+                            if (application.applicant?.id) {
+                              router.push(`/(screens)/chat?userId=${application.applicant.id}`);
+                            }
+                          }}
+                        >
+                          <Ionicons name="chatbubbles" size={18} color="#ffffff" />
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Reject Modal */}
+      <Modal
+        visible={showRejectModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowRejectModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Refuser la candidature</Text>
+              <TouchableOpacity onPress={() => setShowRejectModal(false)}>
+                <Ionicons name="close" size={24} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.modalSubtitle}>
+              Écrivez un message gentil pour expliquer votre refus
+            </Text>
+
+            <Input
+              value={rejectionMessage}
+              onChangeText={setRejectionMessage}
+              placeholder="Message de refus..."
+              multiline
+              numberOfLines={4}
+              containerStyle={styles.modalInput}
+            />
+
+            <View style={styles.modalActions}>
+              <Button
+                title="Annuler"
+                onPress={() => {
+                  setShowRejectModal(false);
+                  setRejectionMessage('');
+                  setSelectedApplication(null);
+                }}
+                variant="outline"
+                style={styles.modalButton}
+              />
+              <Button
+                title="Refuser"
+                onPress={handleRejectApplication}
+                style={styles.modalButton}
+                loading={isProcessing}
+                disabled={isProcessing || !rejectionMessage.trim()}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* Application Modal */}
       <Modal
@@ -573,6 +1067,67 @@ const styles = StyleSheet.create({
   },
   modalButton: {
     flex: 1,
+  },
+  applicationsList: {
+    maxHeight: 400,
+  },
+  emptyModalContainer: {
+    alignItems: 'center',
+    paddingVertical: 32,
+  },
+  emptyModalText: {
+    fontSize: 14,
+    color: colors.textSecondary,
+    marginTop: 12,
+  },
+  applicationItem: {
+    flexDirection: 'row',
+    backgroundColor: colors.backgroundSecondary,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+    gap: 12,
+  },
+  applicantImage: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+  },
+  applicantInfo: {
+    flex: 1,
+  },
+  applicantName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: 4,
+  },
+  applicantMessage: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    marginBottom: 8,
+    lineHeight: 18,
+  },
+  applicationActions: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+  },
+  selectButton: {
+    backgroundColor: colors.green500,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  rejectButton: {
+    backgroundColor: colors.red500,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });
 

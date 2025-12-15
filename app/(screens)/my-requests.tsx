@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
@@ -25,6 +25,7 @@ interface RequestItem {
   createdAt: string;
   updatedAt: string;
   data?: any; // Données spécifiques (booking date, etc.)
+  _targetId?: string; // ID du target stocké explicitement pour éviter les confusions (pour les demandes d'accès)
 }
 
 export default function MyRequestsScreen() {
@@ -32,6 +33,15 @@ export default function MyRequestsScreen() {
   const { user: currentUser } = useAuth();
   const { accessRequests, refreshRequests } = useAccessRequest();
   const { bookings, refreshBookings } = useBooking();
+  
+  // Log pour déboguer
+  console.log('🔍 MyRequestsScreen - État initial:', {
+    currentUserId: currentUser?.id,
+    accessRequestsCount: accessRequests.length,
+    bookingsCount: bookings.length,
+    accessRequests: accessRequests.map(r => ({ id: r.id, requesterId: r.requesterId, targetId: r.targetId })),
+    bookings: bookings.map(b => ({ id: b.id, requesterId: b.requesterId, providerId: b.providerId })),
+  });
   const [requests, setRequests] = useState<RequestItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -40,15 +50,27 @@ export default function MyRequestsScreen() {
   const lastLoadKeyRef = useRef<string>('');
 
   // Mémoriser les demandes filtrées pour éviter les recalculs
-  const sentAccessRequests = useMemo(() => 
-    accessRequests.filter(r => r.requesterId === currentUser?.id),
-    [accessRequests, currentUser?.id]
-  );
+  const sentAccessRequests = useMemo(() => {
+    const filtered = accessRequests.filter(r => r.requesterId === currentUser?.id);
+    console.log('📋 sentAccessRequests:', {
+      total: accessRequests.length,
+      filtered: filtered.length,
+      currentUserId: currentUser?.id,
+      allRequesterIds: accessRequests.map(r => r.requesterId),
+    });
+    return filtered;
+  }, [accessRequests, currentUser?.id]);
 
-  const sentBookings = useMemo(() => 
-    bookings.filter(b => b.requesterId === currentUser?.id),
-    [bookings, currentUser?.id]
-  );
+  const sentBookings = useMemo(() => {
+    const filtered = bookings.filter(b => b.requesterId === currentUser?.id);
+    console.log('📋 sentBookings:', {
+      total: bookings.length,
+      filtered: filtered.length,
+      currentUserId: currentUser?.id,
+      allRequesterIds: bookings.map(b => b.requesterId),
+    });
+    return filtered;
+  }, [bookings, currentUser?.id]);
 
   const loadRequests = useCallback(async (force: boolean = false) => {
     if (!currentUser?.id) {
@@ -78,76 +100,211 @@ export default function MyRequestsScreen() {
       bookingsCount: sentBookings.length 
     });
 
+    // Timeout de sécurité pour éviter un chargement infini
+    let safetyTimeout: NodeJS.Timeout | null = null;
+    
     try {
       const allRequests: RequestItem[] = [];
 
+      // Si aucune demande, terminer immédiatement
+      if (sentAccessRequests.length === 0 && sentBookings.length === 0) {
+        console.log('📭 Aucune demande à charger');
+        setRequests(allRequests); // Liste vide
+        return; // Le finally s'occupera de réinitialiser isLoading
+      }
+
+      // Timeout de sécurité pour éviter un chargement infini
+      safetyTimeout = setTimeout(() => {
+        if (isLoadingRef.current) {
+          console.warn('⚠️ Timeout de sécurité - arrêt du chargement');
+          isLoadingRef.current = false;
+          setIsLoading(false);
+          setRequests([]);
+        }
+      }, 30000); // 30 secondes maximum
+
       // Charger les demandes d'accès envoyées
       for (const accessRequest of sentAccessRequests) {
+        // Stocker le targetId AVANT toute opération asynchrone pour éviter les confusions
+        const currentTargetId = accessRequest.targetId;
+        const currentRequestId = accessRequest.id;
+        
         try {
+          console.log('🔍 [ACCESS] Début chargement profil:', {
+            requestId: currentRequestId,
+            targetId: currentTargetId,
+            requesterId: accessRequest.requesterId,
+            currentUserId: currentUser.id,
+          });
+
           // Charger le profil du target avec timeout amélioré
           const profileQuery = supabase
             .from('profiles')
             .select('*')
-            .eq('id', accessRequest.targetId)
+            .eq('id', currentTargetId) // Utiliser la variable locale pour éviter toute confusion
             .single();
 
-          // Utiliser Promise.race avec timeout
+          // Utiliser Promise.race avec timeout (réduit à 5 secondes)
           const timeoutPromise = new Promise<{ data: null; error: { message: string } }>((resolve) =>
-            setTimeout(() => resolve({ data: null, error: { message: 'Timeout' } }), 10000)
+            setTimeout(() => resolve({ data: null, error: { message: 'Timeout' } }), 5000)
           );
 
           const result = await Promise.race([profileQuery, timeoutPromise]) as any;
           const { data: targetProfile, error: profileError } = result;
-
-          if (!profileError && targetProfile) {
+          
+          // Vérifier immédiatement que le profil correspond
+          if (targetProfile && targetProfile.id !== currentTargetId) {
+            console.error('❌ [ACCESS] ERREUR CRITIQUE: Le profil chargé ne correspond PAS au targetId!', {
+              requestId: currentRequestId,
+              expectedTargetId: currentTargetId,
+              loadedProfileId: targetProfile.id,
+              loadedProfilePseudo: targetProfile.pseudo,
+            });
+            // Ne pas utiliser ce profil, utiliser les infos partielles à la place
             allRequests.push({
-              id: accessRequest.id,
+              id: currentRequestId,
               type: 'access',
               status: accessRequest.status,
               targetUser: {
-                id: targetProfile.id,
+                id: currentTargetId,
+                pseudo: 'Utilisateur',
+                photo: getProfileImage(null, 'female'),
+                age: 25,
+              },
+              createdAt: accessRequest.createdAt,
+              updatedAt: accessRequest.updatedAt,
+              _targetId: currentTargetId,
+            });
+            continue; // Passer à la demande suivante
+          }
+
+          // Vérifier que le profil chargé correspond bien au targetId
+          if (!profileError && targetProfile && targetProfile.id === currentTargetId) {
+            console.log('✅ [ACCESS] Profil chargé correctement:', {
+              requestId: currentRequestId,
+              targetId: currentTargetId,
+              profileId: targetProfile.id,
+              pseudo: targetProfile.pseudo,
+            });
+            
+            allRequests.push({
+              id: currentRequestId,
+              type: 'access',
+              status: accessRequest.status,
+              targetUser: {
+                id: currentTargetId, // Utiliser la variable locale pour garantir la cohérence
                 pseudo: targetProfile.pseudo || 'Utilisateur',
                 photo: getProfileImage(targetProfile.photo, targetProfile.gender),
                 age: targetProfile.age || 25,
               },
               createdAt: accessRequest.createdAt,
               updatedAt: accessRequest.updatedAt,
+              // Stocker aussi le targetId directement pour éviter toute confusion
+              _targetId: currentTargetId,
             });
-          } else if (profileError?.message === 'Timeout') {
-            console.warn('⚠️ Timeout lors du chargement du profil target:', accessRequest.targetId);
-            // Continuer sans cette demande
+          } else {
+            // Même en cas d'erreur ou de timeout, afficher la demande avec des infos partielles
+            console.warn('⚠️ [ACCESS] Impossible de charger le profil target:', {
+              requestId: currentRequestId,
+              targetId: currentTargetId,
+              error: profileError?.message || 'Timeout',
+              profileId: targetProfile?.id,
+              profileMatches: targetProfile?.id === currentTargetId,
+            });
+            allRequests.push({
+              id: currentRequestId,
+              type: 'access',
+              status: accessRequest.status,
+              targetUser: {
+                id: currentTargetId, // Utiliser la variable locale
+                pseudo: 'Utilisateur',
+                photo: getProfileImage(null, 'female'),
+                age: 25,
+              },
+              createdAt: accessRequest.createdAt,
+              updatedAt: accessRequest.updatedAt,
+              // Stocker aussi le targetId directement pour éviter toute confusion
+              _targetId: currentTargetId,
+            });
           }
         } catch (err) {
-          console.error('Error loading target profile:', err);
-          // Continuer avec les autres demandes même si une échoue
+          console.error('❌ [ACCESS] Error loading target profile:', {
+            requestId: currentRequestId,
+            targetId: currentTargetId,
+            error: err,
+          });
+          // Même en cas d'erreur, afficher la demande avec des infos partielles
+          allRequests.push({
+            id: currentRequestId,
+            type: 'access',
+            status: accessRequest.status,
+            targetUser: {
+              id: currentTargetId, // Utiliser la variable locale
+              pseudo: 'Utilisateur',
+              photo: getProfileImage(null, 'female'),
+              age: 25,
+            },
+            createdAt: accessRequest.createdAt,
+            updatedAt: accessRequest.updatedAt,
+            // Stocker aussi le targetId directement pour éviter toute confusion
+            _targetId: currentTargetId,
+          });
         }
       }
 
       // Charger les demandes de compagnie envoyées
       for (const booking of sentBookings) {
+        // Stocker les IDs AVANT toute opération asynchrone
+        const currentBookingId = booking.id;
+        const currentProviderId = booking.providerId;
+        
         try {
+          console.log('🔍 [BOOKING] Début chargement profil:', {
+            bookingId: currentBookingId,
+            providerId: currentProviderId,
+            requesterId: booking.requesterId,
+            currentUserId: currentUser.id,
+          });
+          
           // Charger le profil du provider avec timeout amélioré
           const profileQuery = supabase
             .from('profiles')
             .select('*')
-            .eq('id', booking.providerId)
+            .eq('id', currentProviderId) // Utiliser la variable locale
             .single();
 
-          // Utiliser Promise.race avec timeout
+          // Utiliser Promise.race avec timeout (réduit à 5 secondes)
           const timeoutPromise = new Promise<{ data: null; error: { message: string } }>((resolve) =>
-            setTimeout(() => resolve({ data: null, error: { message: 'Timeout' } }), 10000)
+            setTimeout(() => resolve({ data: null, error: { message: 'Timeout' } }), 5000)
           );
 
           const result = await Promise.race([profileQuery, timeoutPromise]) as any;
           const { data: providerProfile, error: profileError } = result;
 
-          if (!profileError && providerProfile) {
+          // Vérifier que le profil correspond bien
+          if (providerProfile && providerProfile.id !== currentProviderId) {
+            console.error('❌ [BOOKING] ERREUR CRITIQUE: Le profil chargé ne correspond PAS au providerId!', {
+              bookingId: currentBookingId,
+              expectedProviderId: currentProviderId,
+              loadedProfileId: providerProfile.id,
+              loadedProfilePseudo: providerProfile.pseudo,
+            });
+          }
+
+          if (!profileError && providerProfile && providerProfile.id === currentProviderId) {
+            console.log('✅ [BOOKING] Profil chargé correctement:', {
+              bookingId: currentBookingId,
+              providerId: currentProviderId,
+              profileId: providerProfile.id,
+              pseudo: providerProfile.pseudo,
+            });
+            
             allRequests.push({
-              id: booking.id,
+              id: currentBookingId, // Utiliser la variable locale
               type: 'booking',
               status: booking.status,
               targetUser: {
-                id: providerProfile.id,
+                id: currentProviderId, // Utiliser la variable locale pour garantir la cohérence
                 pseudo: providerProfile.pseudo || 'Utilisateur',
                 photo: getProfileImage(providerProfile.photo, providerProfile.gender),
                 age: providerProfile.age || 25,
@@ -160,13 +317,57 @@ export default function MyRequestsScreen() {
                 location: booking.location,
               },
             });
-          } else if (profileError?.message === 'Timeout') {
-            console.warn('⚠️ Timeout lors du chargement du profil provider:', booking.providerId);
-            // Continuer sans cette demande
+          } else {
+            // Même en cas d'erreur ou de timeout, afficher la demande avec des infos partielles
+            console.warn('⚠️ [BOOKING] Impossible de charger le profil provider:', {
+              bookingId: currentBookingId,
+              providerId: currentProviderId,
+              error: profileError?.message || 'Timeout',
+            });
+            allRequests.push({
+              id: currentBookingId, // Utiliser la variable locale
+              type: 'booking',
+              status: booking.status,
+              targetUser: {
+                id: currentProviderId, // Utiliser la variable locale
+                pseudo: 'Utilisateur',
+                photo: getProfileImage(null, 'female'),
+                age: 25,
+              },
+              createdAt: booking.createdAt,
+              updatedAt: booking.updatedAt,
+              data: {
+                bookingDate: booking.bookingDate,
+                durationHours: booking.durationHours,
+                location: booking.location,
+              },
+            });
           }
         } catch (err) {
-          console.error('Error loading provider profile:', err);
-          // Continuer avec les autres demandes même si une échoue
+          console.error('❌ [BOOKING] Error loading provider profile:', {
+            bookingId: currentBookingId,
+            providerId: currentProviderId,
+            error: err,
+          });
+          // Même en cas d'erreur, afficher la demande avec des infos partielles
+          allRequests.push({
+            id: currentBookingId, // Utiliser la variable locale
+            type: 'booking',
+            status: booking.status,
+            targetUser: {
+              id: currentProviderId, // Utiliser la variable locale
+              pseudo: 'Utilisateur',
+              photo: getProfileImage(null, 'female'),
+              age: 25,
+            },
+            createdAt: booking.createdAt,
+            updatedAt: booking.updatedAt,
+            data: {
+              bookingDate: booking.bookingDate,
+              durationHours: booking.durationHours,
+              location: booking.location,
+            },
+          });
         }
       }
 
@@ -175,14 +376,37 @@ export default function MyRequestsScreen() {
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       );
 
-      console.log('✅ loadRequests terminé:', { requestsCount: allRequests.length });
+      // Log détaillé de toutes les demandes avant de les définir
+      console.log('✅ [LOAD] loadRequests terminé - Liste complète des demandes:', {
+        requestsCount: allRequests.length,
+        requests: allRequests.map(r => ({
+          id: r.id,
+          type: r.type,
+          targetUserPseudo: r.targetUser?.pseudo,
+          targetUserId: r.targetUser?.id,
+          _targetId: r._targetId,
+          status: r.status,
+        })),
+      });
+      
+      // Vérifier qu'il n'y a pas de doublons d'IDs
+      const requestIds = allRequests.map(r => r.id);
+      const duplicateIds = requestIds.filter((id, index) => requestIds.indexOf(id) !== index);
+      if (duplicateIds.length > 0) {
+        console.error('❌ [LOAD] ERREUR: IDs dupliqués trouvés!', duplicateIds);
+      }
+      
       setRequests(allRequests);
     } catch (error) {
       console.error('Error loading requests:', error);
       setRequests([]); // Afficher une liste vide plutôt que de rester en chargement
     } finally {
+      if (safetyTimeout) {
+        clearTimeout(safetyTimeout);
+      }
       isLoadingRef.current = false;
       setIsLoading(false);
+      console.log('✅ loadRequests - État de chargement réinitialisé');
     }
   }, [currentUser?.id, sentAccessRequests, sentBookings]);
 
@@ -224,6 +448,8 @@ export default function MyRequestsScreen() {
       loadRequests(isFirstLoad);
     } else {
       console.log('📭 Aucune demande, mise à jour de l\'état');
+      // Réinitialiser les refs pour permettre un nouveau chargement si des demandes arrivent
+      isLoadingRef.current = false;
       setIsLoading(false);
       setRequests([]);
       // Mettre à jour la clé même si pas de demandes pour éviter les rechargements
@@ -233,23 +459,50 @@ export default function MyRequestsScreen() {
     }
   }, [currentUser?.id, sentAccessRequests, sentBookings]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Suivre le temps du dernier focus pour éviter les rafraîchissements trop fréquents
+  const lastFocusTimeRef = useRef<number>(0);
+  
   useFocusEffect(
     useCallback(() => {
       if (!currentUser?.id || isLoadingRef.current) return;
       
-      // Rafraîchir les données seulement une fois au focus
-      refreshRequests();
-      refreshBookings();
+      const now = Date.now();
+      const timeSinceLastFocus = now - lastFocusTimeRef.current;
       
-      // Recharger après un délai seulement si on a des données
-      const timer = setTimeout(() => {
-        if (!isLoadingRef.current) {
-          lastLoadKeyRef.current = ''; // Réinitialiser pour forcer le rechargement
-          loadRequests(false);
-        }
-      }, 800);
-      return () => clearTimeout(timer);
-    }, [currentUser?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+      // Ne rafraîchir que si on revient après plus de 2 secondes (évite les rafraîchissements lors de la navigation rapide)
+      if (timeSinceLastFocus > 2000 || lastFocusTimeRef.current === 0) {
+        console.log('🔄 Rafraîchissement des demandes (focus après', timeSinceLastFocus, 'ms)');
+        lastFocusTimeRef.current = now;
+        
+        // Rafraîchir les données au focus (sans forcer le rechargement complet)
+        refreshRequests().then(() => {
+          console.log('✅ Access requests rafraîchies');
+        });
+        refreshBookings().then(() => {
+          console.log('✅ Bookings rafraîchies');
+        });
+        
+        // Recharger seulement si les données ont changé (pas de forçage systématique)
+        const timer = setTimeout(() => {
+          if (!isLoadingRef.current) {
+            // Vérifier si les données ont changé avant de recharger
+            const newAccessRequestIds = sentAccessRequests.map(r => r.id).sort().join(',');
+            const newBookingIds = sentBookings.map(b => b.id).sort().join(',');
+            const newLoadKey = `${currentUser.id}-${newAccessRequestIds}-${newBookingIds}`;
+            
+            if (newLoadKey !== lastLoadKeyRef.current) {
+              console.log('🔄 Données changées, rechargement nécessaire');
+              loadRequests(false); // Ne pas forcer, laisser la logique normale gérer
+            } else {
+              console.log('⏭️ Données inchangées, pas de rechargement');
+            }
+          }
+        }, 500);
+        return () => clearTimeout(timer);
+      } else {
+        console.log('⏭️ Focus trop récent, pas de rafraîchissement');
+      }
+    }, [currentUser?.id, sentAccessRequests, sentBookings, refreshRequests, refreshBookings, loadRequests]) // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   const onRefresh = useCallback(async () => {
@@ -355,11 +608,69 @@ export default function MyRequestsScreen() {
   };
 
   const handleRequestPress = (request: RequestItem) => {
-    if (request.type === 'booking' && request.status === 'accepted') {
+    console.log('🖱️ [CLICK] handleRequestPress appelé:', {
+      requestId: request.id,
+      type: request.type,
+      targetUserFromRequest: request.targetUser?.id,
+      targetUserPseudo: request.targetUser?.pseudo,
+      _targetId: request._targetId,
+    });
+    
+    if (request.type === 'booking') {
+      // Pour toutes les demandes de compagnie, naviguer vers les détails
+      console.log('📋 [CLICK] Navigation vers booking-details:', request.id);
       router.push(`/(screens)/booking-details?bookingId=${request.id}`);
-    } else if (request.targetUser) {
-      // Naviguer vers le profil de l'utilisateur
-      // TODO: Implémenter la navigation vers le profil
+    } else if (request.type === 'access') {
+      // Pour les demandes d'accès, trouver le targetId depuis les accessRequests
+      const accessRequest = sentAccessRequests.find(r => r.id === request.id);
+      
+      console.log('📋 [CLICK] Détails de la demande d\'accès:', {
+        requestId: request.id,
+        _targetId: request._targetId,
+        targetUserFromRequest: request.targetUser?.id,
+        targetUserPseudo: request.targetUser?.pseudo,
+        accessRequestFound: !!accessRequest,
+        accessRequestTargetId: accessRequest?.targetId,
+        allSentAccessRequests: sentAccessRequests.map(r => ({
+          id: r.id,
+          targetId: r.targetId,
+          requesterId: r.requesterId,
+        })),
+      });
+      
+      // Priorité absolue: utiliser le targetId depuis sentAccessRequests (source de vérité)
+      const targetId = accessRequest?.targetId;
+      
+      if (!targetId) {
+        console.error('❌ [CLICK] ERREUR: Impossible de trouver le targetId pour la demande!', {
+          requestId: request.id,
+          _targetId: request._targetId,
+          targetUserFromRequest: request.targetUser?.id,
+          accessRequestFound: !!accessRequest,
+          allSentAccessRequests: sentAccessRequests.map(r => ({ id: r.id, targetId: r.targetId })),
+        });
+        Alert.alert('Erreur', 'Impossible d\'ouvrir le profil');
+        return;
+      }
+      
+      // Vérifier que le targetId correspond bien à la demande affichée
+      if (request.targetUser?.id && request.targetUser.id !== targetId) {
+        console.error('❌ [CLICK] ERREUR: Le targetUser.id ne correspond pas au targetId de la demande!', {
+          requestId: request.id,
+          expectedTargetId: targetId,
+          actualTargetUserId: request.targetUser.id,
+          targetUserPseudo: request.targetUser.pseudo,
+        });
+      }
+      
+      console.log('✅ [CLICK] Navigation vers user-profile avec targetId:', {
+        requestId: request.id,
+        targetId: targetId,
+        targetUserPseudo: request.targetUser?.pseudo,
+      });
+      
+      // TOUJOURS utiliser le targetId depuis sentAccessRequests (source de vérité)
+      router.push(`/(screens)/user-profile?userId=${targetId}`);
     }
   };
 
@@ -425,7 +736,16 @@ export default function MyRequestsScreen() {
             >
               <TouchableOpacity
                 style={styles.requestCard}
-                onPress={() => handleRequestPress(request)}
+                onPress={() => {
+                  console.log('🖱️ [DISPLAY] Clic sur demande:', {
+                    requestId: request.id,
+                    type: request.type,
+                    targetUserPseudo: request.targetUser?.pseudo,
+                    targetUserId: request.targetUser?.id,
+                    _targetId: request._targetId,
+                  });
+                  handleRequestPress(request);
+                }}
                 activeOpacity={0.7}
               >
                 <View style={styles.requestHeader}>

@@ -15,6 +15,7 @@ import { useAuth } from '../../context/AuthContext';
 import { useRating } from '../../context/RatingContext';
 import { useUser } from '../../context/UserContext';
 import { getProfileImage } from '../../lib/defaultImages';
+import { uploadImageToStorage } from '../../lib/imageUpload';
 import { supabase } from '../../lib/supabase';
 
 export default function ProfileScreen() {
@@ -86,6 +87,7 @@ export default function ProfileScreen() {
 
       // Charger la moyenne des notes
       const avgRating = await getUserAverageRating(authUser.id);
+      console.log('⭐ Note moyenne calculée:', avgRating);
       setAverageRating(avgRating);
     } catch (error) {
       console.error('Error loading user ratings:', error);
@@ -156,7 +158,44 @@ export default function ProfileScreen() {
     );
   };
 
-  const handleAddPhoto = async () => {
+  const handleTakeAlbumPhoto = async () => {
+    if (!authUser?.id) return;
+
+    if (albumPhotos.length >= 5) {
+      Alert.alert('Limite atteinte', 'Vous ne pouvez ajouter que 5 photos maximum');
+      return;
+    }
+
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission requise', 'Nous avons besoin de l\'accès à votre caméra');
+      return;
+    }
+
+    try {
+      const result = await ImagePicker.launchCameraAsync({
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        const photoUrl = result.assets[0].uri;
+        
+        const { error } = await addAlbumPhoto(authUser.id, photoUrl);
+        if (error) {
+          Alert.alert('Erreur', error.message || 'Impossible d\'ajouter la photo');
+        } else {
+          Alert.alert('Succès', 'Photo ajoutée à votre album');
+        }
+      }
+    } catch (error: any) {
+      console.error('Error taking album photo:', error);
+      Alert.alert('Erreur', 'Impossible d\'accéder à la caméra');
+    }
+  };
+
+  const handleChooseAlbumPhotoFromLibrary = async () => {
     if (!authUser?.id) return;
 
     if (albumPhotos.length >= 5) {
@@ -170,25 +209,45 @@ export default function ProfileScreen() {
       return;
     }
 
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.8,
-    });
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
 
-    if (!result.canceled && result.assets[0]) {
-      // Pour l'instant, utiliser l'URI locale directement
-      // En production, il faudrait uploader vers Supabase Storage
-      const photoUrl = result.assets[0].uri;
-      
-      const { error } = await addAlbumPhoto(authUser.id, photoUrl);
-      if (error) {
-        Alert.alert('Erreur', error.message || 'Impossible d\'ajouter la photo');
-      } else {
-        Alert.alert('Succès', 'Photo ajoutée à votre album');
+      if (!result.canceled && result.assets[0]) {
+        const photoUrl = result.assets[0].uri;
+        
+        const { error } = await addAlbumPhoto(authUser.id, photoUrl);
+        if (error) {
+          Alert.alert('Erreur', error.message || 'Impossible d\'ajouter la photo');
+        } else {
+          Alert.alert('Succès', 'Photo ajoutée à votre album');
+        }
       }
+    } catch (error: any) {
+      console.error('Error choosing album photo:', error);
+      Alert.alert('Erreur', 'Impossible d\'accéder à la galerie');
     }
+  };
+
+  const handleAddPhoto = () => {
+    if (albumPhotos.length >= 5) {
+      Alert.alert('Limite atteinte', 'Vous ne pouvez ajouter que 5 photos maximum');
+      return;
+    }
+
+    Alert.alert(
+      'Ajouter une photo',
+      'Choisissez une option',
+      [
+        { text: 'Prendre une photo', onPress: handleTakeAlbumPhoto },
+        { text: 'Choisir depuis la galerie', onPress: handleChooseAlbumPhotoFromLibrary },
+        { text: 'Annuler', style: 'cancel' },
+      ]
+    );
   };
 
   const handleDeletePhoto = async (photoId: string) => {
@@ -230,11 +289,34 @@ export default function ProfileScreen() {
       });
 
       if (!result.canceled && result.assets[0]) {
-        const photoUrl = result.assets[0].uri;
+        const localUri = result.assets[0].uri;
+        console.log('📸 Photo capturée, URI locale:', localUri);
         
-        // Mettre à jour la photo de profil via updateUserProfile
+        // Uploader la photo vers Supabase Storage
         try {
+          console.log('📤 Upload de la photo vers Supabase Storage...');
+          const { url: photoUrl, error: uploadError } = await uploadImageToStorage(
+            localUri,
+            authUser.id,
+            'profiles'
+          );
+          
+          if (uploadError || !photoUrl) {
+            console.error('Error uploading photo:', uploadError);
+            Alert.alert('Erreur', 'Impossible d\'uploader la photo. Veuillez réessayer.');
+            return;
+          }
+          
+          console.log('✅ Photo uploadée, URL:', photoUrl);
+          
+          // Mettre à jour la photo de profil avec l'URL publique
+          console.log('💾 Mise à jour de la photo de profil...');
           await updateUserProfile({ photo: photoUrl });
+          console.log('✅ Photo de profil mise à jour avec succès');
+          
+          // Attendre un peu pour que le profil soit rechargé
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
           Alert.alert('Succès', 'Photo de profil mise à jour');
         } catch (err: any) {
           console.error('Error updating profile photo:', err);
@@ -265,11 +347,34 @@ export default function ProfileScreen() {
       });
 
       if (!result.canceled && result.assets[0]) {
-        const photoUrl = result.assets[0].uri;
+        const localUri = result.assets[0].uri;
+        console.log('📸 Photo choisie depuis la galerie, URI locale:', localUri);
         
-        // Mettre à jour la photo de profil via updateUserProfile
+        // Uploader la photo vers Supabase Storage
         try {
+          console.log('📤 Upload de la photo vers Supabase Storage...');
+          const { url: photoUrl, error: uploadError } = await uploadImageToStorage(
+            localUri,
+            authUser.id,
+            'profiles'
+          );
+          
+          if (uploadError || !photoUrl) {
+            console.error('Error uploading photo:', uploadError);
+            Alert.alert('Erreur', 'Impossible d\'uploader la photo. Veuillez réessayer.');
+            return;
+          }
+          
+          console.log('✅ Photo uploadée, URL:', photoUrl);
+          
+          // Mettre à jour la photo de profil avec l'URL publique
+          console.log('💾 Mise à jour de la photo de profil...');
           await updateUserProfile({ photo: photoUrl });
+          console.log('✅ Photo de profil mise à jour avec succès');
+          
+          // Attendre un peu pour que le profil soit rechargé
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
           Alert.alert('Succès', 'Photo de profil mise à jour');
         } catch (err: any) {
           console.error('Error updating profile photo:', err);
@@ -347,8 +452,12 @@ export default function ProfileScreen() {
             <Text style={styles.age}>{currentUser.age} ans</Text>
             <View style={styles.ratingRow}>
               <Ionicons name="star" size={20} color={colors.yellow500} />
-              <Text style={styles.rating}>{currentUser.rating}</Text>
-              <Text style={styles.reviewCount}>({currentUser.reviewCount} avis)</Text>
+              <Text style={styles.rating}>
+                {averageRating.count > 0 ? averageRating.average.toFixed(1) : currentUser.rating || '0'}
+              </Text>
+              <Text style={styles.reviewCount}>
+                ({averageRating.count > 0 ? averageRating.count : currentUser.reviewCount || 0} avis)
+              </Text>
             </View>
           </View>
         </View>

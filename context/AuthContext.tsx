@@ -23,6 +23,7 @@ interface AuthContextType {
   checkAuth: () => Promise<void>;
   // Mise à jour du profil
   updateUser: (userData: Partial<User>) => Promise<void>;
+  updateUserProfile: (userData: Partial<User>) => Promise<void>;
   // Mise à jour de la position
   updateLocation: (lat: number, lng: number) => Promise<void>;
 }
@@ -163,6 +164,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           description: userProfile.description,
           pseudo: userProfile.pseudo,
           age: userProfile.age,
+          photo: userProfile.photo,
+          photoFromDB: data.photo,
         });
         setUser(userProfile);
         setIsAuthenticated(true);
@@ -1309,6 +1312,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         description: rpcParams.p_description,
         pseudo: rpcParams.p_pseudo,
         age: rpcParams.p_age,
+        photo: rpcParams.p_photo,
+        hasPhoto: userData.photo !== undefined,
+        photoValue: userData.photo,
+        currentUserPhoto: user?.photo,
         hasDescription: userData.description !== undefined,
         descriptionValue: userData.description,
         currentUserDescription: user?.description,
@@ -1344,15 +1351,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         
         console.log('✅ updateUserProfile - Direct update successful (fallback)');
+        
+        // Recharger le profil pour mettre à jour l'état local
+        await loadUserProfile(userId);
         return;
       }
 
       console.log('✅ updateUserProfile - RPC call successful');
       
+      // Recharger le profil pour mettre à jour l'état local
+      await loadUserProfile(userId);
+      
       // Vérifier que la mise à jour a bien été effectuée
       const { data: verifyData, error: verifyError } = await supabase
         .from('profiles')
-        .select('description, pseudo, age')
+        .select('description, pseudo, age, photo')
         .eq('id', userId)
         .single();
       
@@ -1361,6 +1374,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           description: verifyData.description,
           pseudo: verifyData.pseudo,
           age: verifyData.age,
+          photo: verifyData.photo,
         });
       }
     } catch (error: any) {
@@ -1583,6 +1597,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         logout,
         checkAuth,
         updateUser,
+        updateUserProfile,
         updateLocation,
       }}
     >

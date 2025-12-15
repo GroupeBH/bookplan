@@ -33,7 +33,11 @@ interface OfferContextType {
   applyToOffer: (offerId: string, message: string) => Promise<{ error: any; application: OfferApplication | null }>;
   selectApplication: (offerId: string, applicationId: string) => Promise<{ error: any }>;
   rejectApplication: (applicationId: string, rejectionMessage: string) => Promise<{ error: any }>;
+  cancelSelectedApplication: (offerId: string, applicationId: string, cancellationMessage?: string) => Promise<{ error: any }>;
+  cancelMyApplication: (applicationId: string) => Promise<{ error: any }>;
   cancelOffer: (offerId: string, cancellationMessage?: string) => Promise<{ error: any }>;
+  deleteOffer: (offerId: string) => Promise<{ error: any }>;
+  reactivateOffer: (offerId: string) => Promise<{ error: any }>;
   refreshOffers: () => Promise<void>;
   refreshMyOffers: () => Promise<void>;
 }
@@ -151,6 +155,14 @@ export function OfferProvider({ children }: { children: ReactNode }) {
     }
 
     try {
+      // D'abord, marquer les offres expirées
+      try {
+        await supabase.rpc('expire_offers');
+      } catch (expireError) {
+        // Si la fonction n'existe pas encore, on continue quand même
+        console.log('⚠️ Fonction expire_offers non disponible:', expireError);
+      }
+
       const { data, error } = await supabase
         .from('offers')
         .select('*')
@@ -196,6 +208,19 @@ export function OfferProvider({ children }: { children: ReactNode }) {
               console.error('Error loading author profile:', profileError);
             }
 
+            // Compter les candidatures
+            let applicationCount = 0;
+            try {
+              const { count } = await supabase
+                .from('offer_applications')
+                .select('*', { count: 'exact', head: true })
+                .eq('offer_id', offer.id);
+              
+              applicationCount = count || 0;
+            } catch (countError) {
+              console.error('Error counting applications:', countError);
+            }
+
             // Charger la candidature sélectionnée si elle existe
             let selectedApplication = null;
             if (offer.selected_application_id) {
@@ -238,10 +263,30 @@ export function OfferProvider({ children }: { children: ReactNode }) {
               }
             }
 
+            // Vérifier si l'offre est expirée et mettre à jour le statut si nécessaire
+            const expiresAt = new Date(offer.expires_at);
+            const now = new Date();
+            const isExpired = expiresAt <= now && (offer.status === 'active' || offer.status === 'closed');
+            
+            // Si l'offre est expirée, mettre à jour le statut dans la base de données
+            if (isExpired && offer.status !== 'expired') {
+              try {
+                await supabase
+                  .from('offers')
+                  .update({ status: 'expired', updated_at: new Date().toISOString() })
+                  .eq('id', offer.id);
+              } catch (updateError) {
+                console.error('Error updating expired offer status:', updateError);
+              }
+            }
+
             return {
               ...offer,
               author: authorProfile,
               selected_application: selectedApplication,
+              application_count: applicationCount,
+              // Mettre à jour le statut si l'offre est expirée
+              status: isExpired ? 'expired' : offer.status,
             };
           })
         );
@@ -475,6 +520,26 @@ export function OfferProvider({ children }: { children: ReactNode }) {
     }
 
     try {
+      // Vérifier s'il y a déjà une candidature pour cette offre
+      const { data: existingApplication } = await supabase
+        .from('offer_applications')
+        .select('id, status')
+        .eq('offer_id', offerId)
+        .eq('applicant_id', user.id)
+        .single();
+
+      // Si une candidature existe et n'a pas été annulée par le candidat (status != 'cancelled')
+      // Note: 'cancelled' n'est pas dans le type actuel, mais on peut vérifier les statuts existants
+      if (existingApplication && existingApplication.status !== 'expired') {
+        // Si la candidature est pending, selected, ou rejected, on ne peut pas re-candidater
+        if (existingApplication.status === 'pending' || existingApplication.status === 'selected' || existingApplication.status === 'rejected') {
+          return { 
+            error: { message: 'Vous avez déjà candidaté à cette offre' }, 
+            application: null 
+          };
+        }
+      }
+
       const { data, error } = await supabase
         .from('offer_applications')
         .insert({
@@ -486,6 +551,13 @@ export function OfferProvider({ children }: { children: ReactNode }) {
         .single();
 
       if (error) {
+        // Si l'erreur est due à une contrainte unique, c'est qu'il y a déjà une candidature
+        if (error.code === '23505') {
+          return { 
+            error: { message: 'Vous avez déjà candidaté à cette offre' }, 
+            application: null 
+          };
+        }
         console.error('Error applying to offer:', error);
         return { error, application: null };
       }
@@ -561,21 +633,33 @@ export function OfferProvider({ children }: { children: ReactNode }) {
         return { error };
       }
 
-      // Envoyer une notification au candidat sélectionné
+      // Envoyer une notification au candidat sélectionné avec les données pour rediriger vers l'offre et démarrer une conversation
       try {
-        const application = await supabase
+        const { data: application } = await supabase
           .from('offer_applications')
           .select('applicant_id')
           .eq('id', applicationId)
           .single();
 
-        if (application.data?.applicant_id) {
+        if (application?.applicant_id) {
           const offer = await getOfferById(offerId);
+          const { data: authorProfile } = await supabase
+            .from('profiles')
+            .select('pseudo')
+            .eq('id', user.id)
+            .single();
+
           await sendPushNotification({
-            userId: application.data.applicant_id,
-            title: 'Candidature acceptée',
-            body: `Votre candidature pour "${offer?.title}" a été acceptée !`,
-            data: { type: 'offer_application_selected', offerId, applicationId },
+            userId: application.applicant_id,
+            title: 'Candidature acceptée ! 🎉',
+            body: `${authorProfile?.pseudo || 'L\'auteur'} a accepté votre candidature pour "${offer?.title}". Vous pouvez maintenant commencer une conversation !`,
+            data: { 
+              type: 'offer_application_selected', 
+              offerId, 
+              applicationId,
+              authorId: user.id,
+              canStartConversation: true
+            },
           });
         }
       } catch (notifError) {
@@ -613,21 +697,35 @@ export function OfferProvider({ children }: { children: ReactNode }) {
         return { error };
       }
 
-      // Envoyer une notification au candidat rejeté
+      // Envoyer une notification gentille au candidat rejeté
       try {
-        const application = await supabase
+        const { data: application } = await supabase
           .from('offer_applications')
           .select('applicant_id, offer_id')
           .eq('id', applicationId)
           .single();
 
-        if (application.data?.applicant_id) {
-          const offer = await getOfferById(application.data.offer_id);
+        if (application?.applicant_id) {
+          const offer = await getOfferById(application.offer_id);
+          const { data: authorProfile } = await supabase
+            .from('profiles')
+            .select('pseudo')
+            .eq('id', user.id)
+            .single();
+
+          // Message gentil pour le refus
+          const friendlyMessage = rejectionMessage || 
+            `Merci pour votre candidature à "${offer?.title}". Malheureusement, nous avons choisi un autre candidat pour cette fois. Nous espérons vous revoir bientôt !`;
+
           await sendPushNotification({
-            userId: application.data.applicant_id,
-            title: 'Candidature refusée',
-            body: `Votre candidature pour "${offer?.title}" a été refusée.`,
-            data: { type: 'offer_application_rejected', offerId: application.data.offer_id, applicationId },
+            userId: application.applicant_id,
+            title: 'Réponse à votre candidature',
+            body: friendlyMessage,
+            data: { 
+              type: 'offer_application_rejected', 
+              offerId: application.offer_id, 
+              applicationId 
+            },
           });
         }
       } catch (notifError) {
@@ -640,6 +738,195 @@ export function OfferProvider({ children }: { children: ReactNode }) {
       return { error: null };
     } catch (error: any) {
       console.error('Error rejecting application:', error);
+      return { error };
+    }
+  };
+
+  // Annuler une candidature acceptée (par l'auteur de l'offre)
+  const cancelSelectedApplication = async (
+    offerId: string,
+    applicationId: string,
+    cancellationMessage?: string
+  ): Promise<{ error: any }> => {
+    if (!user) {
+      return { error: 'Utilisateur non connecté' };
+    }
+
+    try {
+      // Vérifier que l'offre existe et que l'utilisateur est l'auteur
+      const offer = await getOfferById(offerId);
+      if (!offer || offer.authorId !== user.id) {
+        return { error: { message: 'Vous n\'êtes pas l\'auteur de cette offre' } };
+      }
+
+      // Vérifier que l'offre est toujours active
+      if (offer.status !== 'active' && offer.status !== 'closed') {
+        return { error: { message: 'Cette offre n\'est plus disponible' } };
+      }
+
+      // Récupérer la candidature
+      const { data: application } = await supabase
+        .from('offer_applications')
+        .select('applicant_id, status')
+        .eq('id', applicationId)
+        .eq('offer_id', offerId)
+        .single();
+
+      if (!application || application.status !== 'selected') {
+        return { error: { message: 'Candidature invalide ou non sélectionnée' } };
+      }
+
+      // Réinitialiser l'offre (retirer la candidature sélectionnée et remettre le statut à active)
+      const { error: updateError } = await supabase
+        .from('offers')
+        .update({
+          selected_application_id: null,
+          status: 'active',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', offerId);
+
+      if (updateError) {
+        console.error('Error updating offer:', updateError);
+        return { error: updateError };
+      }
+
+      // Marquer la candidature comme rejetée avec un message d'annulation
+      const friendlyMessage = cancellationMessage || 
+        `Votre candidature pour "${offer.title}" a été annulée. L'offre est à nouveau disponible.`;
+
+      const { error: rejectError } = await supabase
+        .from('offer_applications')
+        .update({
+          status: 'rejected',
+          rejection_message: friendlyMessage,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', applicationId);
+
+      if (rejectError) {
+        console.error('Error updating application:', rejectError);
+        return { error: rejectError };
+      }
+
+      // Envoyer une notification gentille au candidat
+      try {
+        const { data: authorProfile } = await supabase
+          .from('profiles')
+          .select('pseudo')
+          .eq('id', user.id)
+          .single();
+
+        await sendPushNotification({
+          userId: application.applicant_id,
+          title: 'Annulation de candidature',
+          body: friendlyMessage,
+          data: { 
+            type: 'offer_application_cancelled', 
+            offerId, 
+            applicationId 
+          },
+        });
+      } catch (notifError) {
+        console.error('Error sending push notification:', notifError);
+      }
+
+      await refreshOffers();
+      await refreshMyOffers();
+
+      return { error: null };
+    } catch (error: any) {
+      console.error('Error cancelling selected application:', error);
+      return { error };
+    }
+  };
+
+  // Annuler sa propre candidature (par le candidat)
+  const cancelMyApplication = async (
+    applicationId: string
+  ): Promise<{ error: any }> => {
+    if (!user) {
+      return { error: 'Utilisateur non connecté' };
+    }
+
+    try {
+      // Récupérer la candidature
+      const { data: application } = await supabase
+        .from('offer_applications')
+        .select('offer_id, applicant_id, status')
+        .eq('id', applicationId)
+        .single();
+
+      if (!application) {
+        return { error: { message: 'Candidature introuvable' } };
+      }
+
+      // Vérifier que l'utilisateur est bien le candidat
+      if (application.applicant_id !== user.id) {
+        return { error: { message: 'Vous n\'êtes pas l\'auteur de cette candidature' } };
+      }
+
+      // Récupérer l'offre
+      const offer = await getOfferById(application.offer_id);
+      if (!offer) {
+        return { error: { message: 'Offre introuvable' } };
+      }
+
+      // Supprimer la candidature (elle disparaît complètement)
+      const { error: deleteError } = await supabase
+        .from('offer_applications')
+        .delete()
+        .eq('id', applicationId);
+
+      if (deleteError) {
+        console.error('Error deleting application:', deleteError);
+        return { error: deleteError };
+      }
+
+      // Si la candidature était sélectionnée, réinitialiser l'offre
+      if (application.status === 'selected') {
+        const { error: updateError } = await supabase
+          .from('offers')
+          .update({
+            selected_application_id: null,
+            status: 'active',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', application.offer_id);
+
+        if (updateError) {
+          console.error('Error updating offer:', updateError);
+        }
+
+        // Envoyer une notification à l'auteur de l'offre
+        try {
+          const { data: applicantProfile } = await supabase
+            .from('profiles')
+            .select('pseudo')
+            .eq('id', user.id)
+            .single();
+
+          await sendPushNotification({
+            userId: offer.authorId,
+            title: 'Candidature annulée',
+            body: `${applicantProfile?.pseudo || 'Un candidat'} a annulé sa candidature pour "${offer.title}". L'offre est à nouveau disponible.`,
+            data: { 
+              type: 'offer_application_cancelled_by_applicant', 
+              offerId: application.offer_id, 
+              applicationId 
+            },
+          });
+        } catch (notifError) {
+          console.error('Error sending push notification:', notifError);
+        }
+      }
+
+      await refreshOffers();
+      await refreshMyOffers();
+
+      return { error: null };
+    } catch (error: any) {
+      console.error('Error cancelling my application:', error);
       return { error };
     }
   };
@@ -694,6 +981,88 @@ export function OfferProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // Supprimer définitivement une offre (DELETE)
+  const deleteOffer = async (
+    offerId: string
+  ): Promise<{ error: any }> => {
+    if (!user) {
+      return { error: 'Utilisateur non connecté' };
+    }
+
+    try {
+      // Vérifier que l'utilisateur est bien l'auteur de l'offre
+      const offer = await getOfferById(offerId);
+      if (!offer || offer.authorId !== user.id) {
+        return { error: { message: 'Vous n\'êtes pas l\'auteur de cette offre' } };
+      }
+
+      // Supprimer l'offre (les candidatures seront supprimées automatiquement grâce à ON DELETE CASCADE)
+      const { error } = await supabase
+        .from('offers')
+        .delete()
+        .eq('id', offerId)
+        .eq('author_id', user.id);
+
+      if (error) {
+        console.error('Error deleting offer:', error);
+        return { error };
+      }
+
+      await refreshOffers();
+      await refreshMyOffers();
+
+      return { error: null };
+    } catch (error: any) {
+      console.error('Error deleting offer:', error);
+      return { error };
+    }
+  };
+
+  // Réactiver une offre annulée
+  const reactivateOffer = async (
+    offerId: string
+  ): Promise<{ error: any }> => {
+    if (!user) {
+      return { error: 'Utilisateur non connecté' };
+    }
+
+    try {
+      // Vérifier que l'utilisateur est bien l'auteur de l'offre
+      const offer = await getOfferById(offerId);
+      if (!offer || offer.authorId !== user.id) {
+        return { error: { message: 'Vous n\'êtes pas l\'auteur de cette offre' } };
+      }
+
+      // Vérifier que l'offre est bien annulée
+      if (offer.status !== 'cancelled') {
+        return { error: { message: 'Cette offre n\'est pas annulée' } };
+      }
+
+      // Réactiver l'offre
+      const { error } = await supabase
+        .from('offers')
+        .update({ 
+          status: 'active',
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', offerId)
+        .eq('author_id', user.id);
+
+      if (error) {
+        console.error('Error reactivating offer:', error);
+        return { error };
+      }
+
+      await refreshOffers();
+      await refreshMyOffers();
+
+      return { error: null };
+    } catch (error: any) {
+      console.error('Error reactivating offer:', error);
+      return { error };
+    }
+  };
+
   // Obtenir les offres disponibles (pour l'affichage)
   const getAvailableOffers = async (): Promise<Offer[]> => {
     return offers;
@@ -717,6 +1086,7 @@ export function OfferProvider({ children }: { children: ReactNode }) {
     expiresAt: dbOffer.expires_at,
     createdAt: dbOffer.created_at,
     updatedAt: dbOffer.updated_at,
+    applicationCount: dbOffer.application_count || dbOffer.applicationCount || 0,
     author: dbOffer.author ? {
       id: dbOffer.author.id,
       pseudo: dbOffer.author.pseudo || 'Utilisateur',
@@ -771,7 +1141,11 @@ export function OfferProvider({ children }: { children: ReactNode }) {
         applyToOffer,
         selectApplication,
         rejectApplication,
+        cancelSelectedApplication,
+        cancelMyApplication,
         cancelOffer,
+        deleteOffer,
+        reactivateOffer,
         refreshOffers,
         refreshMyOffers,
       }}

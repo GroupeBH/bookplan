@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, Alert } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../constants/colors';
@@ -17,11 +17,15 @@ import { useBooking } from '../../context/BookingContext';
 import { useBlock } from '../../context/BlockContext';
 import { useAlbum } from '../../context/AlbumContext';
 import { supabase } from '../../lib/supabase';
+import { getProfileImage } from '../../lib/defaultImages';
+import { User } from '../../types';
 import Animated, { FadeIn } from 'react-native-reanimated';
 
 export default function UserProfileScreen() {
   const router = useRouter();
-  const { selectedUser } = useUser();
+  const params = useLocalSearchParams<{ userId?: string }>();
+  const { selectedUser, setSelectedUser } = useUser();
+  const [isLoadingProfile, setIsLoadingProfile] = useState(false);
   const { user: currentUser } = useAuth();
   const { requestAccess, hasAccess, canViewFullProfile, accessRequests, refreshRequests } = useAccessRequest();
   const { createRating, getUserRatings, updateRating, getUserAverageRating } = useRating();
@@ -114,18 +118,32 @@ export default function UserProfileScreen() {
 
     setIsLoadingRatings(true);
     try {
-      // Charger les avis
-      const ratings = await getUserRatings(selectedUser.id);
+      // Ajouter un timeout pour éviter que le chargement reste bloqué
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Timeout loading ratings')), 10000);
+      });
+
+      // Charger les avis avec timeout
+      const ratings = await Promise.race([
+        getUserRatings(selectedUser.id),
+        timeoutPromise,
+      ]) as any[];
       
-      // Charger les informations des raters pour chaque avis
+      // Charger les informations des raters pour chaque avis avec timeout individuel
       const ratingsWithRaterInfo = await Promise.all(
         ratings.map(async (ratingItem) => {
           try {
-            const { data: raterProfile } = await supabase
+            const profilePromise = supabase
               .from('profiles')
               .select('pseudo, photo')
               .eq('id', ratingItem.raterId)
               .single();
+            
+            const timeout = new Promise((_, reject) => {
+              setTimeout(() => reject(new Error('Timeout')), 5000);
+            });
+
+            const { data: raterProfile } = await Promise.race([profilePromise, timeout]) as any;
             
             return {
               ...ratingItem,
@@ -149,11 +167,17 @@ export default function UserProfileScreen() {
         setExistingRating(myRating || null);
       }
 
-      // Charger la moyenne des notes
-      const avgRating = await getUserAverageRating(selectedUser.id);
+      // Charger la moyenne des notes avec timeout
+      const avgRating = await Promise.race([
+        getUserAverageRating(selectedUser.id),
+        Promise.resolve({ average: 0, count: 0 }),
+      ]) as { average: number; count: number };
       setAverageRating(avgRating);
     } catch (error) {
       console.error('Error loading user ratings:', error);
+      // En cas d'erreur, initialiser avec des valeurs par défaut
+      setUserRatings([]);
+      setAverageRating({ average: 0, count: 0 });
     } finally {
       setIsLoadingRatings(false);
     }
@@ -172,6 +196,62 @@ export default function UserProfileScreen() {
       loadUserRatings();
     }
   }, [selectedUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Charger le profil depuis userId si selectedUser n'est pas défini
+  useEffect(() => {
+    const loadProfileFromParams = async () => {
+      if (!selectedUser && params.userId) {
+        console.log('📥 Chargement du profil depuis userId:', params.userId);
+        setIsLoadingProfile(true);
+        try {
+          const { data: userProfile, error } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', params.userId)
+            .single();
+
+          if (error) {
+            console.error('Error loading profile:', error);
+            Alert.alert('Erreur', 'Impossible de charger le profil');
+            router.back();
+            return;
+          }
+
+          if (userProfile) {
+            const fullUser: User = {
+              id: userProfile.id,
+              pseudo: userProfile.pseudo || 'Utilisateur',
+              age: userProfile.age || 25,
+              phone: userProfile.phone || '',
+              photo: getProfileImage(userProfile.photo, userProfile.gender),
+              description: userProfile.description || '',
+              specialty: userProfile.specialty || undefined,
+              rating: parseFloat(userProfile.rating) || 0,
+              reviewCount: userProfile.review_count || 0,
+              isSubscribed: userProfile.is_subscribed || false,
+              subscriptionStatus: userProfile.subscription_status || 'pending',
+              lastSeen: userProfile.last_seen || 'En ligne',
+              gender: userProfile.gender || 'female',
+              lat: userProfile.lat ? parseFloat(userProfile.lat) : undefined,
+              lng: userProfile.lng ? parseFloat(userProfile.lng) : undefined,
+              isAvailable: userProfile.is_available ?? true,
+              currentBookingId: userProfile.current_booking_id,
+            };
+            setSelectedUser(fullUser);
+            console.log('✅ Profil chargé depuis userId');
+          }
+        } catch (error) {
+          console.error('Error loading profile from params:', error);
+          Alert.alert('Erreur', 'Impossible de charger le profil');
+          router.back();
+        } finally {
+          setIsLoadingProfile(false);
+        }
+      }
+    };
+
+    loadProfileFromParams();
+  }, [params.userId, selectedUser, setSelectedUser, router]);
 
   // Recharger quand on revient sur la page (après avoir créé une demande par exemple)
   useFocusEffect(
@@ -192,34 +272,16 @@ export default function UserProfileScreen() {
     }, [selectedUser?.id, currentUser?.id, refreshRequests, loadActiveBooking]) // eslint-disable-line react-hooks/exhaustive-deps
   );
 
-  if (!selectedUser) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
-            <Ionicons name="arrow-back" size={24} color={colors.textSecondary} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Profil</Text>
-          <View style={{ width: 24 }} />
-        </View>
-        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
-          <Text style={styles.description}>Chargement du profil...</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  // Vérifier si on a déjà demandé l'accès
-  const existingRequest = accessRequests.find(
+  // Vérifier si on a déjà demandé l'accès (doit être avant le return conditionnel)
+  const existingRequest = selectedUser ? accessRequests.find(
     r => r.requesterId === currentUser?.id && r.targetId === selectedUser.id
-  );
+  ) : null;
   const accessRequested = !!existingRequest && existingRequest.status === 'pending';
   const accessAccepted = !!existingRequest && existingRequest.status === 'accepted';
-  const hasFullAccess = hasAccess(selectedUser.id);
-  const canViewInfo = canViewFullProfile(selectedUser.id);
+  const hasFullAccess = selectedUser ? hasAccess(selectedUser.id) : false;
+  const canViewInfo = selectedUser ? canViewFullProfile(selectedUser.id) : false;
 
-  // Debug logs
-  // Vérifier si l'utilisateur est bloqué
+  // Vérifier si l'utilisateur est bloqué (doit être avant le return conditionnel)
   React.useEffect(() => {
     const checkBlocked = async () => {
       if (selectedUser?.id && currentUser?.id) {
@@ -232,6 +294,7 @@ export default function UserProfileScreen() {
     checkBlocked();
   }, [selectedUser?.id, currentUser?.id, isUserBlocked]);
 
+  // Debug logs (doit être avant le return conditionnel)
   React.useEffect(() => {
     if (selectedUser?.id && currentUser?.id) {
       console.log('🔍 Debug accès:', {
@@ -251,6 +314,30 @@ export default function UserProfileScreen() {
       });
     }
   }, [selectedUser?.id, currentUser?.id, accessRequests, existingRequest, hasFullAccess, canViewInfo, accessRequested, accessAccepted]);
+
+  if (!selectedUser) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => router.back()}>
+            <Ionicons name="arrow-back" size={24} color={colors.textSecondary} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Profil</Text>
+          <View style={{ width: 24 }} />
+        </View>
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
+          {isLoadingProfile ? (
+            <>
+              <ActivityIndicator size="large" color={colors.purple500} />
+              <Text style={[styles.description, { marginTop: 16 }]}>Chargement du profil...</Text>
+            </>
+          ) : (
+            <Text style={styles.description}>Profil non disponible</Text>
+          )}
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   const handleRequestAccess = async () => {
     if (!currentUser) return;
@@ -401,10 +488,19 @@ export default function UserProfileScreen() {
     
     setIsLoadingAlbum(true);
     try {
-      const photos = await getUserAlbumPhotos(selectedUser.id);
+      // Ajouter un timeout pour éviter que le chargement reste bloqué
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Timeout loading album photos')), 8000);
+      });
+
+      const photos = await Promise.race([
+        getUserAlbumPhotos(selectedUser.id),
+        timeoutPromise,
+      ]) as any[];
       setUserAlbumPhotos(photos);
     } catch (error) {
       console.error('Error loading album photos:', error);
+      // En cas d'erreur, initialiser avec un tableau vide
       setUserAlbumPhotos([]);
     } finally {
       setIsLoadingAlbum(false);

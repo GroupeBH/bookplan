@@ -103,10 +103,17 @@ export default function BookingDetailsScreen() {
     }
   }, [params.bookingId, currentUser?.id, getUserRatings]);
 
+  // Ne recharger que si le bookingId change ou si c'est le premier chargement
+  const lastBookingIdRef = React.useRef<string | null>(null);
+  
   useFocusEffect(
     useCallback(() => {
-      loadBookingDetails();
-    }, [loadBookingDetails])
+      // Ne recharger que si le bookingId a changé ou si c'est le premier chargement
+      if (params.bookingId && params.bookingId !== lastBookingIdRef.current) {
+        lastBookingIdRef.current = params.bookingId;
+        loadBookingDetails();
+      }
+    }, [params.bookingId, loadBookingDetails])
   );
 
   // Vérifier si la compagnie est terminée
@@ -568,6 +575,22 @@ export default function BookingDetailsScreen() {
             </Animated.View>
           )}
         </Animated.View>
+
+        {/* Bouton d'annulation pour le requester si le statut est pending */}
+        {isRequester && booking.status === 'pending' && (
+          <View style={styles.actions}>
+            <Button
+              title="Annuler la demande"
+              variant="outline"
+              onPress={handleCancel}
+              disabled={isSubmitting}
+              loading={isSubmitting}
+              icon={<Ionicons name="close-circle-outline" size={20} color={colors.red500} />}
+              style={[styles.actionButton, { borderColor: colors.red500 }]}
+              textStyle={{ color: colors.red500 }}
+            />
+          </View>
+        )}
 
         {/* Actions */}
         {booking.status === 'accepted' && (

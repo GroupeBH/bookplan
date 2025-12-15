@@ -4,8 +4,25 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
-import Mapbox, { MapView, PointAnnotation, Camera } from '@rnmapbox/maps';
-import '../../lib/mapbox'; // Initialiser Mapbox avec le token
+import { isMapboxAvailable } from '../../lib/mapbox';
+
+// Import conditionnel de Mapbox
+let Mapbox: any = null;
+let MapView: any = null;
+let PointAnnotation: any = null;
+let Camera: any = null;
+
+if (isMapboxAvailable) {
+  try {
+    const mapboxModule = require('@rnmapbox/maps');
+    Mapbox = mapboxModule.default;
+    MapView = mapboxModule.MapView;
+    PointAnnotation = mapboxModule.PointAnnotation;
+    Camera = mapboxModule.Camera;
+  } catch (error) {
+    console.warn('Failed to load Mapbox components');
+  }
+}
 import { colors } from '../../constants/colors';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';

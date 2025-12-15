@@ -1,19 +1,36 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, usePathname } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import * as Location from 'expo-location';
-import Mapbox, { MapView, PointAnnotation, Camera } from '@rnmapbox/maps';
-import '../../lib/mapbox'; // Initialiser Mapbox avec le token
-import { colors } from '../../constants/colors';
-import { Badge } from '../../components/ui/Badge';
+import { usePathname, useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
-import { User } from '../../types';
-import { useUser } from '../../context/UserContext';
+import { Badge } from '../../components/ui/Badge';
+import { colors } from '../../constants/colors';
 import { useAuth } from '../../context/AuthContext';
 import { useBooking } from '../../context/BookingContext';
+import { useUser } from '../../context/UserContext';
+import { isMapboxAvailable } from '../../lib/mapbox';
+import { User } from '../../types';
+
+// Import conditionnel de Mapbox
+let Mapbox: any = null;
+let MapView: any = null;
+let PointAnnotation: any = null;
+let Camera: any = null;
+
+if (isMapboxAvailable) {
+  try {
+    const mapboxModule = require('@rnmapbox/maps');
+    Mapbox = mapboxModule.default;
+    MapView = mapboxModule.MapView;
+    PointAnnotation = mapboxModule.PointAnnotation;
+    Camera = mapboxModule.Camera;
+  } catch (error) {
+    console.warn('Failed to load Mapbox components');
+  }
+}
 
 const mockUsers: User[] = [
   {
@@ -359,7 +376,16 @@ export default function Dashboard() {
 
       {/* Map Section */}
       <View style={styles.mapSection}>
-        {userLocation ? (
+        {!isMapboxAvailable || !MapView ? (
+          <View style={styles.mapPlaceholder}>
+            <Ionicons name="map-outline" size={48} color={colors.purple400} />
+            <Text style={styles.mapPlaceholderText}>Carte non disponible</Text>
+            <Text style={styles.mapPlaceholderSubtext}>
+              Un build de développement est requis pour utiliser Mapbox.{'\n'}
+              Exécutez: eas build --profile development
+            </Text>
+          </View>
+        ) : userLocation ? (
           <MapView
             styleURL={Mapbox.StyleURL.Street}
             style={styles.map}
@@ -611,8 +637,17 @@ const styles = StyleSheet.create({
   },
   mapPlaceholderText: {
     marginTop: 8,
-    fontSize: 14,
-    color: colors.textTertiary,
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text,
+    textAlign: 'center',
+  },
+  mapPlaceholderSubtext: {
+    marginTop: 8,
+    fontSize: 12,
+    color: colors.textSecondary,
+    textAlign: 'center',
+    paddingHorizontal: 24,
   },
   currentUserMarker: {
     width: 40,

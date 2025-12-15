@@ -33,7 +33,7 @@ type Tab = 'my-offers' | 'my-applications';
 export default function MyOffersScreen() {
   const router = useRouter();
   const { user } = useAuth();
-  const { myOffers, isLoading, getOfferApplications, selectApplication, rejectApplication, cancelOffer, refreshMyOffers } = useOffer();
+  const { myOffers, isLoading, getOfferApplications, selectApplication, rejectApplication, cancelSelectedApplication, cancelOffer, refreshMyOffers } = useOffer();
   const [activeTab, setActiveTab] = useState<Tab>('my-offers');
   const [refreshing, setRefreshing] = useState(false);
   const [selectedOffer, setSelectedOffer] = useState<Offer | null>(null);
@@ -164,15 +164,16 @@ export default function MyOffersScreen() {
   const handleCancelOffer = async () => {
     if (!selectedOffer) return;
 
-    const message = cancellationMessage.trim() || 'L\'offre a été annulée par l\'auteur.';
+    const isExpired = selectedOffer.status === 'expired';
+    const message = cancellationMessage.trim() || (isExpired ? 'L\'offre a été supprimée.' : 'L\'offre a été annulée par l\'auteur.');
 
     setIsProcessing(true);
     try {
       const { error } = await cancelOffer(selectedOffer.id, message);
       if (error) {
-        Alert.alert('Erreur', error.message || 'Impossible d\'annuler l\'offre');
+        Alert.alert('Erreur', error.message || `Impossible de ${isExpired ? 'supprimer' : 'annuler'} l'offre`);
       } else {
-        Alert.alert('Succès', 'Offre annulée');
+        Alert.alert('Succès', isExpired ? 'Offre supprimée' : 'Offre annulée');
         setShowCancelModal(false);
         setCancellationMessage('');
         setSelectedOffer(null);
@@ -291,7 +292,16 @@ export default function MyOffersScreen() {
           ) : (
             filteredOffers.map((offer) => (
               <Animated.View key={offer.id} entering={FadeIn}>
-                <View style={styles.offerCard}>
+                <TouchableOpacity
+                  style={styles.offerCard}
+                  onPress={() => {
+                    router.push({
+                      pathname: '/(screens)/offer-details',
+                      params: { offerId: offer.id },
+                    });
+                  }}
+                  activeOpacity={0.7}
+                >
                   <View style={styles.offerHeader}>
                     <View style={styles.offerTypeBadge}>
                       <Ionicons
@@ -321,29 +331,33 @@ export default function MyOffersScreen() {
                   <View style={styles.offerActions}>
                     <TouchableOpacity
                       style={styles.actionButton}
-                      onPress={() => handleViewApplications(offer)}
+                      onPress={(e) => {
+                        e.stopPropagation(); // Empêcher la propagation du clic vers le TouchableOpacity parent
+                        handleViewApplications(offer);
+                      }}
                     >
                       <Ionicons name="people-outline" size={18} color={colors.pink500} />
                       <Text style={styles.actionButtonText}>
                         Voir candidatures ({offer.applicationCount || 0})
                       </Text>
                     </TouchableOpacity>
-                    {offer.status === 'active' && (
+                    {(offer.status === 'active' || offer.status === 'expired') && (
                       <TouchableOpacity
                         style={[styles.actionButton, styles.cancelButton]}
-                        onPress={() => {
+                        onPress={(e) => {
+                          e.stopPropagation(); // Empêcher la propagation du clic vers le TouchableOpacity parent
                           setSelectedOffer(offer);
                           setShowCancelModal(true);
                         }}
                       >
                         <Ionicons name="close-circle-outline" size={18} color={colors.red500} />
                         <Text style={[styles.actionButtonText, styles.cancelButtonText]}>
-                          Annuler
+                          {offer.status === 'expired' ? 'Supprimer' : 'Annuler'}
                         </Text>
                       </TouchableOpacity>
                     )}
                   </View>
-                </View>
+                </TouchableOpacity>
               </Animated.View>
             ))
           )
@@ -454,6 +468,62 @@ export default function MyOffersScreen() {
                         </TouchableOpacity>
                       </View>
                     )}
+                    {application.status === 'selected' && (selectedOffer?.status === 'active' || selectedOffer?.status === 'closed') && (
+                      <View style={styles.applicationActions}>
+                        <TouchableOpacity
+                          style={[styles.selectButton, { backgroundColor: colors.purple500 }]}
+                          onPress={() => {
+                            if (application.applicant?.id) {
+                              router.push(`/(screens)/chat?userId=${application.applicant.id}`);
+                            }
+                          }}
+                        >
+                          <Ionicons name="chatbubbles" size={18} color="#ffffff" />
+                        </TouchableOpacity>
+                        {selectedOffer?.status === 'active' && (
+                          <TouchableOpacity
+                            style={[styles.rejectButton, { backgroundColor: colors.orange500 }]}
+                            onPress={async () => {
+                              Alert.alert(
+                                'Annuler la candidature',
+                                'Êtes-vous sûr de vouloir annuler cette candidature acceptée ?',
+                                [
+                                  { text: 'Non', style: 'cancel' },
+                                  {
+                                    text: 'Oui, annuler',
+                                    style: 'destructive',
+                                    onPress: async () => {
+                                      setIsProcessing(true);
+                                      try {
+                                        const { error } = await cancelSelectedApplication(
+                                          selectedOffer.id,
+                                          application.id
+                                        );
+                                        if (error) {
+                                          Alert.alert('Erreur', error.message || 'Impossible d\'annuler la candidature');
+                                        } else {
+                                          Alert.alert('Succès', 'Candidature annulée');
+                                          const apps = await getOfferApplications(selectedOffer.id);
+                                          setApplications(apps);
+                                          await refreshMyOffers();
+                                        }
+                                      } catch (error) {
+                                        Alert.alert('Erreur', 'Une erreur est survenue');
+                                      } finally {
+                                        setIsProcessing(false);
+                                      }
+                                    },
+                                  },
+                                ]
+                              );
+                            }}
+                            disabled={isProcessing}
+                          >
+                            <Ionicons name="close-circle" size={18} color="#ffffff" />
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    )}
                   </View>
                 ))
               )}
@@ -524,24 +594,28 @@ export default function MyOffersScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Annuler l'offre</Text>
+              <Text style={styles.modalTitle}>{selectedOffer?.status === 'expired' ? 'Supprimer l\'offre' : 'Annuler l\'offre'}</Text>
               <TouchableOpacity onPress={() => setShowCancelModal(false)}>
                 <Ionicons name="close" size={24} color={colors.text} />
               </TouchableOpacity>
             </View>
 
             <Text style={styles.modalSubtitle}>
-              Écrivez un message pour informer les candidats de l'annulation
+              {selectedOffer?.status === 'expired' 
+                ? 'Cette offre est expirée. Vous pouvez la supprimer.'
+                : 'Écrivez un message pour informer les candidats de l\'annulation'}
             </Text>
 
-            <Input
-              value={cancellationMessage}
-              onChangeText={setCancellationMessage}
-              placeholder="Message d'annulation (optionnel)..."
-              multiline
-              numberOfLines={4}
-              containerStyle={styles.modalInput}
-            />
+            {selectedOffer?.status !== 'expired' && (
+              <Input
+                value={cancellationMessage}
+                onChangeText={setCancellationMessage}
+                placeholder="Message d'annulation (optionnel)..."
+                multiline
+                numberOfLines={4}
+                containerStyle={styles.modalInput}
+              />
+            )}
 
             <View style={styles.modalActions}>
               <Button
@@ -555,7 +629,7 @@ export default function MyOffersScreen() {
                 style={styles.modalButton}
               />
               <Button
-                title="Confirmer l'annulation"
+                title={selectedOffer?.status === 'expired' ? 'Supprimer' : 'Confirmer l\'annulation'}
                 onPress={handleCancelOffer}
                 style={[styles.modalButton, { backgroundColor: colors.red600 }]}
                 loading={isProcessing}
