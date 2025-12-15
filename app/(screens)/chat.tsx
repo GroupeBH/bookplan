@@ -192,32 +192,57 @@ export default function ChatScreen() {
 
     setIsSending(true);
     const content = newMessage.trim();
-    setNewMessage('');
+    setNewMessage(''); // Vider l'input immédiatement
 
     const recipientId = selectedConversation.user1Id === currentUser.id 
       ? selectedConversation.user2Id 
       : selectedConversation.user1Id;
 
+    // Créer un message temporaire pour affichage immédiat
+    const tempMessage: Message = {
+      id: `temp-${Date.now()}`,
+      conversationId: selectedConversation.id,
+      senderId: currentUser.id,
+      recipientId: recipientId,
+      content: content,
+      isRead: false,
+      readAt: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    // Ajouter le message temporaire immédiatement pour un affichage instantané
+    setConversationMessages((prev) => [...prev, tempMessage]);
+    
+    // Faire défiler vers le bas immédiatement
+    setTimeout(() => {
+      scrollViewRef.current?.scrollToEnd({ animated: true });
+    }, 50);
+
     const sentMessage = await sendMessage(selectedConversation.id, recipientId, content);
     
     if (sentMessage) {
-      // Ajouter le message immédiatement au state local pour un affichage instantané
+      // Remplacer le message temporaire par le vrai message
       setConversationMessages((prev) => {
+        // Retirer le message temporaire
+        const withoutTemp = prev.filter(msg => msg.id !== tempMessage.id);
         // Vérifier si le message n'est pas déjà présent (éviter les doublons)
-        const exists = prev.some(msg => msg.id === sentMessage.id);
+        const exists = withoutTemp.some(msg => msg.id === sentMessage.id);
         if (exists) {
-          return prev;
+          return withoutTemp;
         }
-        return [...prev, sentMessage];
+        return [...withoutTemp, sentMessage];
       });
       
-      // Faire défiler vers le bas
+      // Faire défiler vers le bas après l'ajout du vrai message
       setTimeout(() => {
         scrollViewRef.current?.scrollToEnd({ animated: true });
       }, 100);
     } else {
-      // En cas d'erreur, remettre le message dans l'input
+      // En cas d'erreur, retirer le message temporaire et remettre le message dans l'input
+      setConversationMessages((prev) => prev.filter(msg => msg.id !== tempMessage.id));
       setNewMessage(content);
+      Alert.alert('Erreur', 'Impossible d\'envoyer le message. Veuillez réessayer.');
     }
     
     setIsSending(false);
@@ -431,7 +456,9 @@ export default function ChatScreen() {
               ref={scrollViewRef}
               style={styles.messagesContainer}
               contentContainerStyle={styles.messagesContent}
+              keyboardShouldPersistTaps="handled"
               onContentSizeChange={() => {
+                // Scroll automatique seulement si on est déjà près du bas
                 scrollViewRef.current?.scrollToEnd({ animated: false });
               }}
             >
@@ -485,6 +512,8 @@ export default function ChatScreen() {
               multiline
               maxLength={1000}
               editable={!isSending}
+              onSubmitEditing={handleSendMessage}
+              blurOnSubmit={false}
             />
             <TouchableOpacity
               style={[styles.sendButton, (!newMessage.trim() || isSending) && styles.sendButtonDisabled]}

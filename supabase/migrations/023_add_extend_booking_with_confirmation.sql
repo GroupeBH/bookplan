@@ -172,3 +172,5 @@ GRANT EXECUTE ON FUNCTION reject_booking_extension(UUID) TO authenticated;
 
 
 
+
+

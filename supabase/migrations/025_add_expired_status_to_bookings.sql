@@ -89,3 +89,5 @@ GRANT EXECUTE ON FUNCTION renew_expired_booking(UUID, TIMESTAMP WITH TIME ZONE) 
 
 
 
+
+

@@ -384,6 +384,8 @@ export default function BookingScreen() {
     }
 
     setIsLoading(true);
+    setRequestSent(true); // Afficher immédiatement le feedback visuel
+    
     try {
       const { error, booking } = await createBooking(
         selectedUser.id,
@@ -397,19 +399,16 @@ export default function BookingScreen() {
       );
 
       if (error) {
+        setRequestSent(false); // Réinitialiser en cas d'erreur
         Alert.alert('Erreur', error.message || 'Impossible de créer la demande');
         setIsLoading(false);
         return;
       }
 
-      setRequestSent(true);
+      // Rafraîchir les bookings en arrière-plan (sans attendre)
+      refreshBookings().catch(err => console.error('Error refreshing bookings:', err));
       
-      // Rafraîchir les bookings pour s'assurer que la demande est visible
-      await refreshBookings();
-      
-      // Attendre un peu pour laisser le temps à la DB de se synchroniser
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
+      // Afficher la confirmation immédiatement
       Alert.alert('Succès', 'Votre demande a été envoyée', [
         {
           text: 'OK',
@@ -419,10 +418,12 @@ export default function BookingScreen() {
           },
         },
       ]);
+      
+      setIsLoading(false);
     } catch (error: any) {
+      setRequestSent(false); // Réinitialiser en cas d'erreur
       Alert.alert('Erreur', 'Une erreur est survenue');
       console.error('Create booking error:', error);
-    } finally {
       setIsLoading(false);
     }
   };
