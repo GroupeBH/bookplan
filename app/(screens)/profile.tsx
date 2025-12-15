@@ -213,7 +213,41 @@ export default function ProfileScreen() {
     );
   };
 
-  const handleEditProfilePhoto = async () => {
+  const handleTakePhoto = async () => {
+    if (!authUser?.id) return;
+
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission requise', 'Nous avons besoin de l\'accès à votre caméra');
+      return;
+    }
+
+    try {
+      const result = await ImagePicker.launchCameraAsync({
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        const photoUrl = result.assets[0].uri;
+        
+        // Mettre à jour la photo de profil via updateUserProfile
+        try {
+          await updateUserProfile({ photo: photoUrl });
+          Alert.alert('Succès', 'Photo de profil mise à jour');
+        } catch (err: any) {
+          console.error('Error updating profile photo:', err);
+          Alert.alert('Erreur', err.message || 'Une erreur est survenue lors de la mise à jour de la photo');
+        }
+      }
+    } catch (error: any) {
+      console.error('Error taking photo:', error);
+      Alert.alert('Erreur', 'Impossible d\'accéder à la caméra');
+    }
+  };
+
+  const handleChooseFromLibrary = async () => {
     if (!authUser?.id) return;
 
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -222,25 +256,42 @@ export default function ProfileScreen() {
       return;
     }
 
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.8,
-    });
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
 
-    if (!result.canceled && result.assets[0]) {
-      const photoUrl = result.assets[0].uri;
-      
-      // Mettre à jour la photo de profil via updateUserProfile
-      try {
-        await updateUserProfile({ photo: photoUrl });
-        Alert.alert('Succès', 'Photo de profil mise à jour');
-      } catch (err: any) {
-        console.error('Error updating profile photo:', err);
-        Alert.alert('Erreur', err.message || 'Une erreur est survenue lors de la mise à jour de la photo');
+      if (!result.canceled && result.assets[0]) {
+        const photoUrl = result.assets[0].uri;
+        
+        // Mettre à jour la photo de profil via updateUserProfile
+        try {
+          await updateUserProfile({ photo: photoUrl });
+          Alert.alert('Succès', 'Photo de profil mise à jour');
+        } catch (err: any) {
+          console.error('Error updating profile photo:', err);
+          Alert.alert('Erreur', err.message || 'Une erreur est survenue lors de la mise à jour de la photo');
+        }
       }
+    } catch (error: any) {
+      console.error('Error choosing photo:', error);
+      Alert.alert('Erreur', 'Impossible d\'accéder à la galerie');
     }
+  };
+
+  const handleEditProfilePhoto = () => {
+    Alert.alert(
+      'Changer la photo',
+      'Choisissez une option',
+      [
+        { text: 'Prendre une photo', onPress: handleTakePhoto },
+        { text: 'Choisir depuis la galerie', onPress: handleChooseFromLibrary },
+        { text: 'Annuler', style: 'cancel' },
+      ]
+    );
   };
 
   // Ne pas rendre si pas d'utilisateur (évite les erreurs)

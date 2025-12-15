@@ -82,39 +82,50 @@ export default function EditProfileScreen() {
   }
 
   const handleChangePhoto = async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission requise', 'Nous avons besoin de l\'accès à vos photos');
-      return;
-    }
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission requise', 'Nous avons besoin de l\'accès à vos photos');
+        return;
+      }
 
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.8,
-    });
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+        allowsMultipleSelection: false,
+      });
 
-    if (!result.canceled && result.assets[0]) {
-      setPhoto(result.assets[0].uri);
+      if (!result.canceled && result.assets && result.assets.length > 0 && result.assets[0]) {
+        setPhoto(result.assets[0].uri);
+      }
+    } catch (error: any) {
+      console.error('Error choosing photo from library:', error);
+      Alert.alert('Erreur', 'Impossible d\'accéder à la galerie. Veuillez réessayer.');
     }
   };
 
   const handleTakePhoto = async () => {
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission requise', 'Nous avons besoin de l\'accès à votre caméra');
-      return;
-    }
+    try {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission requise', 'Nous avons besoin de l\'accès à votre caméra');
+        return;
+      }
 
-    const result = await ImagePicker.launchCameraAsync({
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.8,
-    });
+      const result = await ImagePicker.launchCameraAsync({
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
 
-    if (!result.canceled && result.assets[0]) {
-      setPhoto(result.assets[0].uri);
+      if (!result.canceled && result.assets && result.assets.length > 0 && result.assets[0]) {
+        setPhoto(result.assets[0].uri);
+      }
+    } catch (error: any) {
+      console.error('Error taking photo:', error);
+      Alert.alert('Erreur', 'Impossible d\'accéder à la caméra. Veuillez réessayer.');
     }
   };
 

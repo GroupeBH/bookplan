@@ -10,15 +10,16 @@ export default function SplashScreen() {
   const { isAuthenticated, isLoading } = useAuth();
 
   useEffect(() => {
-    // Wait for auth to finish loading, then navigate after 2 seconds
+    // Navigate immediately when auth is ready (no artificial delay)
     if (!isLoading) {
+      // Small delay to ensure smooth transition (300ms instead of 2000ms)
       const timer = setTimeout(() => {
         if (isAuthenticated) {
           router.replace('/(screens)/dashboard');
         } else {
           router.replace('/(screens)/auth');
         }
-      }, 2000);
+      }, 300);
 
       return () => clearTimeout(timer);
     }
