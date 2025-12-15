@@ -4,23 +4,26 @@ export default {
     slug: "kutana",
     version: "1.0.0",
     orientation: "portrait",
-    icon: "./assets/images/icon.png",
+    icon: "./assets/images/kutana.png",
     scheme: "kutana",
     userInterfaceStyle: "automatic",
-    // newArchEnabled: true,
+    // newArchEnabled: true,y
     ios: {
       supportsTablet: true,
       infoPlist: {
         NSLocationWhenInUseUsageDescription: "Cette application a besoin de votre localisation pour afficher les utilisateurs à proximité et mettre à jour votre position sur la carte.",
-        NSLocationAlwaysUsageDescription: "Cette application a besoin de votre localisation pour afficher les utilisateurs à proximité et mettre à jour votre position sur la carte."
+        NSLocationAlwaysUsageDescription: "Cette application a besoin de votre localisation pour afficher les utilisateurs à proximité et mettre à jour votre position sur la carte.",
+        ITSAppUsesNonExemptEncryption: false
       },
-      bundleIdentifier: "com.kutana.app"
+      bundleIdentifier: "com.biso.kutana"
     },
     android: {
-      package: "com.kutana.app",
+      googleServicesFile: './google-services.json',
+      package: "com.kutana",
+      versionCode: 1,
       adaptiveIcon: {
         backgroundColor: "#E6F4FE",
-        foregroundImage: "./assets/images/android-icon-foreground.png",
+        foregroundImage: "./assets/images/kutana.png",
         backgroundImage: "./assets/images/android-icon-background.png",
         monochromeImage: "./assets/images/android-icon-monochrome.png"
       },
@@ -42,7 +45,7 @@ export default {
       [
         "expo-splash-screen",
         {
-          image: "./assets/images/splash-icon.png",
+          image: "./assets/images/kutana.png",
           imageWidth: 200,
           resizeMode: "contain",
           backgroundColor: "#ffffff",
@@ -66,7 +69,7 @@ export default {
       [
         "expo-notifications",
         {
-          icon: "./assets/images/icon.png",
+          icon: "./assets/images/kutana.png",
           color: "#ffffff"
         }
       ]
