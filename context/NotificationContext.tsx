@@ -109,10 +109,35 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     };
   }, [user?.id]);
 
-  // Enregistrer le token quand l'utilisateur se connecte
+  // Enregistrer le token quand l'utilisateur se connecte et activer les notifications par défaut
   useEffect(() => {
     if (user?.id && expoPushToken) {
       savePushTokenToSupabase(expoPushToken);
+      
+      // Activer les notifications push par défaut au premier lancement
+      const activatePushNotificationsByDefault = async () => {
+        try {
+          // Vérifier si la préférence existe déjà
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('push_notifications_enabled')
+            .eq('id', user.id)
+            .single();
+
+          // Si push_notifications_enabled est null (premier lancement), l'activer
+          if (profile && profile.push_notifications_enabled === null) {
+            await supabase
+              .from('profiles')
+              .update({ push_notifications_enabled: true })
+              .eq('id', user.id);
+            console.log('✅ Notifications push activées par défaut au premier lancement');
+          }
+        } catch (error) {
+          console.error('Error activating push notifications by default:', error);
+        }
+      };
+
+      activatePushNotificationsByDefault();
     }
   }, [user?.id, expoPushToken]);
 

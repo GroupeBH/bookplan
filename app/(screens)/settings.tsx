@@ -1,27 +1,76 @@
-import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, RefreshControl } from 'react-native';
+import React, { useState, useCallback, useEffect } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, RefreshControl, Modal, TextInput, Switch, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../constants/colors';
 import { Button } from '../../components/ui/Button';
+import { Input } from '../../components/ui/Input';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
 import { useBlock } from '../../context/BlockContext';
 import { useUser } from '../../context/UserContext';
+import { useAuth } from '../../context/AuthContext';
+import { supabase } from '../../lib/supabase';
 import Animated, { FadeIn } from 'react-native-reanimated';
 
 export default function SettingsScreen() {
   const router = useRouter();
   const { blockedUsers, isLoading, unblockUser, refreshBlockedUsers } = useBlock();
-  const { setSelectedUser } = useUser();
+  const { setSelectedUser, currentUser } = useUser();
+  const { user, sendOTP, verifyOTPSimple } = useAuth();
   const [refreshing, setRefreshing] = useState(false);
+  
+  // États pour modifier le mot de passe
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
+  
+  // États pour modifier le numéro de téléphone
+  const [showPhoneModal, setShowPhoneModal] = useState(false);
+  const [newPhone, setNewPhone] = useState('');
+  const [otpCode, setOtpCode] = useState('');
+  const [otpSent, setOtpSent] = useState(false);
+  const [isChangingPhone, setIsChangingPhone] = useState(false);
+  
+  // États pour les notifications push
+  const [pushNotificationsEnabled, setPushNotificationsEnabled] = useState(true);
+  const [isLoadingPushSettings, setIsLoadingPushSettings] = useState(true);
+
+  // Charger les préférences de notifications push
+  const loadPushNotificationSettings = useCallback(async () => {
+    if (!user?.id) return;
+    
+    setIsLoadingPushSettings(true);
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('push_notifications_enabled')
+        .eq('id', user.id)
+        .single();
+
+      if (!error && data) {
+        setPushNotificationsEnabled(data.push_notifications_enabled ?? true);
+      }
+    } catch (error) {
+      console.error('Error loading push notification settings:', error);
+    } finally {
+      setIsLoadingPushSettings(false);
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    loadPushNotificationSettings();
+  }, [loadPushNotificationSettings]);
 
   // Recharger la liste au focus
   useFocusEffect(
     useCallback(() => {
       refreshBlockedUsers();
-    }, [refreshBlockedUsers])
+      loadPushNotificationSettings();
+    }, [refreshBlockedUsers, loadPushNotificationSettings])
   );
 
   const handleRefresh = async () => {
@@ -55,7 +104,6 @@ export default function SettingsScreen() {
 
   const handleViewProfile = async (blockedId: string) => {
     // Charger le profil complet depuis Supabase
-    const { supabase } = await import('../../lib/supabase');
     try {
       const { data: userProfile } = await supabase
         .from('profiles')
@@ -92,6 +140,177 @@ export default function SettingsScreen() {
     }
   };
 
+  // Modifier le mot de passe
+  const handleChangePassword = async () => {
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      Alert.alert('Erreur', 'Veuillez remplir tous les champs');
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      Alert.alert('Erreur', 'Les mots de passe ne correspondent pas');
+      return;
+    }
+
+    if (newPassword.length < 6) {
+      Alert.alert('Erreur', 'Le mot de passe doit contenir au moins 6 caractères');
+      return;
+    }
+
+    setIsChangingPassword(true);
+    try {
+      // Récupérer l'email de l'utilisateur depuis auth.users
+      const { data: authUser } = await supabase.auth.getUser();
+      if (!authUser?.user?.email) {
+        Alert.alert('Erreur', 'Impossible de récupérer les informations de votre compte');
+        setIsChangingPassword(false);
+        return;
+      }
+
+      // Vérifier le mot de passe actuel en essayant de se connecter
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: authUser.user.email,
+        password: currentPassword,
+      });
+
+      if (signInError) {
+        Alert.alert('Erreur', 'Mot de passe actuel incorrect');
+        setIsChangingPassword(false);
+        return;
+      }
+
+      // Mettre à jour le mot de passe
+      const { error: updateError } = await supabase.auth.updateUser({
+        password: newPassword,
+      });
+
+      if (updateError) {
+        Alert.alert('Erreur', updateError.message || 'Impossible de modifier le mot de passe');
+      } else {
+        Alert.alert('Succès', 'Mot de passe modifié avec succès');
+        setShowPasswordModal(false);
+        setCurrentPassword('');
+        setNewPassword('');
+        setConfirmPassword('');
+      }
+    } catch (error: any) {
+      Alert.alert('Erreur', error.message || 'Une erreur est survenue');
+    } finally {
+      setIsChangingPassword(false);
+    }
+  };
+
+  // Envoyer l'OTP pour le nouveau numéro
+  const handleSendOTPForPhone = async () => {
+    if (!newPhone.trim()) {
+      Alert.alert('Erreur', 'Veuillez entrer un numéro de téléphone');
+      return;
+    }
+
+    setIsChangingPhone(true);
+    try {
+      const { error, otpCode } = await sendOTP(newPhone);
+      if (error) {
+        Alert.alert('Erreur', error.message || 'Impossible d\'envoyer le code OTP');
+      } else {
+        setOtpSent(true);
+        Alert.alert('Code envoyé', 'Vérifiez votre téléphone pour le code OTP');
+      }
+    } catch (error: any) {
+      Alert.alert('Erreur', error.message || 'Une erreur est survenue');
+    } finally {
+      setIsChangingPhone(false);
+    }
+  };
+
+  // Vérifier l'OTP et mettre à jour le numéro de téléphone
+  const handleVerifyOTPAndUpdatePhone = async () => {
+    if (!otpCode.trim() || otpCode.length !== 6) {
+      Alert.alert('Erreur', 'Veuillez entrer un code OTP valide (6 chiffres)');
+      return;
+    }
+
+    setIsChangingPhone(true);
+    try {
+      // Vérifier l'OTP avec la fonction simple
+      const { error: verifyError } = await verifyOTPSimple(newPhone, otpCode);
+      if (verifyError) {
+        Alert.alert('Erreur', verifyError.message || 'Code OTP incorrect');
+        setIsChangingPhone(false);
+        return;
+      }
+
+      const formattedNewPhone = newPhone.startsWith('+') ? newPhone : `+${newPhone}`;
+      
+      // Générer le nouvel email basé sur le nouveau numéro (même logique que dans AuthContext)
+      const phoneDigits = formattedNewPhone.replace(/[^0-9]/g, '');
+      const phoneHash = phoneDigits.slice(-8);
+      const newEmail = `jonathantshombe+${phoneHash}@gmail.com`;
+
+      // Mettre à jour le numéro de téléphone dans le profil
+      const { error: updateProfileError } = await supabase
+        .from('profiles')
+        .update({ phone: formattedNewPhone })
+        .eq('id', user?.id);
+
+      if (updateProfileError) {
+        Alert.alert('Erreur', 'Impossible de mettre à jour le numéro de téléphone dans le profil');
+        setIsChangingPhone(false);
+        return;
+      }
+
+      // Mettre à jour l'email dans auth.users pour que la connexion fonctionne avec le nouveau numéro
+      const { error: updateAuthError } = await supabase.auth.updateUser({
+        email: newEmail,
+      });
+
+      if (updateAuthError) {
+        Alert.alert('Erreur', 'Impossible de mettre à jour l\'email de connexion');
+        setIsChangingPhone(false);
+        return;
+      }
+
+      Alert.alert('Succès', 'Numéro de téléphone modifié avec succès. Vous devrez vous reconnecter avec votre nouveau numéro.');
+      setShowPhoneModal(false);
+      setNewPhone('');
+      setOtpCode('');
+      setOtpSent(false);
+      // Déconnexion pour forcer la reconnexion avec le nouveau numéro
+      setTimeout(() => {
+        router.replace('/(screens)/auth');
+      }, 2000);
+    } catch (error: any) {
+      console.error('Error in handleVerifyOTPAndUpdatePhone:', error);
+      Alert.alert('Erreur', error.message || 'Une erreur est survenue');
+      setIsChangingPhone(false);
+    }
+  };
+
+  // Toggle les notifications push
+  const handleTogglePushNotifications = async (enabled: boolean) => {
+    if (!user?.id) return;
+
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update({ push_notifications_enabled: enabled })
+        .eq('id', user.id);
+
+      if (error) {
+        Alert.alert('Erreur', 'Impossible de mettre à jour les préférences de notifications');
+      } else {
+        setPushNotificationsEnabled(enabled);
+        if (enabled) {
+          Alert.alert('Succès', 'Notifications push activées');
+        } else {
+          Alert.alert('Succès', 'Notifications push désactivées');
+        }
+      }
+    } catch (error: any) {
+      Alert.alert('Erreur', error.message || 'Une erreur est survenue');
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       {/* Header */}
@@ -114,6 +333,74 @@ export default function SettingsScreen() {
           />
         }
       >
+        {/* Section Compte */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Ionicons name="person-circle-outline" size={24} color={colors.text} />
+            <Text style={styles.sectionTitle}>Compte</Text>
+          </View>
+          
+          <TouchableOpacity
+            style={styles.settingItem}
+            onPress={() => setShowPasswordModal(true)}
+          >
+            <View style={styles.settingItemLeft}>
+              <Ionicons name="lock-closed-outline" size={20} color={colors.text} />
+              <Text style={styles.settingItemText}>Modifier le mot de passe</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={colors.textTertiary} />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.settingItem}
+            onPress={() => {
+              setShowPhoneModal(true);
+              setOtpSent(false);
+              setNewPhone('');
+              setOtpCode('');
+            }}
+          >
+            <View style={styles.settingItemLeft}>
+              <Ionicons name="call-outline" size={20} color={colors.text} />
+              <View style={styles.settingItemInfo}>
+                <Text style={styles.settingItemText}>Modifier le numéro de téléphone</Text>
+                <Text style={styles.settingItemSubtext}>{currentUser?.phone || user?.phone || 'Non défini'}</Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={colors.textTertiary} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Section Notifications */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Ionicons name="notifications-outline" size={24} color={colors.text} />
+            <Text style={styles.sectionTitle}>Notifications</Text>
+          </View>
+          
+          <View style={styles.settingItem}>
+            <View style={styles.settingItemLeft}>
+              <Ionicons name="notifications" size={20} color={colors.text} />
+              <View style={styles.settingItemInfo}>
+                <Text style={styles.settingItemText}>Notifications push</Text>
+                <Text style={styles.settingItemSubtext}>
+                  {pushNotificationsEnabled ? 'Activées' : 'Désactivées'}
+                </Text>
+              </View>
+            </View>
+            {isLoadingPushSettings ? (
+              <ActivityIndicator size="small" color={colors.purple500} />
+            ) : (
+              <Switch
+                value={pushNotificationsEnabled}
+                onValueChange={handleTogglePushNotifications}
+                trackColor={{ false: colors.borderSecondary, true: colors.purple500 }}
+                thumbColor={pushNotificationsEnabled ? '#ffffff' : colors.textTertiary}
+              />
+            )}
+          </View>
+        </View>
+
         {/* Section Profils bloqués */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
@@ -176,6 +463,177 @@ export default function SettingsScreen() {
           )}
         </View>
       </ScrollView>
+
+      {/* Modal Modifier le mot de passe */}
+      <Modal
+        visible={showPasswordModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowPasswordModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Modifier le mot de passe</Text>
+              <TouchableOpacity onPress={() => setShowPasswordModal(false)}>
+                <Ionicons name="close" size={24} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            <Input
+              label="Mot de passe actuel"
+              value={currentPassword}
+              onChangeText={setCurrentPassword}
+              secureTextEntry
+              placeholder="Entrez votre mot de passe actuel"
+              containerStyle={styles.modalInput}
+            />
+
+            <Input
+              label="Nouveau mot de passe"
+              value={newPassword}
+              onChangeText={setNewPassword}
+              secureTextEntry
+              placeholder="Entrez votre nouveau mot de passe"
+              containerStyle={styles.modalInput}
+            />
+
+            <Input
+              label="Confirmer le nouveau mot de passe"
+              value={confirmPassword}
+              onChangeText={setConfirmPassword}
+              secureTextEntry
+              placeholder="Confirmez votre nouveau mot de passe"
+              containerStyle={styles.modalInput}
+            />
+
+            <View style={styles.modalActions}>
+              <Button
+                title="Annuler"
+                variant="outline"
+                onPress={() => {
+                  setShowPasswordModal(false);
+                  setCurrentPassword('');
+                  setNewPassword('');
+                  setConfirmPassword('');
+                }}
+                style={styles.modalButton}
+              />
+              <Button
+                title="Modifier"
+                onPress={handleChangePassword}
+                loading={isChangingPassword}
+                disabled={isChangingPassword}
+                style={styles.modalButton}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal Modifier le numéro de téléphone */}
+      <Modal
+        visible={showPhoneModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowPhoneModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Modifier le numéro de téléphone</Text>
+              <TouchableOpacity onPress={() => {
+                setShowPhoneModal(false);
+                setNewPhone('');
+                setOtpCode('');
+                setOtpSent(false);
+              }}>
+                <Ionicons name="close" size={24} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.modalDescription}>
+              {otpSent 
+                ? 'Entrez le code OTP reçu sur votre nouveau numéro de téléphone'
+                : 'Entrez votre nouveau numéro de téléphone. Un code OTP sera envoyé pour vérification.'}
+            </Text>
+
+            {!otpSent ? (
+              <>
+                <Input
+                  label="Nouveau numéro de téléphone"
+                  value={newPhone}
+                  onChangeText={setNewPhone}
+                  placeholder="+243XXXXXXXXX"
+                  keyboardType="phone-pad"
+                  containerStyle={styles.modalInput}
+                />
+
+                <View style={styles.modalActions}>
+                  <Button
+                    title="Annuler"
+                    variant="outline"
+                    onPress={() => {
+                      setShowPhoneModal(false);
+                      setNewPhone('');
+                      setOtpCode('');
+                      setOtpSent(false);
+                    }}
+                    style={styles.modalButton}
+                  />
+                  <Button
+                    title="Envoyer le code OTP"
+                    onPress={handleSendOTPForPhone}
+                    loading={isChangingPhone}
+                    disabled={isChangingPhone || !newPhone.trim()}
+                    style={styles.modalButton}
+                  />
+                </View>
+              </>
+            ) : (
+              <>
+                <Input
+                  label="Code OTP"
+                  value={otpCode}
+                  onChangeText={setOtpCode}
+                  placeholder="000000"
+                  keyboardType="number-pad"
+                  maxLength={6}
+                  containerStyle={styles.modalInput}
+                />
+
+                <TouchableOpacity
+                  onPress={handleSendOTPForPhone}
+                  style={styles.resendOtpButton}
+                >
+                  <Text style={styles.resendOtpText}>Renvoyer le code</Text>
+                </TouchableOpacity>
+
+                <View style={styles.modalActions}>
+                  <Button
+                    title="Annuler"
+                    variant="outline"
+                    onPress={() => {
+                      setShowPhoneModal(false);
+                      setNewPhone('');
+                      setOtpCode('');
+                      setOtpSent(false);
+                    }}
+                    style={styles.modalButton}
+                  />
+                  <Button
+                    title="Vérifier et modifier"
+                    onPress={handleVerifyOTPAndUpdatePhone}
+                    loading={isChangingPhone}
+                    disabled={isChangingPhone || otpCode.length !== 6}
+                    style={styles.modalButton}
+                  />
+                </View>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -287,6 +745,84 @@ const styles = StyleSheet.create({
   unblockButton: {
     paddingHorizontal: 16,
     paddingVertical: 8,
+  },
+  settingItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: colors.backgroundSecondary,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+  },
+  settingItemLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  settingItemInfo: {
+    flex: 1,
+    gap: 4,
+  },
+  settingItemText: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: colors.text,
+  },
+  settingItemSubtext: {
+    fontSize: 12,
+    color: colors.textSecondary,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: colors.background,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 24,
+    maxHeight: '90%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  modalDescription: {
+    fontSize: 14,
+    color: colors.textSecondary,
+    marginBottom: 24,
+    lineHeight: 20,
+  },
+  modalInput: {
+    marginBottom: 16,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 8,
+  },
+  modalButton: {
+    flex: 1,
+    marginTop: 0,
+  },
+  resendOtpButton: {
+    alignSelf: 'flex-end',
+    marginBottom: 16,
+  },
+  resendOtpText: {
+    fontSize: 14,
+    color: colors.purple500,
+    fontWeight: '500',
   },
 });
 

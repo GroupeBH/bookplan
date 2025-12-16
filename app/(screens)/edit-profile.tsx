@@ -159,7 +159,7 @@ export default function EditProfileScreen() {
         pseudo: pseudo.trim(),
         age: Number(age),
         description: description.trim(),
-        specialty: specialty.trim() || undefined,
+        specialty: specialty.trim() || null,
         photo: photo || authUser.photo,
       };
 

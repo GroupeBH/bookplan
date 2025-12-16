@@ -10,6 +10,7 @@ import { Badge } from '../../components/ui/Badge';
 import { colors } from '../../constants/colors';
 import { useAuth } from '../../context/AuthContext';
 import { useBooking } from '../../context/BookingContext';
+import { useRating } from '../../context/RatingContext';
 import { useUser } from '../../context/UserContext';
 import { isMapboxAvailable } from '../../lib/mapbox';
 import { User } from '../../types';
@@ -106,10 +107,12 @@ export default function Dashboard() {
   const { currentUser, setSelectedUser } = useUser();
   const { isAuthenticated, isLoading, user, updateUser } = useAuth();
   const { getAvailableUsers } = useBooking();
+  const { getUserAverageRating } = useRating();
   const [activeTab, setActiveTab] = useState<Tab>('home');
   const [availableUsers, setAvailableUsers] = useState<User[]>([]);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
+  const [userRatings, setUserRatings] = useState<Map<string, { average: number; count: number }>>(new Map());
 
   // Protection de route
   useEffect(() => {
@@ -301,6 +304,23 @@ export default function Dashboard() {
         filteredUsers.sort((a, b) => (a.distance || 999) - (b.distance || 999));
 
         setAvailableUsers(filteredUsers);
+
+        // Charger les avis réels pour chaque utilisateur
+        const ratingsMap = new Map<string, { average: number; count: number }>();
+        await Promise.all(
+          filteredUsers.map(async (u) => {
+            try {
+              const avgRating = await getUserAverageRating(u.id);
+              ratingsMap.set(u.id, avgRating);
+              console.log('⭐ Avis chargés pour', u.pseudo, ':', avgRating);
+            } catch (error) {
+              console.error(`Error loading ratings for ${u.id}:`, error);
+              // En cas d'erreur, utiliser les valeurs par défaut
+              ratingsMap.set(u.id, { average: u.rating || 0, count: u.reviewCount || 0 });
+            }
+          })
+        );
+        setUserRatings(ratingsMap);
       } else {
         // Si pas de position, ne pas afficher d'utilisateurs
         setAvailableUsers([]);
@@ -544,13 +564,17 @@ export default function Dashboard() {
                 <View style={styles.metaItem}>
                   <Ionicons name="location" size={12} color={colors.textTertiary} />
                   <Text style={styles.metaText}>
-                    {user.distance !== undefined ? `${user.distance.toFixed(1)} km` : 'N/A'}
+                    {user.distance !== undefined ? `${user.distance.toFixed(2)} km` : 'N/A'}
                   </Text>
                 </View>
                 <View style={styles.metaItem}>
                   <Ionicons name="star" size={12} color={colors.yellow500} />
-                  <Text style={styles.metaText}>{user.rating.toFixed(1)}</Text>
-                  <Text style={styles.metaTextSecondary}>({user.reviewCount || 0})</Text>
+                  <Text style={styles.metaText}>
+                    {(userRatings.get(user.id)?.average || user.rating || 0).toFixed(1)}
+                  </Text>
+                  <Text style={styles.metaTextSecondary}>
+                    ({userRatings.get(user.id)?.count || user.reviewCount || 0})
+                  </Text>
                 </View>
               </View>
             </View>

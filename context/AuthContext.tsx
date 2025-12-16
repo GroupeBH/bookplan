@@ -13,6 +13,7 @@ interface AuthContextType {
   // Authentification par téléphone avec OTP interne
   sendOTP: (phone: string) => Promise<{ error: any; otpCode?: string }>;
   verifyOTP: (phone: string, token: string, pseudo?: string, lat?: number, lng?: number, password?: string, specialty?: string) => Promise<{ error: any; user: User | null }>;
+  verifyOTPSimple: (phone: string, token: string) => Promise<{ error: any }>;
   // Authentification par mot de passe
   signUpWithPassword: (phone: string, password: string, pseudo: string, age?: number, gender?: 'male' | 'female', lat?: number, lng?: number, specialty?: string) => Promise<{ error: any; user: User | null }>;
   loginWithPassword: (phone: string, password: string) => Promise<{ error: any; user: User | null }>;
@@ -166,6 +167,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           age: userProfile.age,
           photo: userProfile.photo,
           photoFromDB: data.photo,
+          specialty: userProfile.specialty,
+          specialtyFromDB: data.specialty,
         });
         setUser(userProfile);
         setIsAuthenticated(true);
@@ -641,6 +644,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.error('Error in verifyOTP:', error);
       }
       return { error, user: null };
+    }
+  };
+
+  // Vérifier l'OTP simplement (sans toute la logique de création de compte)
+  const verifyOTPSimple = async (phone: string, token: string): Promise<{ error: any }> => {
+    try {
+      const formattedPhone = phone.startsWith('+') ? phone : `+${phone}`;
+      
+      // Vérifier l'OTP directement dans le stockage
+      const storedOTP = otpStorage.get(formattedPhone);
+      
+      if (!storedOTP) {
+        return { error: { message: 'Code OTP expiré ou invalide. Veuillez demander un nouveau code.' } };
+      }
+
+      if (storedOTP.expiresAt < Date.now()) {
+        otpStorage.delete(formattedPhone);
+        return { error: { message: 'Code OTP expiré. Veuillez demander un nouveau code.' } };
+      }
+
+      if (storedOTP.code !== token) {
+        return { error: { message: 'Code OTP incorrect.' } };
+      }
+
+      // OTP valide, supprimer du stockage
+      otpStorage.delete(formattedPhone);
+      
+      return { error: null };
+    } catch (error: any) {
+      console.error('Error in verifyOTPSimple:', error);
+      return { error: { message: error.message || 'Erreur lors de la vérification OTP' } };
     }
   };
 
@@ -1304,7 +1338,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         p_lat: userData.lat !== undefined ? userData.lat : (user?.lat || null),
         p_lng: userData.lng !== undefined ? userData.lng : (user?.lng || null),
         p_is_available: userData.isAvailable !== undefined ? userData.isAvailable : (user?.isAvailable !== false),
-        p_specialty: userData.specialty !== undefined ? userData.specialty : (user?.specialty || null),
+        p_specialty: userData.specialty !== undefined ? (userData.specialty || null) : (user?.specialty || null),
       };
 
       console.log('💾 updateUserProfile - Paramètres envoyés:', {
@@ -1313,12 +1347,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         pseudo: rpcParams.p_pseudo,
         age: rpcParams.p_age,
         photo: rpcParams.p_photo,
+        specialty: rpcParams.p_specialty,
         hasPhoto: userData.photo !== undefined,
         photoValue: userData.photo,
         currentUserPhoto: user?.photo,
         hasDescription: userData.description !== undefined,
         descriptionValue: userData.description,
         currentUserDescription: user?.description,
+        hasSpecialty: userData.specialty !== undefined,
+        specialtyValue: userData.specialty,
+        currentUserSpecialty: user?.specialty,
         rpcParams: JSON.stringify(rpcParams, null, 2),
       });
 
@@ -1339,6 +1377,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (userData.description !== undefined) updateData.description = userData.description;
         if (userData.photo !== undefined) updateData.photo = userData.photo;
         if (userData.gender !== undefined) updateData.gender = userData.gender;
+        if (userData.specialty !== undefined) updateData.specialty = userData.specialty || null;
         
         const { error: updateError } = await supabase
           .from('profiles')
@@ -1365,7 +1404,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Vérifier que la mise à jour a bien été effectuée
       const { data: verifyData, error: verifyError } = await supabase
         .from('profiles')
-        .select('description, pseudo, age, photo')
+        .select('description, pseudo, age, photo, specialty')
         .eq('id', userId)
         .single();
       
@@ -1375,6 +1414,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           pseudo: verifyData.pseudo,
           age: verifyData.age,
           photo: verifyData.photo,
+          specialty: verifyData.specialty,
         });
       }
     } catch (error: any) {
@@ -1439,7 +1479,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (newSession?.user) {
           const { data: updatedProfile } = await supabase
             .from('profiles')
-            .select('description, pseudo, age')
+            .select('description, pseudo, age, specialty')
             .eq('id', userId)
             .single();
           
@@ -1447,6 +1487,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             description: updatedProfile?.description,
             pseudo: updatedProfile?.pseudo,
             age: updatedProfile?.age,
+            specialty: updatedProfile?.specialty,
           });
         }
       }
@@ -1591,6 +1632,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user,
         sendOTP,
         verifyOTP,
+        verifyOTPSimple,
         signUpWithPassword,
         loginWithPassword,
         resetPassword,

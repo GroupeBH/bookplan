@@ -1,25 +1,25 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, Alert, ActivityIndicator } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useLocalSearchParams } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors } from '../../constants/colors';
-import { Button } from '../../components/ui/Button';
-import { Badge } from '../../components/ui/Badge';
-import { Input } from '../../components/ui/Input';
-import { ImageWithFallback } from '../../components/ImageWithFallback';
-import { useUser } from '../../context/UserContext';
-import { useAccessRequest } from '../../context/AccessRequestContext';
-import { useRating } from '../../context/RatingContext';
-import { useAuth } from '../../context/AuthContext';
-import { useBooking } from '../../context/BookingContext';
-import { useBlock } from '../../context/BlockContext';
-import { useAlbum } from '../../context/AlbumContext';
-import { supabase } from '../../lib/supabase';
-import { getProfileImage } from '../../lib/defaultImages';
-import { User } from '../../types';
+import { useFocusEffect } from '@react-navigation/native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { ImageWithFallback } from '../../components/ImageWithFallback';
+import { Badge } from '../../components/ui/Badge';
+import { Button } from '../../components/ui/Button';
+import { Input } from '../../components/ui/Input';
+import { colors } from '../../constants/colors';
+import { useAccessRequest } from '../../context/AccessRequestContext';
+import { useAlbum } from '../../context/AlbumContext';
+import { useAuth } from '../../context/AuthContext';
+import { useBlock } from '../../context/BlockContext';
+import { useBooking } from '../../context/BookingContext';
+import { useRating } from '../../context/RatingContext';
+import { useUser } from '../../context/UserContext';
+import { getProfileImage } from '../../lib/defaultImages';
+import { supabase } from '../../lib/supabase';
+import { User } from '../../types';
 
 export default function UserProfileScreen() {
   const router = useRouter();
@@ -27,6 +27,71 @@ export default function UserProfileScreen() {
   const { selectedUser, setSelectedUser } = useUser();
   const [isLoadingProfile, setIsLoadingProfile] = useState(false);
   const { user: currentUser } = useAuth();
+  const [calculatedDistance, setCalculatedDistance] = useState<number | null>(null);
+  const [isUserOnline, setIsUserOnline] = useState<boolean>(false);
+  const [onlineStatusText, setOnlineStatusText] = useState<string>('En ligne');
+
+  // Calculer la distance entre deux points (formule de Haversine)
+  const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+    const R = 6371; // Rayon de la Terre en km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const distance = R * c;
+    return distance;
+  };
+
+  // Déterminer si l'utilisateur est en ligne et générer le texte du statut
+  const calculateOnlineStatus = (lastSeenValue: string | undefined): { isOnline: boolean; statusText: string } => {
+    if (!lastSeenValue) {
+      return { isOnline: false, statusText: 'Hors ligne' };
+    }
+
+    // Si c'est "En ligne", considérer comme en ligne
+    if (lastSeenValue === 'En ligne' || lastSeenValue.toLowerCase() === 'en ligne') {
+      return { isOnline: true, statusText: 'En ligne' };
+    }
+
+    // Essayer de parser comme timestamp ISO
+    try {
+      const lastSeenDate = new Date(lastSeenValue);
+      
+      // Vérifier si c'est une date valide
+      if (isNaN(lastSeenDate.getTime())) {
+        // Si ce n'est pas une date valide, vérifier si c'est "En ligne"
+        return { isOnline: false, statusText: 'Hors ligne' };
+      }
+
+      const now = new Date();
+      const diffMs = now.getTime() - lastSeenDate.getTime();
+      const diffMinutes = Math.floor(diffMs / (1000 * 60));
+      const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+      const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+      // Considérer en ligne si dernière activité il y a moins de 5 minutes
+      if (diffMinutes < 5) {
+        return { isOnline: true, statusText: 'En ligne' };
+      }
+
+      // Générer le texte du statut basé sur le temps écoulé
+      if (diffMinutes < 60) {
+        return { isOnline: false, statusText: `Il y a ${diffMinutes} min` };
+      } else if (diffHours < 24) {
+        return { isOnline: false, statusText: `Il y a ${diffHours}h` };
+      } else if (diffDays < 7) {
+        return { isOnline: false, statusText: `Il y a ${diffDays}j` };
+      } else {
+        return { isOnline: false, statusText: 'Hors ligne' };
+      }
+    } catch (error) {
+      // En cas d'erreur de parsing, considérer comme hors ligne
+      return { isOnline: false, statusText: 'Hors ligne' };
+    }
+  };
   const { requestAccess, hasAccess, canViewFullProfile, accessRequests, refreshRequests } = useAccessRequest();
   const { createRating, getUserRatings, updateRating, getUserAverageRating } = useRating();
   const { getActiveBookingWithUser, cancelBooking } = useBooking();
@@ -50,6 +115,10 @@ export default function UserProfileScreen() {
   const isLoadingBookingRef = React.useRef(false);
   const lastLoadTimeRef = React.useRef<number>(0);
   const lastSelectedUserIdRef = React.useRef<string | null>(null);
+  const isLoadingRatingsRef = React.useRef(false);
+  const lastRatingsLoadTimeRef = React.useRef<number>(0);
+  const lastRatingsUserIdRef = React.useRef<string | null>(null);
+  const lastFocusTimeRef = React.useRef<number>(0);
 
   // Fonction pour charger la demande active
   const loadActiveBooking = React.useCallback(async (force = false) => {
@@ -83,20 +152,24 @@ export default function UserProfileScreen() {
     // Ajouter un timeout pour éviter que la fonction reste bloquée indéfiniment
     const timeoutId = setTimeout(() => {
       if (isLoadingBookingRef.current) {
-        console.log('⏱️ Timeout lors du chargement de la demande active');
+        console.log('⏱️ Timeout lors du chargement de la demande active (connexion lente)');
         setIsLoadingBooking(false);
         isLoadingBookingRef.current = false;
+        setActiveBooking(null); // Définir à null pour éviter un état indéfini
       }
-    }, 10000); // 10 secondes timeout
+    }, 15000); // Augmenté à 15 secondes
 
     try {
       const booking = await getActiveBookingWithUser(selectedUser.id);
       clearTimeout(timeoutId);
       console.log('📋 Demande active chargée:', booking ? `${booking.id} - ${booking.status}` : 'Aucune demande');
       setActiveBooking(booking);
-    } catch (error) {
+    } catch (error: any) {
       clearTimeout(timeoutId);
-      console.error('Error loading active booking:', error);
+      // Ne logger comme erreur que si ce n'est pas un timeout ou une erreur réseau
+      if (!error?.message?.includes('Timeout') && !error?.message?.includes('Network')) {
+        console.error('Error loading active booking:', error);
+      }
       setActiveBooking(null);
     } finally {
       clearTimeout(timeoutId);
@@ -113,14 +186,34 @@ export default function UserProfileScreen() {
   }, [selectedUser?.id, currentUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Charger les avis du profil
-  const loadUserRatings = React.useCallback(async () => {
+  const loadUserRatings = React.useCallback(async (force = false) => {
     if (!selectedUser?.id) return;
 
+    // Éviter les appels multiples
+    const now = Date.now();
+    const timeSinceLastLoad = now - lastRatingsLoadTimeRef.current;
+    const MIN_LOAD_INTERVAL = 2000; // 2 secondes minimum entre les chargements
+    const sameUser = lastRatingsUserIdRef.current === selectedUser.id;
+
+    if (!force && (
+      isLoadingRatingsRef.current ||
+      (timeSinceLastLoad < MIN_LOAD_INTERVAL && sameUser)
+    )) {
+      console.log('⏭️ Rechargement des avis ignoré (déjà en cours ou trop récent)');
+      return;
+    }
+
+    isLoadingRatingsRef.current = true;
+    lastRatingsLoadTimeRef.current = now;
+    lastRatingsUserIdRef.current = selectedUser.id;
     setIsLoadingRatings(true);
+    let timeoutId: NodeJS.Timeout | null = null;
     try {
       // Ajouter un timeout pour éviter que le chargement reste bloqué
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Timeout loading ratings')), 10000);
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error('Timeout loading ratings'));
+        }, 15000); // Augmenté à 15 secondes
       });
 
       // Charger les avis avec timeout
@@ -129,9 +222,17 @@ export default function UserProfileScreen() {
         timeoutPromise,
       ]) as any[];
       
+      if (timeoutId) clearTimeout(timeoutId);
+      
+      console.log('📊 Avis chargés depuis getUserRatings:', {
+        count: ratings?.length || 0,
+        ratings: ratings?.map((r: any) => ({ id: r.id, raterId: r.raterId, rating: r.rating })),
+      });
+      
       // Charger les informations des raters pour chaque avis avec timeout individuel
       const ratingsWithRaterInfo = await Promise.all(
         ratings.map(async (ratingItem) => {
+          let raterTimeoutId: NodeJS.Timeout | null = null;
           try {
             const profilePromise = supabase
               .from('profiles')
@@ -139,11 +240,14 @@ export default function UserProfileScreen() {
               .eq('id', ratingItem.raterId)
               .single();
             
-            const timeout = new Promise((_, reject) => {
-              setTimeout(() => reject(new Error('Timeout')), 5000);
+            const timeout = new Promise<never>((_, reject) => {
+              raterTimeoutId = setTimeout(() => {
+                reject(new Error('Timeout'));
+              }, 8000); // Augmenté à 8 secondes
             });
 
             const { data: raterProfile } = await Promise.race([profilePromise, timeout]) as any;
+            if (raterTimeoutId) clearTimeout(raterTimeoutId);
             
             return {
               ...ratingItem,
@@ -152,36 +256,169 @@ export default function UserProfileScreen() {
                 photo: raterProfile.photo || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400',
               } : null,
             };
-          } catch (err) {
-            console.error('Error fetching rater profile:', err);
-            return ratingItem;
+          } catch (err: any) {
+            if (raterTimeoutId) clearTimeout(raterTimeoutId);
+            // Ne pas logger les timeouts comme des erreurs
+            if (!err?.message?.includes('Timeout') && !err?.message?.includes('Network')) {
+              console.error('Error fetching rater profile:', err);
+            }
+            // Retourner l'avis sans les infos du rater en cas d'erreur
+            return {
+              ...ratingItem,
+              rater: null,
+            };
           }
         })
       );
 
-      setUserRatings(ratingsWithRaterInfo);
+      console.log('📊 Avis avec infos des raters:', {
+        count: ratingsWithRaterInfo?.length || 0,
+        ratingsWithRaters: ratingsWithRaterInfo?.map((r: any) => ({ 
+          id: r.id, 
+          raterId: r.raterId, 
+          raterPseudo: r.rater?.pseudo || 'N/A',
+          rating: r.rating 
+        })),
+      });
+
+      setUserRatings(ratingsWithRaterInfo || []);
 
       // Vérifier si l'utilisateur actuel a déjà noté ce profil
       if (currentUser?.id) {
         const myRating = ratings.find(r => r.raterId === currentUser.id);
+        console.log('🔍 Avis de l\'utilisateur actuel trouvé:', myRating ? { id: myRating.id, rating: myRating.rating } : 'Aucun');
         setExistingRating(myRating || null);
       }
 
       // Charger la moyenne des notes avec timeout
-      const avgRating = await Promise.race([
-        getUserAverageRating(selectedUser.id),
-        Promise.resolve({ average: 0, count: 0 }),
-      ]) as { average: number; count: number };
-      setAverageRating(avgRating);
-    } catch (error) {
-      console.error('Error loading user ratings:', error);
-      // En cas d'erreur, initialiser avec des valeurs par défaut
+      let avgRating: { average: number; count: number } = { average: 0, count: 0 };
+      try {
+        const timeoutPromise = new Promise<{ average: number; count: number }>((resolve) => {
+          setTimeout(() => resolve({ average: 0, count: 0 }), 10000); // 10 secondes timeout
+        });
+
+        avgRating = await Promise.race([
+          getUserAverageRating(selectedUser.id),
+          timeoutPromise,
+        ]) as { average: number; count: number };
+      } catch (error) {
+        console.error('Error getting average rating:', error);
+        // En cas d'erreur, calculer manuellement depuis les ratings chargés
+        if (ratings.length > 0) {
+          const sum = ratings.reduce((acc, r) => acc + r.rating, 0);
+          avgRating = {
+            average: sum / ratings.length,
+            count: ratings.length,
+          };
+        }
+      }
+      
+      console.log('⭐ Note moyenne calculée pour', selectedUser.id, ':', {
+        average: avgRating.average,
+        count: avgRating.count,
+        ratingsLength: ratings.length,
+      });
+      
+      // S'assurer que count est bien un nombre et utiliser les ratings chargés comme fallback
+      const finalCount = typeof avgRating.count === 'number' && avgRating.count > 0 
+        ? avgRating.count 
+        : (ratings.length || 0);
+      const finalAverage = typeof avgRating.average === 'number' && !isNaN(avgRating.average) && avgRating.average > 0
+        ? avgRating.average
+        : (ratings.length > 0 
+          ? ratings.reduce((acc, r) => acc + r.rating, 0) / ratings.length 
+          : 0);
+      
+      console.log('⭐ Valeurs finales:', { average: finalAverage, count: finalCount, ratingsLength: ratings.length });
+      setAverageRating({ average: finalAverage, count: finalCount });
+    } catch (error: any) {
+      if (timeoutId) clearTimeout(timeoutId);
+      // Ne logger comme erreur que si ce n'est pas un timeout réseau
+      if (error?.message?.includes('Timeout')) {
+        console.log('⏱️ Timeout lors du chargement des avis (connexion lente)');
+      } else if (!error?.message?.includes('Network')) {
+        console.error('Error loading user ratings:', error);
+      }
+      // En cas d'erreur, initialiser avec des valeurs par défaut (ne pas bloquer l'UI)
       setUserRatings([]);
       setAverageRating({ average: 0, count: 0 });
     } finally {
       setIsLoadingRatings(false);
+      isLoadingRatingsRef.current = false;
     }
-  }, [selectedUser?.id, currentUser?.id, getUserRatings, getUserAverageRating]);
+  }, [selectedUser?.id, currentUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Calculer la distance entre l'utilisateur actuel et le profil sélectionné
+  React.useEffect(() => {
+    if (currentUser?.lat && currentUser?.lng && selectedUser?.lat && selectedUser?.lng) {
+      const distance = calculateDistance(
+        currentUser.lat,
+        currentUser.lng,
+        selectedUser.lat,
+        selectedUser.lng
+      );
+      setCalculatedDistance(distance);
+      console.log('📏 Distance calculée:', {
+        currentUser: { lat: currentUser.lat, lng: currentUser.lng },
+        selectedUser: { lat: selectedUser.lat, lng: selectedUser.lng },
+        distance: distance.toFixed(2) + ' km',
+      });
+    } else {
+      setCalculatedDistance(null);
+    }
+  }, [currentUser?.lat, currentUser?.lng, selectedUser?.lat, selectedUser?.lng]);
+
+  // Calculer le statut en ligne de l'utilisateur
+  React.useEffect(() => {
+    if (!selectedUser) return;
+
+    const updateOnlineStatus = () => {
+      // Récupérer le last_seen depuis la base de données pour avoir la valeur la plus récente
+      const fetchLatestStatus = async () => {
+        try {
+          const { data, error } = await supabase
+            .from('profiles')
+            .select('last_seen')
+            .eq('id', selectedUser.id)
+            .single();
+
+          if (!error && data) {
+            const lastSeenValue = data.last_seen;
+            const { isOnline, statusText } = calculateOnlineStatus(lastSeenValue);
+            setIsUserOnline(isOnline);
+            setOnlineStatusText(statusText);
+            console.log('🟢 Statut en ligne mis à jour:', {
+              userId: selectedUser.id,
+              lastSeen: lastSeenValue,
+              isOnline,
+              statusText,
+            });
+          } else {
+            // Fallback sur selectedUser.lastSeen si la requête échoue
+            const { isOnline, statusText } = calculateOnlineStatus(selectedUser.lastSeen);
+            setIsUserOnline(isOnline);
+            setOnlineStatusText(statusText);
+          }
+        } catch (error) {
+          console.error('Error fetching online status:', error);
+          // Fallback sur selectedUser.lastSeen en cas d'erreur
+          const { isOnline, statusText } = calculateOnlineStatus(selectedUser.lastSeen);
+          setIsUserOnline(isOnline);
+          setOnlineStatusText(statusText);
+        }
+      };
+
+      fetchLatestStatus();
+    };
+
+    // Mettre à jour immédiatement
+    updateOnlineStatus();
+
+    // Mettre à jour toutes les 30 secondes pour avoir un statut en temps réel
+    const interval = setInterval(updateOnlineStatus, 30000);
+
+    return () => clearInterval(interval);
+  }, [selectedUser?.id, selectedUser?.lastSeen]);
 
   // Charger les photos d'album au montage
   React.useEffect(() => {
@@ -193,7 +430,7 @@ export default function UserProfileScreen() {
   // Charger les avis au montage
   React.useEffect(() => {
     if (selectedUser?.id) {
-      loadUserRatings();
+      loadUserRatings(true); // Forcer le chargement initial
     }
   }, [selectedUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -256,19 +493,34 @@ export default function UserProfileScreen() {
   // Recharger quand on revient sur la page (après avoir créé une demande par exemple)
   useFocusEffect(
     React.useCallback(() => {
-      // Utiliser un petit délai pour éviter les appels multiples et laisser le temps à la DB de se mettre à jour
-      const timer = setTimeout(() => {
-        if (selectedUser?.id && currentUser?.id) {
-          console.log('🔄 Rechargement du profil - refreshRequests et loadActiveBooking');
-          refreshRequests(); // Rafraîchir les demandes d'accès
-          // Recharger la demande active quand on revient sur la page
-          loadActiveBooking(true); // Force le rechargement quand on revient
-        }
-      }, 500); // Délai augmenté à 500ms pour laisser le temps à la DB
+      const now = Date.now();
+      const timeSinceLastFocus = now - lastFocusTimeRef.current;
+      
+      // Ne rafraîchir que si on revient après plus de 2 secondes (évite les rafraîchissements lors de la navigation rapide)
+      if (timeSinceLastFocus > 2000 || lastFocusTimeRef.current === 0) {
+        lastFocusTimeRef.current = now;
+        
+        // Utiliser un petit délai pour éviter les appels multiples et laisser le temps à la DB de se mettre à jour
+        const timer = setTimeout(() => {
+          if (selectedUser?.id && currentUser?.id) {
+            console.log('🔄 Rechargement du profil - refreshRequests, loadActiveBooking et loadUserRatings');
+            refreshRequests(); // Rafraîchir les demandes d'accès
+            // Recharger la demande active quand on revient sur la page
+            loadActiveBooking(true); // Force le rechargement quand on revient
+            // Recharger les avis pour mettre à jour le nombre d'avis (sans forcer pour éviter les boucles)
+            // Ne recharger que si on n'est pas déjà en train de charger
+            if (!isLoadingRatingsRef.current) {
+              loadUserRatings(false);
+            }
+          }
+        }, 500); // Délai augmenté à 500ms pour laisser le temps à la DB
 
-      return () => {
-        clearTimeout(timer);
-      };
+        return () => {
+          clearTimeout(timer);
+        };
+      } else {
+        console.log('⏭️ Focus trop récent, pas de rafraîchissement des avis');
+      }
     }, [selectedUser?.id, currentUser?.id, refreshRequests, loadActiveBooking]) // eslint-disable-line react-hooks/exhaustive-deps
   );
 
@@ -454,15 +706,24 @@ export default function UserProfileScreen() {
         return;
       }
 
+      const wasExisting = !!existingRating;
       setShowRatingDialog(false);
       setRating(0);
       setComment('');
       setExistingRating(null);
       
-      // Recharger les avis pour mettre à jour l'affichage
-      await loadUserRatings();
+      // Attendre un peu pour que la DB se mette à jour
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Augmenté à 1 seconde
       
-      Alert.alert('Succès', existingRating ? 'Votre avis a été modifié' : 'Votre avis a été envoyé');
+      console.log('🔄 Rechargement des avis après ajout/modification...');
+      // Mettre à jour lastFocusTimeRef pour éviter que useFocusEffect ne recharge immédiatement après
+      lastFocusTimeRef.current = Date.now();
+      // Recharger les avis pour mettre à jour l'affichage
+      await loadUserRatings(true); // Forcer le rechargement après modification
+      
+      console.log('✅ Avis rechargés après ajout/modification');
+      
+      Alert.alert('Succès', wasExisting ? 'Votre avis a été modifié' : 'Votre avis a été envoyé');
     } catch (error: any) {
       Alert.alert('Erreur', 'Une erreur est survenue');
       console.error('Submit rating error:', error);
@@ -487,20 +748,31 @@ export default function UserProfileScreen() {
     if (!selectedUser?.id) return;
     
     setIsLoadingAlbum(true);
+    let timeoutId: NodeJS.Timeout | null = null;
     try {
       // Ajouter un timeout pour éviter que le chargement reste bloqué
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Timeout loading album photos')), 8000);
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error('Timeout loading album photos'));
+        }, 15000); // Augmenté à 15 secondes
       });
 
       const photos = await Promise.race([
         getUserAlbumPhotos(selectedUser.id),
         timeoutPromise,
       ]) as any[];
-      setUserAlbumPhotos(photos);
-    } catch (error) {
-      console.error('Error loading album photos:', error);
-      // En cas d'erreur, initialiser avec un tableau vide
+      
+      if (timeoutId) clearTimeout(timeoutId);
+      setUserAlbumPhotos(photos || []);
+    } catch (error: any) {
+      if (timeoutId) clearTimeout(timeoutId);
+      // Ne logger comme erreur que si ce n'est pas un timeout réseau
+      if (error?.message?.includes('Timeout')) {
+        console.log('⏱️ Timeout lors du chargement des photos d\'album (connexion lente)');
+      } else if (!error?.message?.includes('Network')) {
+        console.error('Error loading album photos:', error);
+      }
+      // En cas d'erreur, initialiser avec un tableau vide (ne pas bloquer l'UI)
       setUserAlbumPhotos([]);
     } finally {
       setIsLoadingAlbum(false);
@@ -542,18 +814,30 @@ export default function UserProfileScreen() {
             <View style={styles.metaRow}>
               <View style={styles.metaItem}>
                 <Ionicons name="star" size={16} color={colors.yellow500} />
-                <Text style={styles.metaText}>{selectedUser.rating?.toFixed(1) || '0.0'}</Text>
-                <Text style={styles.metaTextSecondary}>({selectedUser.reviewCount || 0})</Text>
+                <Text style={styles.metaText}>
+                  {averageRating.count > 0 ? averageRating.average.toFixed(1) : selectedUser.rating?.toFixed(1) || '0.0'}
+                </Text>
+                <Text style={styles.metaTextSecondary}>
+                  ({averageRating.count > 0 ? averageRating.count : selectedUser.reviewCount || 0})
+                </Text>
               </View>
-              {selectedUser.distance !== undefined && selectedUser.distance !== null && (
+              {(calculatedDistance !== null || (selectedUser.distance !== undefined && selectedUser.distance !== null)) && (
                 <View style={styles.metaItem}>
                   <Ionicons name="location" size={16} color={colors.textSecondary} />
-                  <Text style={styles.metaText}>{selectedUser.distance.toFixed(1)} km</Text>
+                  <Text style={styles.metaText}>
+                    {(calculatedDistance !== null ? calculatedDistance : selectedUser.distance || 0).toFixed(2)} km
+                  </Text>
                 </View>
               )}
               <View style={styles.metaItem}>
-                <Ionicons name="time-outline" size={16} color={colors.textSecondary} />
-                <Text style={styles.metaText}>{selectedUser.lastSeen || 'En ligne'}</Text>
+                <Ionicons 
+                  name={isUserOnline ? "radio-button-on" : "radio-button-off"} 
+                  size={16} 
+                  color={isUserOnline ? colors.green500 : colors.textTertiary} 
+                />
+                <Text style={[styles.metaText, isUserOnline && { color: colors.green500 }]}>
+                  {onlineStatusText}
+                </Text>
               </View>
             </View>
           </View>
@@ -663,7 +947,9 @@ export default function UserProfileScreen() {
                 </View>
                 <View style={styles.infoRow}>
                   <Text style={styles.infoLabel}>Dernière connexion</Text>
-                  <Text style={styles.infoValue}>{selectedUser.lastSeen || 'En ligne'}</Text>
+                  <Text style={[styles.infoValue, isUserOnline && { color: colors.green500 }]}>
+                    {onlineStatusText}
+                  </Text>
                 </View>
               </View>
             </Animated.View>
@@ -924,11 +1210,20 @@ export default function UserProfileScreen() {
               <View style={styles.emptyRatings}>
                 <Ionicons name="star-outline" size={32} color={colors.textTertiary} />
                 <Text style={styles.emptyRatingsText}>Aucun avis pour le moment</Text>
+                {__DEV__ && (
+                  <Text style={[styles.emptyRatingsText, { fontSize: 10, marginTop: 4 }]}>
+                    Debug: isLoadingRatings={isLoadingRatings.toString()}, userRatings.length={userRatings.length}
+                  </Text>
+                )}
               </View>
             ) : (
               <View style={styles.ratingsList}>
-                {userRatings.map((ratingItem) => (
-                  <Animated.View key={ratingItem.id} entering={FadeIn} style={styles.ratingCard}>
+                {userRatings.map((ratingItem) => {
+                  if (__DEV__) {
+                    console.log('🎨 Rendu de l\'avis:', { id: ratingItem.id, rater: ratingItem.rater?.pseudo, rating: ratingItem.rating });
+                  }
+                  return (
+                    <Animated.View key={ratingItem.id} entering={FadeIn} style={styles.ratingCard}>
                     <View style={styles.ratingCardHeader}>
                       <View style={styles.ratingCardUser}>
                         {ratingItem.rater && (
@@ -965,7 +1260,8 @@ export default function UserProfileScreen() {
                       <Text style={styles.ratingCardComment}>{ratingItem.comment}</Text>
                     )}
                   </Animated.View>
-                ))}
+                  );
+                })}
               </View>
             )}
           </View>

@@ -10,6 +10,7 @@ import { ImageWithFallback } from '../../components/ImageWithFallback';
 import { Badge } from '../../components/ui/Badge';
 import { useOffer } from '../../context/OfferContext';
 import { useAuth } from '../../context/AuthContext';
+import { useRating } from '../../context/RatingContext';
 import { Offer, OfferApplication, OfferType } from '../../types';
 import { supabase } from '../../lib/supabase';
 import Animated, { FadeIn } from 'react-native-reanimated';
@@ -33,6 +34,7 @@ export default function OfferDetailsScreen() {
   const { offerId } = useLocalSearchParams<{ offerId: string }>();
   const { user } = useAuth();
   const { getOfferById, applyToOffer, getOfferApplications, cancelMyApplication, selectApplication, rejectApplication, cancelOffer, deleteOffer, reactivateOffer, refreshMyOffers } = useOffer();
+  const { getUserAverageRating } = useRating();
   const [offer, setOffer] = useState<Offer | null>(null);
   const [applications, setApplications] = useState<OfferApplication[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -46,6 +48,7 @@ export default function OfferDetailsScreen() {
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [rejectionMessage, setRejectionMessage] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [authorRating, setAuthorRating] = useState({ average: 0, count: 0 });
 
   useEffect(() => {
     loadOffer();
@@ -80,6 +83,16 @@ export default function OfferDetailsScreen() {
         }
         
         setOffer(loadedOffer);
+        
+        // Charger la moyenne et le nombre d'avis de l'auteur
+        if (loadedOffer.authorId) {
+          try {
+            const avgRating = await getUserAverageRating(loadedOffer.authorId);
+            setAuthorRating(avgRating);
+          } catch (error) {
+            console.error('Error loading author rating:', error);
+          }
+        }
         
         // Vérifier si l'utilisateur a déjà candidaté
         const loadedApplications = await getOfferApplications(offerId);
@@ -407,7 +420,7 @@ export default function OfferDetailsScreen() {
               <View style={styles.authorRating}>
                 <Ionicons name="star" size={14} color={colors.yellow400} />
                 <Text style={styles.ratingText}>
-                  {offer.author?.rating?.toFixed(1) || '0.0'} ({offer.author?.reviewCount || 0})
+                  {authorRating.count > 0 ? authorRating.average.toFixed(1) : offer.author?.rating?.toFixed(1) || '0.0'} ({authorRating.count > 0 ? authorRating.count : offer.author?.reviewCount || 0})
                 </Text>
               </View>
             </View>

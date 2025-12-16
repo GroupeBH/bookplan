@@ -358,7 +358,19 @@ export default function BookingScreen() {
   };
 
   if (!selectedUser) {
-    router.back();
+    // Utiliser setTimeout pour s'assurer que le composant est monté avant la navigation
+    React.useEffect(() => {
+      const timer = setTimeout(() => {
+        try {
+          router.back();
+        } catch (error) {
+          console.error('Error navigating back:', error);
+          // En cas d'erreur, utiliser router.replace pour forcer la navigation
+          router.replace('/(screens)/dashboard');
+        }
+      }, 100);
+      return () => clearTimeout(timer);
+    }, []);
     return null;
   }
 
@@ -430,8 +442,16 @@ export default function BookingScreen() {
         {
           text: 'OK',
           onPress: () => {
-            // Retourner au profil pour voir la demande active
-            router.back();
+            // Utiliser setTimeout pour s'assurer que le composant est monté avant la navigation
+            setTimeout(() => {
+              try {
+                router.back();
+              } catch (error) {
+                console.error('Error navigating back:', error);
+                // En cas d'erreur, utiliser router.replace pour forcer la navigation
+                router.replace('/(screens)/user-profile');
+              }
+            }, 100);
           },
         },
       ]);
@@ -769,7 +789,7 @@ export default function BookingScreen() {
             </View>
           )}
 
-          {mapRegion ? (
+          {mapRegion && Mapbox && Mapbox.StyleURL ? (
             <View style={styles.mapContainer}>
               <MapView
                 styleURL={Mapbox.StyleURL.Street}

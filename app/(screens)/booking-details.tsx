@@ -1,20 +1,20 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, Alert, ActivityIndicator, TextInput } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useLocalSearchParams } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors } from '../../constants/colors';
-import { Button } from '../../components/ui/Button';
-import { Badge } from '../../components/ui/Badge';
+import { useFocusEffect } from '@react-navigation/native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import Animated, { FadeIn } from 'react-native-reanimated';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
-import { useBooking } from '../../context/BookingContext';
+import { Badge } from '../../components/ui/Badge';
+import { Button } from '../../components/ui/Button';
+import { colors } from '../../constants/colors';
 import { useAuth } from '../../context/AuthContext';
-import { useRating } from '../../context/RatingContext';
+import { useBooking } from '../../context/BookingContext';
 import { useNotification } from '../../context/NotificationContext';
+import { useRating } from '../../context/RatingContext';
 import { useUser } from '../../context/UserContext';
 import { supabase } from '../../lib/supabase';
-import Animated, { FadeIn } from 'react-native-reanimated';
 
 export default function BookingDetailsScreen() {
   const router = useRouter();
@@ -22,7 +22,7 @@ export default function BookingDetailsScreen() {
   const { user: currentUser } = useAuth();
   const { setSelectedUser } = useUser();
   const { bookings, updateBookingStatus, cancelBooking, refreshBookings } = useBooking();
-  const { createRating, updateRating, getUserRatings } = useRating();
+  const { createRating, updateRating, getUserRatings, getUserAverageRating } = useRating();
   const { showNotification } = useNotification();
 
   const [booking, setBooking] = useState<any>(null);
@@ -36,6 +36,7 @@ export default function BookingDetailsScreen() {
   const [extensionHours, setExtensionHours] = useState(1);
   const [existingRating, setExistingRating] = useState<any>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [otherUserRating, setOtherUserRating] = useState({ average: 0, count: 0 });
 
   // Charger les détails de la compagnie
   const loadBookingDetails = useCallback(async () => {
@@ -86,15 +87,39 @@ export default function BookingDetailsScreen() {
           rating: parseFloat(userData.rating) || 0,
           reviewCount: userData.review_count || 0,
         });
+
+        // Charger la moyenne et le nombre d'avis de l'autre utilisateur
+        try {
+          const avgRating = await getUserAverageRating(otherUserId);
+          setOtherUserRating(avgRating);
+        } catch (error) {
+          console.error('Error loading other user rating:', error);
+        }
       }
 
-      // Vérifier s'il y a déjà un avis pour cette compagnie
-      const ratings = await getUserRatings(currentUser.id);
-      const existing = ratings.find((r: any) => r.bookingId === params.bookingId);
-      if (existing) {
-        setExistingRating(existing);
-        setRating(existing.rating);
-        setComment(existing.comment || '');
+      // Vérifier s'il y a déjà un avis que l'utilisateur actuel a donné à l'autre utilisateur pour cette compagnie
+      try {
+        const { data: existingRatingData } = await supabase
+          .from('ratings')
+          .select('*')
+          .eq('rater_id', currentUser.id)
+          .eq('rated_id', otherUserId)
+          .eq('booking_id', params.bookingId)
+          .single();
+
+        if (existingRatingData) {
+          setExistingRating({
+            id: existingRatingData.id,
+            rating: parseFloat(existingRatingData.rating),
+            comment: existingRatingData.comment || '',
+            bookingId: existingRatingData.booking_id,
+          });
+          setRating(parseFloat(existingRatingData.rating));
+          setComment(existingRatingData.comment || '');
+        }
+      } catch (error) {
+        // Pas d'avis existant ou erreur
+        console.log('No existing rating found or error:', error);
       }
     } catch (error) {
       console.error('Error in loadBookingDetails:', error);
@@ -391,8 +416,12 @@ export default function BookingDetailsScreen() {
                 <Text style={styles.userName}>{otherUser.pseudo}</Text>
                 <View style={styles.userMeta}>
                   <Ionicons name="star" size={16} color={colors.yellow500} />
-                  <Text style={styles.userRating}>{otherUser.rating.toFixed(1)}</Text>
-                  <Text style={styles.userReviewCount}>({otherUser.reviewCount})</Text>
+                  <Text style={styles.userRating}>
+                    {otherUserRating.count > 0 ? otherUserRating.average.toFixed(1) : otherUser.rating.toFixed(1)}
+                  </Text>
+                  <Text style={styles.userReviewCount}>
+                    ({otherUserRating.count > 0 ? otherUserRating.count : otherUser.reviewCount})
+                  </Text>
                 </View>
               </View>
             </View>
@@ -629,14 +658,43 @@ export default function BookingDetailsScreen() {
           </View>
         )}
 
-        {booking.status === 'completed' && !existingRating && (
+        {booking.status === 'completed' && (
           <View style={styles.actions}>
-            <Button
-              title="Noter cette compagnie"
-              onPress={() => setShowRatingModal(true)}
-              icon={<Ionicons name="star-outline" size={20} color="#ffffff" />}
-              style={styles.actionButton}
-            />
+            {existingRating ? (
+              <View style={styles.existingRatingCard}>
+                <View style={styles.existingRatingHeader}>
+                  <Ionicons name="star" size={20} color={colors.yellow500} />
+                  <Text style={styles.existingRatingTitle}>Votre avis</Text>
+                </View>
+                <View style={styles.existingRatingStars}>
+                  {[1, 2, 3, 4, 5].map((star) => (
+                    <Ionicons
+                      key={star}
+                      name={star <= existingRating.rating ? 'star' : 'star-outline'}
+                      size={20}
+                      color={star <= existingRating.rating ? colors.yellow500 : colors.textTertiary}
+                    />
+                  ))}
+                </View>
+                {existingRating.comment && (
+                  <Text style={styles.existingRatingComment}>{existingRating.comment}</Text>
+                )}
+                <Button
+                  title="Modifier mon avis"
+                  variant="outline"
+                  onPress={() => setShowRatingModal(true)}
+                  icon={<Ionicons name="pencil-outline" size={20} color={colors.text} />}
+                  style={styles.actionButton}
+                />
+              </View>
+            ) : (
+              <Button
+                title="Noter cette compagnie"
+                onPress={() => setShowRatingModal(true)}
+                icon={<Ionicons name="star-outline" size={20} color="#ffffff" />}
+                style={styles.actionButton}
+              />
+            )}
           </View>
         )}
       </ScrollView>
@@ -1034,6 +1092,33 @@ const styles = StyleSheet.create({
   extensionLabel: {
     fontSize: 16,
     color: colors.textSecondary,
+  },
+  existingRatingCard: {
+    backgroundColor: colors.backgroundSecondary,
+    borderRadius: 16,
+    padding: 16,
+    gap: 12,
+    width: '100%',
+  },
+  existingRatingHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  existingRatingTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  existingRatingStars: {
+    flexDirection: 'row',
+    gap: 4,
+  },
+  existingRatingComment: {
+    fontSize: 14,
+    color: colors.textSecondary,
+    lineHeight: 20,
+    marginTop: 4,
   },
 });
 

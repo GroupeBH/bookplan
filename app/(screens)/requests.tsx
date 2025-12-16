@@ -33,6 +33,37 @@ export default function RequestsScreen() {
     refreshRequests();
   }, []);
 
+  // Vérifier et mettre à jour le statut des compagnies terminées
+  useEffect(() => {
+    if (!user || receivedBookings.length === 0) return;
+
+    const checkCompletedBookings = async () => {
+      const now = new Date();
+      
+      for (const booking of receivedBookings) {
+        if (booking.status === 'accepted') {
+          const bookingDate = new Date(booking.bookingDate);
+          const endTime = new Date(bookingDate.getTime() + booking.durationHours * 60 * 60 * 1000);
+          
+          // Si la compagnie est terminée, mettre à jour le statut
+          if (now >= endTime) {
+            try {
+              await updateBookingStatus(booking.id, 'completed');
+            } catch (error) {
+              console.error('Error updating booking status to completed:', error);
+            }
+          }
+        }
+      }
+    };
+
+    checkCompletedBookings();
+    // Vérifier toutes les minutes
+    const interval = setInterval(checkCompletedBookings, 60000);
+    
+    return () => clearInterval(interval);
+  }, [receivedBookings, user, updateBookingStatus]);
+
   // Filtrer les bookings où l'utilisateur est le provider (demandes reçues)
   const allReceivedBookings = useMemo(() => 
     bookings.filter(b => b.providerId === user?.id),
@@ -317,7 +348,12 @@ export default function RequestsScreen() {
               </View>
             ) : (
               receivedBookings.map((booking) => (
-                <View key={booking.id} style={styles.requestCard}>
+                <TouchableOpacity
+                  key={booking.id}
+                  style={styles.requestCard}
+                  onPress={() => router.push(`/(screens)/booking-details?bookingId=${booking.id}`)}
+                  activeOpacity={0.7}
+                >
                   <View style={styles.requestHeader}>
                     <View style={styles.requestUserInfo}>
                       <View style={styles.avatar}>
@@ -328,8 +364,18 @@ export default function RequestsScreen() {
                         <Text style={styles.requestDate}>{formatDate(booking.bookingDate)}</Text>
                       </View>
                     </View>
-                    <Badge variant={booking.status === 'accepted' ? 'success' : booking.status === 'rejected' ? 'error' : 'warning'}>
-                      {booking.status === 'accepted' ? 'Acceptée' : booking.status === 'rejected' ? 'Refusée' : 'En attente'}
+                    <Badge variant={
+                      booking.status === 'accepted' ? 'success' : 
+                      booking.status === 'rejected' ? 'error' : 
+                      booking.status === 'completed' ? 'default' :
+                      booking.status === 'cancelled' ? 'error' :
+                      'warning'
+                    }>
+                      {booking.status === 'accepted' ? 'Acceptée' : 
+                       booking.status === 'rejected' ? 'Refusée' : 
+                       booking.status === 'completed' ? 'Terminée' :
+                       booking.status === 'cancelled' ? 'Annulée' :
+                       'En attente'}
                     </Badge>
                   </View>
 
@@ -358,7 +404,10 @@ export default function RequestsScreen() {
                     <View style={styles.requestActions}>
                       <Button
                         title="Refuser"
-                        onPress={() => handleRejectBooking(booking.id)}
+                        onPress={(e) => {
+                          e.stopPropagation();
+                          handleRejectBooking(booking.id);
+                        }}
                         variant="outline"
                         style={[styles.actionButton, styles.rejectButton]}
                         textStyle={{ color: colors.red500 }}
@@ -366,7 +415,10 @@ export default function RequestsScreen() {
                       />
                       <Button
                         title="Accepter"
-                        onPress={() => handleAcceptBooking(booking.id)}
+                        onPress={(e) => {
+                          e.stopPropagation();
+                          handleAcceptBooking(booking.id);
+                        }}
                         style={styles.actionButton}
                         disabled={isLoading}
                         loading={isLoading}
@@ -376,14 +428,17 @@ export default function RequestsScreen() {
                     <View style={styles.requestActions}>
                       <Button
                         title="Voir les détails"
-                        onPress={() => router.push(`/(screens)/booking-details?bookingId=${booking.id}`)}
+                        onPress={(e) => {
+                          e.stopPropagation();
+                          router.push(`/(screens)/booking-details?bookingId=${booking.id}`);
+                        }}
                         variant="outline"
                         style={styles.actionButton}
                         icon={<Ionicons name="information-circle-outline" size={20} color={colors.text} />}
                       />
                     </View>
                   ) : null}
-                </View>
+                </TouchableOpacity>
               ))
             )}
           </>
