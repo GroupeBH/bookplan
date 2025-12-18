@@ -6,3 +6,4 @@ ADD COLUMN IF NOT EXISTS push_notifications_enabled BOOLEAN DEFAULT true;
 -- Commentaire pour documenter le champ
 COMMENT ON COLUMN profiles.push_notifications_enabled IS 'Indique si les notifications push sont activées pour cet utilisateur. Activé par défaut.';
 
+
