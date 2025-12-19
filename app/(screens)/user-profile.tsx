@@ -17,6 +17,7 @@ import { useBlock } from '../../context/BlockContext';
 import { useBooking } from '../../context/BookingContext';
 import { useRating } from '../../context/RatingContext';
 import { useUser } from '../../context/UserContext';
+import { useLike } from '../../context/LikeContext';
 import { getProfileImage } from '../../lib/defaultImages';
 import { supabase } from '../../lib/supabase';
 import { User } from '../../types';
@@ -97,7 +98,9 @@ export default function UserProfileScreen() {
   const { getActiveBookingWithUser, cancelBooking } = useBooking();
   const { blockUser, unblockUser, isUserBlocked, blockedUsers } = useBlock();
   const { getUserAlbumPhotos } = useAlbum();
+  const { likeUser, unlikeUser, isUserLiked } = useLike();
   const [isBlocked, setIsBlocked] = useState(false);
+  const [isLiked, setIsLiked] = useState(false);
   const [userAlbumPhotos, setUserAlbumPhotos] = useState<any[]>([]);
   const [isLoadingAlbum, setIsLoadingAlbum] = useState(false);
   const [showAccessDialog, setShowAccessDialog] = useState(false);
@@ -546,6 +549,16 @@ export default function UserProfileScreen() {
     checkBlocked();
   }, [selectedUser?.id, currentUser?.id, isUserBlocked]);
 
+  // Vérifier si l'utilisateur est liké
+  React.useEffect(() => {
+    if (selectedUser?.id && currentUser?.id && currentUser.id !== selectedUser.id) {
+      const liked = isUserLiked(selectedUser.id);
+      setIsLiked(liked);
+    } else {
+      setIsLiked(false);
+    }
+  }, [selectedUser?.id, currentUser?.id, isUserLiked]);
+
   // Debug logs (doit être avant le return conditionnel)
   React.useEffect(() => {
     if (selectedUser?.id && currentUser?.id) {
@@ -787,9 +800,39 @@ export default function UserProfileScreen() {
           <Ionicons name="arrow-back" size={24} color={colors.textSecondary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Profil</Text>
-        <TouchableOpacity>
-          <Ionicons name="heart-outline" size={24} color={colors.textSecondary} />
-        </TouchableOpacity>
+        {currentUser?.id !== selectedUser?.id && (
+          <TouchableOpacity
+            onPress={async () => {
+              if (!selectedUser?.id || !currentUser?.id) return;
+              
+              // Mise à jour optimiste : changer l'état local IMMÉDIATEMENT
+              const newLikedState = !isLiked;
+              setIsLiked(newLikedState);
+              
+              // Ensuite, faire la requête réseau en arrière-plan
+              if (newLikedState) {
+                const success = await likeUser(selectedUser.id);
+                // Si la requête échoue, annuler le changement
+                if (!success) {
+                  setIsLiked(false);
+                }
+              } else {
+                const success = await unlikeUser(selectedUser.id);
+                // Si la requête échoue, annuler le changement
+                if (!success) {
+                  setIsLiked(true);
+                }
+              }
+            }}
+            style={{ padding: 4 }}
+          >
+            <Ionicons 
+              name={isLiked ? "heart" : "heart-outline"} 
+              size={24} 
+              color={isLiked ? colors.pink500 : colors.textSecondary} 
+            />
+          </TouchableOpacity>
+        )}
       </View>
 
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>

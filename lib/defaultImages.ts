@@ -1,15 +1,19 @@
+import { Image } from 'react-native';
+
 /**
- * Retourne une URL d'image par défaut selon le genre de l'utilisateur
+ * Retourne l'URI de l'image par défaut selon le genre de l'utilisateur
  * @param gender - 'male' ou 'female'
- * @returns URL de l'image par défaut
+ * @returns URI de l'image par défaut (image locale)
  */
 export function getDefaultProfileImage(gender?: 'male' | 'female'): string {
   if (gender === 'male') {
     // Image par défaut pour homme
-    return 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&h=400&fit=crop';
+    const avatarMen = require('../assets/images/avatar_men.png');
+    return Image.resolveAssetSource(avatarMen).uri;
   } else {
     // Image par défaut pour femme (par défaut)
-    return 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400&h=400&fit=crop';
+    const avatarWoman = require('../assets/images/avatar_woman.png');
+    return Image.resolveAssetSource(avatarWoman).uri;
   }
 }
 
@@ -25,6 +29,7 @@ export function getProfileImage(photoUrl?: string | null, gender?: 'male' | 'fem
   }
   return getDefaultProfileImage(gender);
 }
+
 
 
 

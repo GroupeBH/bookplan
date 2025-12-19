@@ -12,14 +12,14 @@ export default function SplashScreen() {
   useEffect(() => {
     // Navigate immediately when auth is ready (no artificial delay)
     if (!isLoading) {
-      // Small delay to ensure smooth transition (300ms instead of 2000ms)
+      // Minimal delay for smooth transition (100ms)
       const timer = setTimeout(() => {
         if (isAuthenticated) {
           router.replace('/(screens)/dashboard');
         } else {
           router.replace('/(screens)/auth');
         }
-      }, 300);
+      }, 100);
 
       return () => clearTimeout(timer);
     }

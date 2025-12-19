@@ -2,8 +2,18 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
-import { Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { PanGestureHandler, PanGestureHandlerGestureEvent } from 'react-native-gesture-handler';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+  runOnJS,
+  interpolate,
+  Extrapolate,
+} from 'react-native-reanimated';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
 import { Button } from '../../components/ui/Button';
 import { colors } from '../../constants/colors';
@@ -40,6 +50,17 @@ export default function SearchScreen() {
   const isLoadingRef = React.useRef(false);
   const lastLoadTimeRef = React.useRef<number>(0);
   const hasLoadedRef = React.useRef(false);
+  
+  // Obtenir les dimensions de la fenêtre
+  const { width: screenWidth } = useWindowDimensions();
+  
+  // États pour le swipe
+  const translateX = useSharedValue(0);
+  const translateY = useSharedValue(0);
+  const opacity = useSharedValue(1);
+  const scale = useSharedValue(1);
+  const SWIPE_THRESHOLD = screenWidth * 0.3; // 30% de l'écran
+  const SWIPE_VELOCITY_THRESHOLD = 500;
 
   // Calculer la distance entre deux points (formule de Haversine)
   const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
@@ -209,6 +230,14 @@ export default function SearchScreen() {
     }
   }, [filteredUsers.length, currentIndex]);
 
+  // Réinitialiser les animations quand l'utilisateur change
+  React.useEffect(() => {
+    translateX.value = 0;
+    translateY.value = 0;
+    opacity.value = 1;
+    scale.value = 1;
+  }, [currentIndex, currentUser?.id]);
+
   const currentUser = filteredUsers.length > 0 ? filteredUsers[safeIndex] : null;
 
   const handleViewProfile = (user: User) => {
@@ -223,6 +252,11 @@ export default function SearchScreen() {
       // Si on est à la fin, recommencer depuis le début
       setCurrentIndex(0);
     }
+    // Réinitialiser les animations
+    translateX.value = 0;
+    translateY.value = 0;
+    opacity.value = 1;
+    scale.value = 1;
   };
 
   const handlePrevious = () => {
@@ -232,7 +266,98 @@ export default function SearchScreen() {
       // Si on est au début, aller à la fin
       setCurrentIndex(Math.max(0, filteredUsers.length - 1));
     }
+    // Réinitialiser les animations
+    translateX.value = 0;
+    translateY.value = 0;
+    opacity.value = 1;
+    scale.value = 1;
   };
+
+  // Fonction pour passer au suivant (appelée depuis le geste)
+  const goToNext = () => {
+    handleNext();
+  };
+
+  // Fonction pour passer au précédent (appelée depuis le geste)
+  const goToPrevious = () => {
+    handlePrevious();
+  };
+
+  // Gérer le geste de swipe
+  const onGestureEvent = (event: PanGestureHandlerGestureEvent) => {
+    const { translationX, translationY } = event.nativeEvent;
+    
+    translateX.value = translationX;
+    translateY.value = translationY;
+    
+    // Calculer l'opacité et l'échelle basées sur la distance
+    const distance = Math.sqrt(translationX * translationX + translationY * translationY);
+    const maxDistance = screenWidth;
+    opacity.value = interpolate(
+      distance,
+      [0, maxDistance],
+      [1, 0],
+      Extrapolate.CLAMP
+    );
+    scale.value = interpolate(
+      distance,
+      [0, maxDistance],
+      [1, 0.8],
+      Extrapolate.CLAMP
+    );
+  };
+
+  // Gérer la fin du geste
+  const onHandlerStateChange = (event: PanGestureHandlerGestureEvent) => {
+    const { translationX, velocityX, state } = event.nativeEvent;
+    
+    if (state === 5) { // END
+      const shouldSwipeLeft = translationX < -SWIPE_THRESHOLD || velocityX < -SWIPE_VELOCITY_THRESHOLD;
+      const shouldSwipeRight = translationX > SWIPE_THRESHOLD || velocityX > SWIPE_VELOCITY_THRESHOLD;
+      
+      if (shouldSwipeLeft) {
+        // Swipe vers la gauche (suivant)
+        translateX.value = withTiming(-screenWidth * 1.5, { duration: 300 });
+        opacity.value = withTiming(0, { duration: 300 });
+        scale.value = withTiming(0.8, { duration: 300 }, () => {
+          runOnJS(goToNext)();
+        });
+      } else if (shouldSwipeRight) {
+        // Swipe vers la droite (précédent)
+        translateX.value = withTiming(screenWidth * 1.5, { duration: 300 });
+        opacity.value = withTiming(0, { duration: 300 });
+        scale.value = withTiming(0.8, { duration: 300 }, () => {
+          runOnJS(goToPrevious)();
+        });
+      } else {
+        // Retour à la position initiale
+        translateX.value = withSpring(0);
+        translateY.value = withSpring(0);
+        opacity.value = withSpring(1);
+        scale.value = withSpring(1);
+      }
+    }
+  };
+
+  // Style animé pour la carte
+  const animatedCardStyle = useAnimatedStyle(() => {
+    const rotation = interpolate(
+      translateX.value,
+      [-screenWidth, 0, screenWidth],
+      [-15, 0, 15],
+      Extrapolate.CLAMP
+    );
+
+    return {
+      transform: [
+        { translateX: translateX.value },
+        { translateY: translateY.value },
+        { rotate: `${rotation}deg` },
+        { scale: scale.value },
+      ],
+      opacity: opacity.value,
+    };
+  });
 
   const resetFilters = () => {
     setFilter('all');
@@ -952,46 +1077,51 @@ export default function SearchScreen() {
 
       {/* Card */}
       <View style={styles.cardContainer}>
-        <View style={styles.card}>
-          {currentUser && (
-            <>
-              <ImageWithFallback source={{ uri: currentUser.photo }} style={styles.cardImage} />
-              <View style={styles.cardOverlay} />
-              <View style={styles.cardInfo}>
-                <View style={styles.cardHeader}>
-                  <Text style={styles.cardName}>{currentUser.pseudo}</Text>
-                  <Text style={styles.cardSeparator}>·</Text>
-                  <Text style={styles.cardAge}>{currentUser.age} ans</Text>
-                </View>
-                <Text style={styles.cardDescription}>{currentUser.description}</Text>
-                <View style={styles.cardMeta}>
-                  {currentUser.distance !== undefined && (
-                    <View style={styles.cardMetaItem}>
-                      <Ionicons name="location" size={16} color={colors.textSecondary} />
-                      <Text style={styles.cardMetaText}>{currentUser.distance.toFixed(1)} km</Text>
-                    </View>
-                  )}
-                  <View style={styles.cardMetaItem}>
-                    <Ionicons name="star" size={16} color={colors.yellow500} />
-                    <Text style={styles.cardMetaText}>{currentUser.rating.toFixed(1)}</Text>
-                    <Text style={styles.cardMetaTextSecondary}>({currentUser.reviewCount || 0})</Text>
+        <PanGestureHandler
+          onGestureEvent={onGestureEvent}
+          onHandlerStateChange={onHandlerStateChange}
+        >
+          <Animated.View style={[styles.card, animatedCardStyle]}>
+            {currentUser && (
+              <>
+                <ImageWithFallback source={{ uri: currentUser.photo }} style={styles.cardImage} />
+                <View style={styles.cardOverlay} />
+                <View style={styles.cardInfo}>
+                  <View style={styles.cardHeader}>
+                    <Text style={styles.cardName}>{currentUser.pseudo}</Text>
+                    <Text style={styles.cardSeparator}>·</Text>
+                    <Text style={styles.cardAge}>{currentUser.age} ans</Text>
                   </View>
+                  <Text style={styles.cardDescription}>{currentUser.description}</Text>
+                  <View style={styles.cardMeta}>
+                    {currentUser.distance !== undefined && (
+                      <View style={styles.cardMetaItem}>
+                        <Ionicons name="location" size={16} color={colors.textSecondary} />
+                        <Text style={styles.cardMetaText}>{currentUser.distance.toFixed(1)} km</Text>
+                      </View>
+                    )}
+                    <View style={styles.cardMetaItem}>
+                      <Ionicons name="star" size={16} color={colors.yellow500} />
+                      <Text style={styles.cardMetaText}>{currentUser.rating.toFixed(1)}</Text>
+                      <Text style={styles.cardMetaTextSecondary}>({currentUser.reviewCount || 0})</Text>
+                    </View>
+                  </View>
+                  <View style={styles.cardCounter}>
+                    <Text style={styles.counterText}>
+                      {currentIndex + 1} / {filteredUsers.length}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.viewProfileButton}
+                    onPress={() => handleViewProfile(currentUser)}
+                  >
+                    <Text style={styles.viewProfileButtonText}>Voir le profil</Text>
+                  </TouchableOpacity>
                 </View>
-                <View style={styles.cardCounter}>
-                  <Text style={styles.counterText}>
-                    {currentIndex + 1} / {filteredUsers.length}
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  style={styles.viewProfileButton}
-                  onPress={() => handleViewProfile(currentUser)}
-                >
-                  <Text style={styles.viewProfileButtonText}>Voir le profil</Text>
-                </TouchableOpacity>
-              </View>
-            </>
-          )}
-        </View>
+              </>
+            )}
+          </Animated.View>
+        </PanGestureHandler>
       </View>
 
       {/* Action buttons */}
@@ -1225,7 +1355,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
-    overflow: 'hidden',
+    overflow: 'visible', // Permettre à la carte de sortir de l'écran lors du swipe
     zIndex: 0,
     minHeight: 0, // Important pour que flex fonctionne correctement
   },

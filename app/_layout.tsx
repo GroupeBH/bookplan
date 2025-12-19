@@ -1,6 +1,7 @@
 import { Slot } from 'expo-router';
 import { useEffect } from 'react';
 import * as SplashScreen from 'expo-splash-screen';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { AuthProvider } from '../context/AuthContext';
 import { UserProvider } from '../context/UserContext';
 import { BookingProvider } from '../context/BookingContext';
@@ -11,6 +12,7 @@ import { MessageProvider } from '../context/MessageContext';
 import { BlockProvider } from '../context/BlockContext';
 import { OfferProvider } from '../context/OfferContext';
 import { AlbumProvider } from '../context/AlbumContext';
+import { LikeProvider } from '../context/LikeContext';
 import { isNetworkError } from '../lib/errorUtils';
 
 // Déclaration pour ErrorUtils (disponible globalement dans React Native)
@@ -48,11 +50,11 @@ export default function RootLayout() {
       });
     }
 
-    // Hide splash screen after app is ready
+    // Hide splash screen after app is ready (minimal delay)
     const hideSplash = async () => {
       try {
-        // Wait a bit to ensure React components are mounted
-        await new Promise(resolve => setTimeout(resolve, 300));
+        // Minimal delay to ensure React components are mounted
+        await new Promise(resolve => setTimeout(resolve, 100));
         await SplashScreen.hideAsync();
       } catch (error) {
         console.error('Error hiding splash:', error);
@@ -63,26 +65,30 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <AuthProvider>
-      <NotificationProvider>
-        <UserProvider>
-          <BookingProvider>
-            <AccessRequestProvider>
-              <RatingProvider>
-                <MessageProvider>
-                  <BlockProvider>
-                    <OfferProvider>
-                      <AlbumProvider>
-                        <Slot />
-                      </AlbumProvider>
-                    </OfferProvider>
-                  </BlockProvider>
-                </MessageProvider>
-              </RatingProvider>
-            </AccessRequestProvider>
-          </BookingProvider>
-        </UserProvider>
-      </NotificationProvider>
-    </AuthProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <AuthProvider>
+        <NotificationProvider>
+          <UserProvider>
+            <BookingProvider>
+              <AccessRequestProvider>
+                <RatingProvider>
+                  <MessageProvider>
+                    <BlockProvider>
+                      <OfferProvider>
+                        <AlbumProvider>
+                          <LikeProvider>
+                            <Slot />
+                          </LikeProvider>
+                        </AlbumProvider>
+                      </OfferProvider>
+                    </BlockProvider>
+                  </MessageProvider>
+                </RatingProvider>
+              </AccessRequestProvider>
+            </BookingProvider>
+          </UserProvider>
+        </NotificationProvider>
+      </AuthProvider>
+    </GestureHandlerRootView>
   );
 }
