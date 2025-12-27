@@ -22,7 +22,7 @@ export default {
     },
     android: {
       googleServicesFile: './google-services.json',
-      package: "com.kutana",
+      package: "com.kutana.app",
       versionCode: 1,
       adaptiveIcon: {
         backgroundColor: "#E6F4FE",
@@ -36,8 +36,10 @@ export default {
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
         "RECEIVE_BOOT_COMPLETED",
-        "VIBRATE"
+        "VIBRATE",
+        "CAMERA"
       ],
+      privacy: "https://your-privacy-policy-url.com",
     },
     web: {
       output: "static",
