@@ -170,3 +170,4 @@ Votre application React Native utilisera automatiquement cette fonction pour :
 
 
 
+

@@ -86,3 +86,4 @@ Après avoir appliqué les migrations :
 - La lecture est publique pour permettre l'affichage des photos à tous les utilisateurs
 
 
+

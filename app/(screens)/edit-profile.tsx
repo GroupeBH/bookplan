@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, KeyboardAvoidingView, Platform, Keyboard } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,6 +9,7 @@ import { Input } from '../../components/ui/Input';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
 import { useAuth } from '../../context/AuthContext';
 import * as ImagePicker from 'expo-image-picker';
+import { User } from '../../types';
 
 export default function EditProfileScreen() {
   const router = useRouter();
@@ -18,10 +19,14 @@ export default function EditProfileScreen() {
   const [description, setDescription] = useState('');
   const [specialty, setSpecialty] = useState('');
   const [photo, setPhoto] = useState('');
+  const [gender, setGender] = useState<'male' | 'female'>('female');
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isInitialized, setIsInitialized] = useState(false);
   const prevAuthUserRef = React.useRef<User | null>(null);
+  const scrollViewRef = useRef<ScrollView>(null);
+  const descriptionFieldRef = useRef<View>(null);
+  const specialtyFieldRef = useRef<View>(null);
 
   // Charger les données de l'utilisateur depuis authUser (qui vient de Supabase)
   // Ne charger qu'une seule fois au montage ou si les données importantes ont vraiment changé
@@ -34,6 +39,7 @@ export default function EditProfileScreen() {
         setDescription(authUser.description || '');
         setSpecialty(authUser.specialty || '');
         setPhoto(authUser.photo || '');
+        setGender(authUser.gender || 'female');
         setIsLoading(false);
         setIsInitialized(true);
         prevAuthUserRef.current = authUser;
@@ -47,7 +53,8 @@ export default function EditProfileScreen() {
             prevUser.age !== authUser.age ||
             prevUser.description !== authUser.description ||
             prevUser.specialty !== authUser.specialty ||
-            prevUser.photo !== authUser.photo;
+            prevUser.photo !== authUser.photo ||
+            prevUser.gender !== authUser.gender;
           
           // Ne mettre à jour que si c'est un changement important (pas juste la position)
           if (hasImportantChange) {
@@ -56,6 +63,7 @@ export default function EditProfileScreen() {
             setDescription(authUser.description || '');
             setSpecialty(authUser.specialty || '');
             setPhoto(authUser.photo || '');
+            setGender(authUser.gender || 'female');
             prevAuthUserRef.current = authUser;
           }
         }
@@ -65,6 +73,19 @@ export default function EditProfileScreen() {
       router.back();
     }
   }, [authUser, authLoading, isInitialized]);
+
+  // Écouter les événements du clavier pour scroller automatiquement
+  useEffect(() => {
+    if (Platform.OS === 'ios') {
+      const keyboardWillShowListener = Keyboard.addListener('keyboardWillShow', () => {
+        // Le scroll sera géré par onFocus des champs
+      });
+      
+      return () => {
+        keyboardWillShowListener.remove();
+      };
+    }
+  }, []);
 
   if (authLoading || isLoading) {
     return (
@@ -153,6 +174,7 @@ export default function EditProfileScreen() {
       description: description.trim(),
       specialty: specialty.trim() || null,
       photo: photo || authUser.photo,
+      gender: gender,
     };
 
     try {
@@ -195,7 +217,20 @@ export default function EditProfileScreen() {
         <View style={{ width: 24 }} />
       </View>
 
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+      <KeyboardAvoidingView
+        style={styles.keyboardAvoidingView}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+      >
+        <ScrollView
+          ref={scrollViewRef}
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={true}
+          bounces={true}
+          keyboardDismissMode="interactive"
+        >
         {/* Photo Section */}
         <View style={styles.photoSection}>
           <View style={styles.avatarContainer}>
@@ -236,6 +271,57 @@ export default function EditProfileScreen() {
           </View>
 
           <View style={styles.field}>
+            <Text style={styles.label}>Sexe</Text>
+            <View style={styles.genderContainer}>
+              <TouchableOpacity
+                style={[
+                  styles.genderOption,
+                  gender === 'male' && styles.genderOptionActive,
+                ]}
+                onPress={() => setGender('male')}
+              >
+                <Ionicons
+                  name="male"
+                  size={24}
+                  color={gender === 'male' ? '#ffffff' : colors.textSecondary}
+                />
+                <Text
+                  style={[
+                    styles.genderOptionText,
+                    gender === 'male' && styles.genderOptionTextActive,
+                  ]}
+                >
+                  Homme
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.genderOption,
+                  gender === 'female' && styles.genderOptionActive,
+                ]}
+                onPress={() => setGender('female')}
+              >
+                <Ionicons
+                  name="female"
+                  size={24}
+                  color={gender === 'female' ? '#ffffff' : colors.textSecondary}
+                />
+                <Text
+                  style={[
+                    styles.genderOptionText,
+                    gender === 'female' && styles.genderOptionTextActive,
+                  ]}
+                >
+                  Femme
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <View 
+            ref={descriptionFieldRef}
+            style={styles.field}
+          >
             <Text style={styles.label}>Description</Text>
             <Input
               placeholder="Parlez-nous de vous..."
@@ -245,10 +331,28 @@ export default function EditProfileScreen() {
               numberOfLines={6}
               style={styles.textArea}
               containerStyle={styles.inputContainer}
+              onFocus={() => {
+                // Scroller vers le champ quand il reçoit le focus
+                setTimeout(() => {
+                  descriptionFieldRef.current?.measureLayout(
+                    scrollViewRef.current?.getInnerViewNode?.() || scrollViewRef.current as any,
+                    (x, y, width, height) => {
+                      scrollViewRef.current?.scrollTo({
+                        y: Math.max(0, y - 150), // Scroll avec marge
+                        animated: true,
+                      });
+                    },
+                    () => {}
+                  );
+                }, Platform.OS === 'ios' ? 300 : 100);
+              }}
             />
           </View>
 
-          <View style={styles.field}>
+          <View 
+            ref={specialtyFieldRef}
+            style={styles.field}
+          >
             <Text style={styles.label}>Savoir-faire particulier</Text>
             <Input
               placeholder="Ex: Avocat, Médecin, Ingénieur..."
@@ -256,6 +360,21 @@ export default function EditProfileScreen() {
               onChangeText={setSpecialty}
               containerStyle={styles.inputContainer}
               leftIcon={<Ionicons name="briefcase-outline" size={20} color={colors.textTertiary} />}
+              onFocus={() => {
+                // Scroller vers le champ quand il reçoit le focus
+                setTimeout(() => {
+                  specialtyFieldRef.current?.measureLayout(
+                    scrollViewRef.current?.getInnerViewNode?.() || scrollViewRef.current as any,
+                    (x, y, width, height) => {
+                      scrollViewRef.current?.scrollTo({
+                        y: Math.max(0, y - 150), // Scroll avec marge
+                        animated: true,
+                      });
+                    },
+                    () => {}
+                  );
+                }, Platform.OS === 'ios' ? 300 : 100);
+              }}
             />
           </View>
 
@@ -271,7 +390,8 @@ export default function EditProfileScreen() {
             </View>
           </View>
         </View>
-      </ScrollView>
+        </ScrollView>
+      </KeyboardAvoidingView>
 
       {/* Save Button */}
       <View style={styles.footer}>
@@ -308,11 +428,15 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: colors.text,
   },
+  keyboardAvoidingView: {
+    flex: 1,
+  },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
     padding: 24,
+    paddingBottom: 200, // Espace supplémentaire en bas pour le scroll quand le clavier est ouvert
     gap: 24,
   },
   photoSection: {
@@ -412,6 +536,36 @@ const styles = StyleSheet.create({
   loadingText: {
     fontSize: 16,
     color: colors.textSecondary,
+  },
+  genderContainer: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  genderOption: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: colors.borderSecondary,
+    backgroundColor: colors.backgroundSecondary,
+  },
+  genderOptionActive: {
+    backgroundColor: colors.purple500,
+    borderColor: colors.purple500,
+  },
+  genderOptionText: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: colors.textSecondary,
+  },
+  genderOptionTextActive: {
+    color: '#ffffff',
+    fontWeight: '600',
   },
 });
 

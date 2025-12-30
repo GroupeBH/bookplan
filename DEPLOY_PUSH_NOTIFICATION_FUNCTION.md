@@ -101,3 +101,4 @@ console.log('Résultat:', result);
 
 
 
+
