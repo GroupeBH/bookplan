@@ -126,7 +126,7 @@ export function AccessRequestProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  // Demander l'accès aux informations d'un profil
+  // Demander l'accès aux informations d'un profil (optimisé pour performance)
   const requestAccess = async (targetId: string) => {
     if (!user) {
       return { error: { message: 'Not authenticated' }, request: null };
@@ -152,91 +152,146 @@ export function AccessRequestProvider({ children }: { children: ReactNode }) {
       return { error: null, request: mockRequest };
     }
 
-    try {
-      // Vérifier d'abord s'il existe déjà une demande
-      const { data: existingRequest, error: fetchError } = await supabase
-        .from('info_access_requests')
-        .select('*')
-        .eq('requester_id', user.id)
-        .eq('target_id', targetId)
-        .maybeSingle();
+    // Vérifier d'abord dans l'état local (plus rapide - pas de requête réseau)
+    const existingLocalRequest = accessRequests.find(
+      r => r.requesterId === user.id && r.targetId === targetId
+    );
 
-      if (fetchError && fetchError.code !== 'PGRST116') {
-        if (!isNetworkError(fetchError)) {
-          console.error('Error fetching existing access request:', fetchError);
-        }
-        return { error: fetchError, request: null };
+    // Si une demande existe déjà et est acceptée ou en attente, retourner immédiatement
+    if (existingLocalRequest) {
+      if (existingLocalRequest.status === 'accepted' || existingLocalRequest.status === 'pending') {
+        return { error: null, request: existingLocalRequest };
+      }
+    }
+
+    try {
+      // Mise à jour optimiste : créer une demande temporaire dans l'état local immédiatement
+      const tempId = `temp-${Date.now()}`;
+      const optimisticRequest: InfoAccessRequest = {
+        id: tempId,
+        requesterId: user.id,
+        targetId: targetId,
+        status: 'pending',
+        requesterInfoRevealed: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      
+      // Mettre à jour l'état local immédiatement (optimiste)
+      if (existingLocalRequest && existingLocalRequest.status === 'rejected') {
+        setAccessRequests(accessRequests.map(r => r.id === existingLocalRequest.id ? optimisticRequest : r));
+      } else if (!existingLocalRequest) {
+        setAccessRequests([optimisticRequest, ...accessRequests]);
       }
 
-      // Si une demande existe déjà
-      if (existingRequest) {
-        const existing = mapRequestFromDB(existingRequest);
-        
-        // Si la demande est déjà acceptée, retourner la demande existante
-        if (existing.status === 'accepted') {
-          return { error: null, request: existing };
-        }
-        
-        // Si la demande est en attente, retourner la demande existante
-        if (existing.status === 'pending') {
-          return { error: null, request: existing };
-        }
-        
-        // Si la demande a été refusée, la réactiver en la remettant à 'pending'
-        if (existing.status === 'rejected') {
-          const { data: updatedData, error: updateError } = await supabase
+      // Vérifier et créer en base de données (en arrière-plan, non bloquant)
+      // Utiliser Promise.all avec un timeout pour éviter les blocages
+      const dbOperation = Promise.race([
+        (async () => {
+          // Vérifier s'il existe déjà une demande en base
+          const { data: existingRequest, error: fetchError } = await supabase
             .from('info_access_requests')
-            .update({
+            .select('*')
+            .eq('requester_id', user.id)
+            .eq('target_id', targetId)
+            .maybeSingle();
+
+          if (fetchError && fetchError.code !== 'PGRST116') {
+            if (!isNetworkError(fetchError)) {
+              console.error('Error fetching existing access request:', fetchError);
+            }
+            throw fetchError;
+          }
+
+          // Si une demande existe déjà
+          if (existingRequest) {
+            const existing = mapRequestFromDB(existingRequest);
+            
+            // Si la demande est déjà acceptée ou en attente, utiliser celle-ci
+            if (existing.status === 'accepted' || existing.status === 'pending') {
+              // Remplacer la demande optimiste par la vraie
+              setAccessRequests(accessRequests.map(r => 
+                r.id === tempId ? existing : (r.id === existing.id ? existing : r)
+              ));
+              return existing;
+            }
+            
+            // Si la demande a été refusée, la réactiver
+            if (existing.status === 'rejected') {
+              const { data: updatedData, error: updateError } = await supabase
+                .from('info_access_requests')
+                .update({
+                  status: 'pending',
+                  requester_info_revealed: true,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('id', existing.id)
+                .select()
+                .single();
+
+              if (updateError) {
+                if (!isNetworkError(updateError)) {
+                  console.error('Error reactivating access request:', updateError);
+                }
+                throw updateError;
+              }
+
+              if (updatedData) {
+                const reactivatedRequest = mapRequestFromDB(updatedData);
+                // Remplacer la demande optimiste par la vraie
+                setAccessRequests(accessRequests.map(r => 
+                  r.id === tempId ? reactivatedRequest : (r.id === reactivatedRequest.id ? reactivatedRequest : r)
+                ));
+                return reactivatedRequest;
+              }
+            }
+          }
+
+          // Aucune demande existante, créer une nouvelle demande
+          const { data, error } = await supabase
+            .from('info_access_requests')
+            .insert({
+              requester_id: user.id,
+              target_id: targetId,
               status: 'pending',
               requester_info_revealed: true,
-              updated_at: new Date().toISOString(),
             })
-            .eq('id', existing.id)
             .select()
             .single();
 
-          if (updateError) {
-            if (!isNetworkError(updateError)) {
-              console.error('Error reactivating access request:', updateError);
+          if (error) {
+            if (!isNetworkError(error)) {
+              console.error('Error creating access request:', error);
             }
-            return { error: updateError, request: null };
+            throw error;
           }
 
-          if (updatedData) {
-            const reactivatedRequest = mapRequestFromDB(updatedData);
-            // Mettre à jour la liste des demandes
-            setAccessRequests(accessRequests.map(r => r.id === reactivatedRequest.id ? reactivatedRequest : r));
-            return { error: null, request: reactivatedRequest };
+          if (data) {
+            const newRequest = mapRequestFromDB(data);
+            // Remplacer la demande optimiste par la vraie
+            setAccessRequests(accessRequests.map(r => 
+              r.id === tempId ? newRequest : r
+            ));
+            return newRequest;
           }
-        }
-      }
 
-      // Aucune demande existante, créer une nouvelle demande
-      const { data, error } = await supabase
-        .from('info_access_requests')
-        .insert({
-          requester_id: user.id,
-          target_id: targetId,
-          status: 'pending',
-          requester_info_revealed: true, // Le target voit automatiquement les infos du requester
-        })
-        .select()
-        .single();
-
-      if (error) {
+          throw new Error('No data returned');
+        })(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Request timeout')), 5000)
+        )
+      ]).catch((error: any) => {
+        // En cas d'erreur ou timeout, retirer la demande optimiste
+        setAccessRequests(accessRequests.filter(r => r.id !== tempId));
         if (!isNetworkError(error)) {
-          console.error('Error creating access request:', error);
+          console.error('Error in requestAccess DB operation:', error);
         }
-        return { error, request: null };
-      }
+        return null;
+      });
 
-      if (data) {
-        const newRequest = mapRequestFromDB(data);
-        setAccessRequests([newRequest, ...accessRequests]);
-        return { error: null, request: newRequest };
-      }
-
-      return { error: { message: 'No data returned' }, request: null };
+      // Retourner immédiatement la demande optimiste (non bloquant)
+      // La vraie demande sera mise à jour en arrière-plan
+      return { error: null, request: optimisticRequest };
     } catch (error: any) {
       if (!isNetworkError(error)) {
         console.error('Error in requestAccess:', error);

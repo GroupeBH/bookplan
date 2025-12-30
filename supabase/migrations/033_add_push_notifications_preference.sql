@@ -8,3 +8,14 @@ COMMENT ON COLUMN profiles.push_notifications_enabled IS 'Indique si les notific
 
 
 
+
+
+
+
+
+
+
+
+
+
+

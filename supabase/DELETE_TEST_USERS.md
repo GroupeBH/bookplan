@@ -142,3 +142,14 @@ Si vous rencontrez des problèmes, vérifiez :
 - Les permissions de votre compte Supabase
 - Que la Service Role Key est correcte (pour le script Node.js)
 
+
+
+
+
+
+
+
+
+
+
+

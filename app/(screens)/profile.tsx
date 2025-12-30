@@ -14,9 +14,42 @@ import { useAlbum } from '../../context/AlbumContext';
 import { useAuth } from '../../context/AuthContext';
 import { useRating } from '../../context/RatingContext';
 import { useUser } from '../../context/UserContext';
-import { getProfileImage } from '../../lib/defaultImages';
 import { uploadImageToStorage } from '../../lib/imageUpload';
 import { supabase } from '../../lib/supabase';
+import { Image, ImageSourcePropType } from 'react-native';
+
+/**
+ * Fonction utilitaire pour obtenir la source d'image correcte pour React Native Image
+ * Gère à la fois les URLs HTTP/HTTPS (Supabase) et les images locales par défaut
+ */
+const getImageSource = (photoUrl: string | null | undefined, gender: 'male' | 'female' = 'female'): ImageSourcePropType => {
+  // Vérifier si on a une URL valide
+  if (photoUrl && typeof photoUrl === 'string' && photoUrl.trim() !== '') {
+    const trimmedUrl = photoUrl.trim();
+    
+    // Rejeter les URIs locales (file://) - elles ne sont pas accessibles depuis d'autres appareils
+    if (trimmedUrl.startsWith('file://')) {
+      return gender === 'male' 
+        ? require('../../assets/images/avatar_men.png')
+        : require('../../assets/images/avatar_woman.png');
+    }
+    
+    // Si c'est une URL HTTP/HTTPS valide (Supabase Storage, etc.)
+    if (trimmedUrl.startsWith('https://') || 
+        (trimmedUrl.startsWith('http://') && 
+         !trimmedUrl.includes('10.0.2.2') && 
+         !trimmedUrl.includes('localhost') &&
+         !trimmedUrl.includes('127.0.0.1') &&
+         !trimmedUrl.includes('/assets/'))) {
+      return { uri: trimmedUrl };
+    }
+  }
+  
+  // Sinon, utiliser l'image par défaut selon le genre
+  return gender === 'male' 
+    ? require('../../assets/images/avatar_men.png')
+    : require('../../assets/images/avatar_woman.png');
+};
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -180,13 +213,51 @@ export default function ProfileScreen() {
       });
 
       if (!result.canceled && result.assets[0]) {
-        const photoUrl = result.assets[0].uri;
+        const localUri = result.assets[0].uri;
         
-        const { error } = await addAlbumPhoto(authUser.id, photoUrl);
-        if (error) {
-          Alert.alert('Erreur', error.message || 'Impossible d\'ajouter la photo');
-        } else {
-          Alert.alert('Succès', 'Photo ajoutée à votre album');
+        // Uploader la photo vers Supabase Storage
+        try {
+          console.log('📤 Upload de la photo d\'album vers Supabase Storage...');
+          const { url: photoUrl, error: uploadError } = await uploadImageToStorage(
+            localUri,
+            authUser.id,
+            'albums', // Dossier dans le bucket
+            'albums' // Nom du bucket (différent de 'avatars')
+          );
+          
+          if (uploadError || !photoUrl) {
+            console.error('❌ Error uploading album photo:', uploadError);
+            const errorMessage = uploadError?.message || 'Impossible d\'uploader la photo';
+            if (errorMessage.includes('Bucket')) {
+              Alert.alert(
+                'Erreur de configuration', 
+                'Le bucket "avatars" n\'existe pas dans Supabase Storage. Veuillez créer le bucket dans votre projet Supabase.'
+              );
+            } else {
+              Alert.alert('Erreur', `Impossible d'uploader la photo: ${errorMessage}`);
+            }
+            return;
+          }
+          
+          // Vérifier que l'URL est bien une URL publique (pas une URI locale)
+          if (photoUrl.startsWith('file://')) {
+            console.error('❌ L\'upload a retourné une URI locale au lieu d\'une URL publique');
+            Alert.alert('Erreur', 'L\'upload a échoué. La photo n\'a pas été sauvegardée correctement.');
+            return;
+          }
+          
+          console.log('✅ Photo d\'album uploadée, URL:', photoUrl);
+          
+          // Ajouter la photo à l'album avec l'URL publique
+          const { error } = await addAlbumPhoto(authUser.id, photoUrl);
+          if (error) {
+            Alert.alert('Erreur', error.message || 'Impossible d\'ajouter la photo');
+          } else {
+            Alert.alert('Succès', 'Photo ajoutée à votre album');
+          }
+        } catch (err: any) {
+          console.error('Error uploading album photo:', err);
+          Alert.alert('Erreur', err.message || 'Une erreur est survenue lors de l\'upload de la photo');
         }
       }
     } catch (error: any) {
@@ -218,13 +289,51 @@ export default function ProfileScreen() {
       });
 
       if (!result.canceled && result.assets[0]) {
-        const photoUrl = result.assets[0].uri;
+        const localUri = result.assets[0].uri;
         
-        const { error } = await addAlbumPhoto(authUser.id, photoUrl);
-        if (error) {
-          Alert.alert('Erreur', error.message || 'Impossible d\'ajouter la photo');
-        } else {
-          Alert.alert('Succès', 'Photo ajoutée à votre album');
+        // Uploader la photo vers Supabase Storage
+        try {
+          console.log('📤 Upload de la photo d\'album vers Supabase Storage...');
+          const { url: photoUrl, error: uploadError } = await uploadImageToStorage(
+            localUri,
+            authUser.id,
+            'albums', // Dossier dans le bucket
+            'albums' // Nom du bucket (différent de 'avatars')
+          );
+          
+          if (uploadError || !photoUrl) {
+            console.error('❌ Error uploading album photo:', uploadError);
+            const errorMessage = uploadError?.message || 'Impossible d\'uploader la photo';
+            if (errorMessage.includes('Bucket')) {
+              Alert.alert(
+                'Erreur de configuration', 
+                'Le bucket "avatars" n\'existe pas dans Supabase Storage. Veuillez créer le bucket dans votre projet Supabase.'
+              );
+            } else {
+              Alert.alert('Erreur', `Impossible d'uploader la photo: ${errorMessage}`);
+            }
+            return;
+          }
+          
+          // Vérifier que l'URL est bien une URL publique (pas une URI locale)
+          if (photoUrl.startsWith('file://')) {
+            console.error('❌ L\'upload a retourné une URI locale au lieu d\'une URL publique');
+            Alert.alert('Erreur', 'L\'upload a échoué. La photo n\'a pas été sauvegardée correctement.');
+            return;
+          }
+          
+          console.log('✅ Photo d\'album uploadée, URL:', photoUrl);
+          
+          // Ajouter la photo à l'album avec l'URL publique
+          const { error } = await addAlbumPhoto(authUser.id, photoUrl);
+          if (error) {
+            Alert.alert('Erreur', error.message || 'Impossible d\'ajouter la photo');
+          } else {
+            Alert.alert('Succès', 'Photo ajoutée à votre album');
+          }
+        } catch (err: any) {
+          console.error('Error uploading album photo:', err);
+          Alert.alert('Erreur', err.message || 'Une erreur est survenue lors de l\'upload de la photo');
         }
       }
     } catch (error: any) {
@@ -302,8 +411,23 @@ export default function ProfileScreen() {
           );
           
           if (uploadError || !photoUrl) {
-            console.error('Error uploading photo:', uploadError);
-            Alert.alert('Erreur', 'Impossible d\'uploader la photo. Veuillez réessayer.');
+            console.error('❌ Error uploading photo:', uploadError);
+            const errorMessage = uploadError?.message || 'Impossible d\'uploader la photo';
+            if (errorMessage.includes('Bucket')) {
+              Alert.alert(
+                'Erreur de configuration', 
+                'Le bucket "avatars" n\'existe pas dans Supabase Storage. Veuillez créer le bucket dans votre projet Supabase.'
+              );
+            } else {
+              Alert.alert('Erreur', `Impossible d'uploader la photo: ${errorMessage}`);
+            }
+            return;
+          }
+          
+          // Vérifier que l'URL est bien une URL publique (pas une URI locale)
+          if (photoUrl.startsWith('file://')) {
+            console.error('❌ L\'upload a retourné une URI locale au lieu d\'une URL publique');
+            Alert.alert('Erreur', 'L\'upload a échoué. La photo n\'a pas été sauvegardée correctement.');
             return;
           }
           
@@ -360,8 +484,23 @@ export default function ProfileScreen() {
           );
           
           if (uploadError || !photoUrl) {
-            console.error('Error uploading photo:', uploadError);
-            Alert.alert('Erreur', 'Impossible d\'uploader la photo. Veuillez réessayer.');
+            console.error('❌ Error uploading photo:', uploadError);
+            const errorMessage = uploadError?.message || 'Impossible d\'uploader la photo';
+            if (errorMessage.includes('Bucket')) {
+              Alert.alert(
+                'Erreur de configuration', 
+                'Le bucket "avatars" n\'existe pas dans Supabase Storage. Veuillez créer le bucket dans votre projet Supabase.'
+              );
+            } else {
+              Alert.alert('Erreur', `Impossible d'uploader la photo: ${errorMessage}`);
+            }
+            return;
+          }
+          
+          // Vérifier que l'URL est bien une URL publique (pas une URI locale)
+          if (photoUrl.startsWith('file://')) {
+            console.error('❌ L\'upload a retourné une URI locale au lieu d\'une URL publique');
+            Alert.alert('Erreur', 'L\'upload a échoué. La photo n\'a pas été sauvegardée correctement.');
             return;
           }
           
@@ -431,10 +570,31 @@ export default function ProfileScreen() {
         {/* Profile Header */}
         <View style={styles.profileHeader}>
           <View style={styles.avatarContainer}>
-            <ImageWithFallback
-              source={{ uri: getProfileImage(currentUser.photo, currentUser.gender) }}
-              style={styles.avatar}
-            />
+            {currentUser ? (() => {
+              const imageSource = getImageSource(currentUser.photo, currentUser.gender || 'female');
+              const isRemoteUri = typeof imageSource === 'object' && 'uri' in imageSource;
+              
+              if (isRemoteUri) {
+                return (
+                  <ImageWithFallback
+                    source={imageSource}
+                    style={styles.avatar}
+                  />
+                );
+              } else {
+                return (
+                  <Image
+                    source={imageSource}
+                    style={styles.avatar}
+                    resizeMode="cover"
+                  />
+                );
+              }
+            })() : (
+              <View style={[styles.avatar, { justifyContent: 'center', alignItems: 'center', backgroundColor: colors.backgroundTertiary }]}>
+                <Ionicons name="person-outline" size={48} color={colors.textTertiary} />
+              </View>
+            )}
             <TouchableOpacity style={styles.editButton} onPress={handleEditProfilePhoto}>
               <Ionicons name="pencil" size={20} color="#ffffff" />
             </TouchableOpacity>

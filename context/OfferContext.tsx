@@ -17,7 +17,7 @@ interface OfferContextType {
   myOffers: Offer[];
   isLoading: boolean;
   createOffer: (
-    offerType: OfferType,
+    offerTypes: OfferType[],
     title: string,
     offerDate: string,
     durationHours: number,
@@ -38,6 +38,7 @@ interface OfferContextType {
   cancelOffer: (offerId: string, cancellationMessage?: string) => Promise<{ error: any }>;
   deleteOffer: (offerId: string) => Promise<{ error: any }>;
   reactivateOffer: (offerId: string) => Promise<{ error: any }>;
+  updateOffer: (offerId: string, offerTypes: OfferType[], title: string, offerDate: string, durationHours: number, description?: string, notes?: string, location?: string, lat?: number, lng?: number) => Promise<{ error: any; offer: Offer | null }>;
   refreshOffers: () => Promise<void>;
   refreshMyOffers: () => Promise<void>;
 }
@@ -91,7 +92,7 @@ export function OfferProvider({ children }: { children: ReactNode }) {
       }
 
       if (data) {
-        // Charger les profils des auteurs et compter les candidatures
+        // Charger les profils des auteurs, les types et compter les candidatures
         const offersWithCounts = await Promise.all(
           data.map(async (offer) => {
             // Charger le profil de l'auteur
@@ -99,7 +100,7 @@ export function OfferProvider({ children }: { children: ReactNode }) {
             try {
               const { data: profile } = await supabase
                 .from('profiles')
-                .select('id, pseudo, photo, age, rating, review_count')
+                .select('id, pseudo, photo, age, rating, review_count, gender')
                 .eq('id', offer.author_id)
                 .single();
               
@@ -111,10 +112,31 @@ export function OfferProvider({ children }: { children: ReactNode }) {
                   age: profile.age || 0,
                   rating: parseFloat(profile.rating) || 0,
                   reviewCount: profile.review_count || 0,
+                  gender: profile.gender || 'female',
                 };
               }
             } catch (profileError) {
               console.error('Error loading author profile:', profileError);
+            }
+
+            // Charger les types de l'offre
+            let offerTypes: OfferType[] = [];
+            try {
+              const { data: types } = await supabase
+                .from('offer_offer_types')
+                .select('offer_type')
+                .eq('offer_id', offer.id);
+              
+              if (types && types.length > 0) {
+                offerTypes = types.map(t => t.offer_type as OfferType);
+              } else {
+                // Fallback : utiliser le type de l'offre si la table de relation n'a pas de données
+                offerTypes = offer.offer_type ? [offer.offer_type as OfferType] : [];
+              }
+            } catch (typesError) {
+              console.error('Error loading offer types:', typesError);
+              // Fallback : utiliser le type de l'offre
+              offerTypes = offer.offer_type ? [offer.offer_type as OfferType] : [];
             }
 
             // Compter les candidatures
@@ -124,7 +146,7 @@ export function OfferProvider({ children }: { children: ReactNode }) {
               .eq('offer_id', offer.id);
             
             return {
-              ...mapOfferFromDB({ ...offer, author: authorProfile }),
+              ...mapOfferFromDB({ ...offer, author: authorProfile, offerTypes }),
               applicationCount: count || 0,
             };
           })
@@ -190,7 +212,7 @@ export function OfferProvider({ children }: { children: ReactNode }) {
             try {
               const { data: profile } = await supabase
                 .from('profiles')
-                .select('id, pseudo, photo, age, rating, review_count')
+                .select('id, pseudo, photo, age, rating, review_count, gender')
                 .eq('id', offer.author_id)
                 .single();
               
@@ -202,6 +224,7 @@ export function OfferProvider({ children }: { children: ReactNode }) {
                   age: profile.age || 0,
                   rating: parseFloat(profile.rating) || 0,
                   reviewCount: profile.review_count || 0,
+                  gender: profile.gender || 'female',
                 };
               }
             } catch (profileError) {
@@ -263,6 +286,26 @@ export function OfferProvider({ children }: { children: ReactNode }) {
               }
             }
 
+            // Charger les types de l'offre
+            let offerTypes: OfferType[] = [];
+            try {
+              const { data: types } = await supabase
+                .from('offer_offer_types')
+                .select('offer_type')
+                .eq('offer_id', offer.id);
+              
+              if (types && types.length > 0) {
+                offerTypes = types.map(t => t.offer_type as OfferType);
+              } else {
+                // Fallback : utiliser le type de l'offre si la table de relation n'a pas de données
+                offerTypes = offer.offer_type ? [offer.offer_type as OfferType] : [];
+              }
+            } catch (typesError) {
+              console.error('Error loading offer types:', typesError);
+              // Fallback : utiliser le type de l'offre
+              offerTypes = offer.offer_type ? [offer.offer_type as OfferType] : [];
+            }
+
             // Vérifier si l'offre est expirée et mettre à jour le statut si nécessaire
             const expiresAt = new Date(offer.expires_at);
             const now = new Date();
@@ -283,6 +326,7 @@ export function OfferProvider({ children }: { children: ReactNode }) {
             return {
               ...offer,
               author: authorProfile,
+              offerTypes,
               selected_application: selectedApplication,
               application_count: applicationCount,
               // Mettre à jour le statut si l'offre est expirée
@@ -301,9 +345,9 @@ export function OfferProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  // Créer une offre
+  // Créer une offre avec plusieurs types
   const createOffer = async (
-    offerType: OfferType,
+    offerTypes: OfferType[],
     title: string,
     offerDate: string,
     durationHours: number,
@@ -317,12 +361,17 @@ export function OfferProvider({ children }: { children: ReactNode }) {
       return { error: 'Utilisateur non connecté', offer: null };
     }
 
+    if (!offerTypes || offerTypes.length === 0) {
+      return { error: { message: 'Au moins un type d\'offre est requis' }, offer: null };
+    }
+
     try {
+      // Créer l'offre (utiliser le premier type pour rétrocompatibilité)
       const { data, error } = await supabase
         .from('offers')
         .insert({
           author_id: user.id,
-          offer_type: offerType,
+          offer_type: offerTypes[0], // Premier type pour rétrocompatibilité
           title,
           description,
           notes,
@@ -340,12 +389,29 @@ export function OfferProvider({ children }: { children: ReactNode }) {
         return { error, offer: null };
       }
 
+      // Insérer tous les types dans la table de relation
+      const typeInserts = offerTypes.map(type => ({
+        offer_id: data.id,
+        offer_type: type,
+      }));
+
+      const { error: typesError } = await supabase
+        .from('offer_offer_types')
+        .insert(typeInserts);
+
+      if (typesError) {
+        console.error('Error creating offer types:', typesError);
+        // Supprimer l'offre créée si l'insertion des types échoue
+        await supabase.from('offers').delete().eq('id', data.id);
+        return { error: typesError, offer: null };
+      }
+
       // Charger le profil de l'auteur
       let authorProfile = null;
       try {
         const { data: profile } = await supabase
           .from('profiles')
-          .select('id, pseudo, photo, age, rating, review_count')
+          .select('id, pseudo, photo, age, rating, review_count, gender')
           .eq('id', user.id)
           .single();
         
@@ -357,13 +423,14 @@ export function OfferProvider({ children }: { children: ReactNode }) {
             age: profile.age || 0,
             rating: parseFloat(profile.rating) || 0,
             reviewCount: profile.review_count || 0,
+            gender: profile.gender || 'female',
           };
         }
       } catch (profileError) {
         console.error('Error loading author profile:', profileError);
       }
 
-      const offer = mapOfferFromDB({ ...data, author: authorProfile });
+      const offer = mapOfferFromDB({ ...data, author: authorProfile, offerTypes });
       
       // Envoyer des notifications push à tous les utilisateurs disponibles
       try {
@@ -381,11 +448,16 @@ export function OfferProvider({ children }: { children: ReactNode }) {
             gift: 'présent',
           };
 
+          // Construire le message avec tous les types
+          const typesText = offer.offerTypes && offer.offerTypes.length > 0
+            ? offer.offerTypes.map(t => offerTypeLabels[t]).join(', ')
+            : offerTypeLabels[offer.offerType];
+
           for (const profile of availableUsers) {
             await sendPushNotification({
               userId: profile.id,
               title: 'Nouvelle offre disponible',
-              body: `${user.pseudo} propose ${offerTypeLabels[offerType]}: ${title}`,
+              body: `${user.pseudo} propose ${typesText}: ${title}`,
               data: { type: 'new_offer', offerId: offer.id },
             });
           }
@@ -425,7 +497,7 @@ export function OfferProvider({ children }: { children: ReactNode }) {
         try {
           const { data: profile } = await supabase
             .from('profiles')
-            .select('id, pseudo, photo, age, rating, review_count, description')
+            .select('id, pseudo, photo, age, rating, review_count, description, gender')
             .eq('id', data.author_id)
             .single();
           
@@ -438,6 +510,7 @@ export function OfferProvider({ children }: { children: ReactNode }) {
               rating: parseFloat(profile.rating) || 0,
               reviewCount: profile.review_count || 0,
               description: profile.description || '',
+              gender: profile.gender || 'female',
             };
           }
         } catch (profileError) {
@@ -445,7 +518,27 @@ export function OfferProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      return mapOfferFromDB({ ...data, author: authorProfile });
+      // Charger les types de l'offre
+      let offerTypes: OfferType[] = [];
+      try {
+        const { data: types } = await supabase
+          .from('offer_offer_types')
+          .select('offer_type')
+          .eq('offer_id', data.id);
+        
+        if (types && types.length > 0) {
+          offerTypes = types.map(t => t.offer_type as OfferType);
+        } else {
+          // Fallback : utiliser le type de l'offre si la table de relation n'a pas de données
+          offerTypes = data.offer_type ? [data.offer_type as OfferType] : [];
+        }
+      } catch (typesError) {
+        console.error('Error loading offer types:', typesError);
+        // Fallback : utiliser le type de l'offre
+        offerTypes = data.offer_type ? [data.offer_type as OfferType] : [];
+      }
+
+      return mapOfferFromDB({ ...data, author: authorProfile, offerTypes });
     } catch (error) {
       console.error('Error fetching offer:', error);
       return null;
@@ -1069,39 +1162,43 @@ export function OfferProvider({ children }: { children: ReactNode }) {
   };
 
   // Mapper les données de la DB vers le type Offer
-  const mapOfferFromDB = (dbOffer: any): Offer => ({
-    id: dbOffer.id,
-    authorId: dbOffer.author_id,
-    offerType: dbOffer.offer_type,
-    title: dbOffer.title,
-    description: dbOffer.description,
-    notes: dbOffer.notes,
-    offerDate: dbOffer.offer_date,
-    durationHours: dbOffer.duration_hours,
-    location: dbOffer.location,
-    lat: dbOffer.lat,
-    lng: dbOffer.lng,
-    status: dbOffer.status,
-    selectedApplicationId: dbOffer.selected_application_id,
-    expiresAt: dbOffer.expires_at,
-    createdAt: dbOffer.created_at,
-    updatedAt: dbOffer.updated_at,
-    applicationCount: dbOffer.application_count || dbOffer.applicationCount || 0,
-    author: dbOffer.author ? {
-      id: dbOffer.author.id,
-      pseudo: dbOffer.author.pseudo || 'Utilisateur',
-      photo: dbOffer.author.photo || '',
-      age: dbOffer.author.age || 0,
-      rating: dbOffer.author.rating || 0,
-      reviewCount: dbOffer.author.review_count || 0,
-      description: dbOffer.author.description || '',
-      gender: dbOffer.author.gender || 'male',
-      isSubscribed: dbOffer.author.is_subscribed || false,
-      subscriptionStatus: dbOffer.author.subscription_status || 'pending',
-      lastSeen: dbOffer.author.last_seen || '',
+  const mapOfferFromDB = (dbOffer: any): Offer => {
+    const offerTypes: OfferType[] = dbOffer.offerTypes || (dbOffer.offer_type ? [dbOffer.offer_type as OfferType] : []);
+    return {
+      id: dbOffer.id,
+      authorId: dbOffer.author_id,
+      offerType: offerTypes[0] || (dbOffer.offer_type as OfferType), // Premier type pour rétrocompatibilité
+      offerTypes: offerTypes, // Tous les types
+      title: dbOffer.title,
+      description: dbOffer.description,
+      notes: dbOffer.notes,
+      offerDate: dbOffer.offer_date,
+      durationHours: dbOffer.duration_hours,
+      location: dbOffer.location,
+      lat: dbOffer.lat,
+      lng: dbOffer.lng,
+      status: dbOffer.status,
+      selectedApplicationId: dbOffer.selected_application_id,
+      expiresAt: dbOffer.expires_at,
+      createdAt: dbOffer.created_at,
+      updatedAt: dbOffer.updated_at,
+      applicationCount: dbOffer.application_count || dbOffer.applicationCount || 0,
+      author: dbOffer.author ? {
+        id: dbOffer.author.id,
+        pseudo: dbOffer.author.pseudo || 'Utilisateur',
+        photo: dbOffer.author.photo || '',
+        age: dbOffer.author.age || 0,
+        rating: dbOffer.author.rating || 0,
+        reviewCount: dbOffer.author.review_count || 0,
+        description: dbOffer.author.description || '',
+        gender: dbOffer.author.gender || 'male',
+        isSubscribed: dbOffer.author.is_subscribed || false,
+        subscriptionStatus: dbOffer.author.subscription_status || 'pending',
+        lastSeen: dbOffer.author.last_seen || '',
     } : undefined,
     selectedApplication: dbOffer.selected_application ? mapApplicationFromDB(dbOffer.selected_application) : undefined,
-  });
+    };
+  };
 
   // Mapper les données de la DB vers le type OfferApplication
   const mapApplicationFromDB = (dbApplication: any): OfferApplication => ({
@@ -1128,6 +1225,122 @@ export function OfferProvider({ children }: { children: ReactNode }) {
     } : undefined,
   });
 
+  // Mettre à jour une offre existante
+  const updateOffer = async (
+    offerId: string,
+    offerTypes: OfferType[],
+    title: string,
+    offerDate: string,
+    durationHours: number,
+    description?: string,
+    notes?: string,
+    location?: string,
+    lat?: number,
+    lng?: number
+  ): Promise<{ error: any; offer: Offer | null }> => {
+    if (!user) {
+      return { error: 'Utilisateur non connecté', offer: null };
+    }
+
+    if (!offerTypes || offerTypes.length === 0) {
+      return { error: { message: 'Au moins un type d\'offre est requis' }, offer: null };
+    }
+
+    try {
+      // Vérifier que l'utilisateur est bien l'auteur de l'offre
+      const existingOffer = await getOfferById(offerId);
+      if (!existingOffer || existingOffer.authorId !== user.id) {
+        return { error: { message: 'Vous n\'êtes pas l\'auteur de cette offre' }, offer: null };
+      }
+
+      // Mettre à jour l'offre
+      const { data, error } = await supabase
+        .from('offers')
+        .update({
+          offer_type: offerTypes[0], // Premier type pour rétrocompatibilité
+          title,
+          description,
+          notes,
+          offer_date: offerDate,
+          duration_hours: durationHours,
+          location,
+          lat,
+          lng,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', offerId)
+        .select('*')
+        .single();
+
+      if (error) {
+        console.error('Error updating offer:', error);
+        return { error, offer: null };
+      }
+
+      // Supprimer les anciens types et insérer les nouveaux
+      const { error: deleteError } = await supabase
+        .from('offer_offer_types')
+        .delete()
+        .eq('offer_id', offerId);
+
+      if (deleteError) {
+        console.error('Error deleting old offer types:', deleteError);
+        return { error: deleteError, offer: null };
+      }
+
+      const typeInserts = offerTypes.map(type => ({
+        offer_id: offerId,
+        offer_type: type,
+      }));
+
+      const { error: typesError } = await supabase
+        .from('offer_offer_types')
+        .insert(typeInserts);
+
+      if (typesError) {
+        console.error('Error updating offer types:', typesError);
+        return { error: typesError, offer: null };
+      }
+
+      console.log(`✅ Offer types updated: ${offerTypes.length} types inserted for offer ${offerId}`);
+
+      // Charger le profil de l'auteur
+      let authorProfile = null;
+      try {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('id, pseudo, photo, age, rating, review_count, gender')
+          .eq('id', user.id)
+          .single();
+        
+        if (profile) {
+          authorProfile = {
+            id: profile.id,
+            pseudo: profile.pseudo || 'Utilisateur',
+            photo: profile.photo || '',
+            age: profile.age || 0,
+            rating: parseFloat(profile.rating) || 0,
+            reviewCount: profile.review_count || 0,
+            gender: profile.gender || 'female',
+          };
+        }
+      } catch (profileError) {
+        console.error('Error loading author profile:', profileError);
+      }
+
+      const offer = mapOfferFromDB({ ...data, author: authorProfile, offerTypes });
+      
+      // Rafraîchir les offres
+      await refreshMyOffers();
+      await refreshOffers();
+
+      return { error: null, offer };
+    } catch (error: any) {
+      console.error('Error updating offer:', error);
+      return { error, offer: null };
+    }
+  };
+
   return (
     <OfferContext.Provider
       value={{
@@ -1146,6 +1359,7 @@ export function OfferProvider({ children }: { children: ReactNode }) {
         cancelOffer,
         deleteOffer,
         reactivateOffer,
+        updateOffer,
         refreshOffers,
         refreshMyOffers,
       }}

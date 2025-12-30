@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
 import { colors } from '../../constants/colors';
@@ -65,6 +65,29 @@ export default function ChatScreen() {
   const { user: currentUser } = useAuth();
   const { setSelectedUser } = useUser();
   const { blockUser, unblockUser, isUserBlocked } = useBlock();
+
+  // Fonction pour calculer si un utilisateur est en ligne
+  const calculateOnlineStatus = (lastSeenValue: string | null | undefined): boolean => {
+    if (!lastSeenValue) {
+      return false; // Pas de last_seen = pas en ligne
+    }
+    if (lastSeenValue === 'En ligne' || lastSeenValue.toLowerCase() === 'en ligne') {
+      return true;
+    }
+    // Vérifier si c'est une date récente (moins de 5 minutes)
+    try {
+      const lastSeenDate = new Date(lastSeenValue);
+      if (isNaN(lastSeenDate.getTime())) {
+        return false; // Date invalide = pas en ligne
+      }
+      const now = new Date();
+      const diffMs = now.getTime() - lastSeenDate.getTime();
+      const diffMinutes = diffMs / (1000 * 60);
+      return diffMinutes < 5; // En ligne si vu il y a moins de 5 minutes
+    } catch {
+      return false; // Erreur de parsing = pas en ligne
+    }
+  };
   const {
     conversations,
     messages,
@@ -88,6 +111,8 @@ export default function ChatScreen() {
   const [showMenu, setShowMenu] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const [isBlocked, setIsBlocked] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshingConversations, setRefreshingConversations] = useState(false);
   
   const scrollViewRef = useRef<ScrollView>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
@@ -110,38 +135,65 @@ export default function ChatScreen() {
   useEffect(() => {
     if (selectedConversation) {
       loadConversationMessages(selectedConversation.id);
-      markAsRead(selectedConversation.id);
+      // Marquer comme lu en arrière-plan (non-bloquant)
+      markAsRead(selectedConversation.id).catch(() => {
+        // Ignorer les erreurs silencieusement
+      });
     } else {
       // Réinitialiser les messages si aucune conversation n'est sélectionnée
       setConversationMessages([]);
     }
   }, [selectedConversation?.id]);
 
+  // Synchroniser avec les messages du contexte pour avoir une source de vérité unique
+  // Cela permet d'avoir les messages mis à jour par le temps réel du contexte
+  useEffect(() => {
+    if (selectedConversation && messages[selectedConversation.id]) {
+      const contextMessages = messages[selectedConversation.id];
+      // S'assurer que les messages sont bien triés par date
+      const sortedMessages = [...contextMessages].sort((a, b) => {
+        const dateA = new Date(a.createdAt).getTime();
+        const dateB = new Date(b.createdAt).getTime();
+        return dateA - dateB;
+      });
+      // Ne mettre à jour que si les messages ont changé (éviter les boucles infinies)
+      // Préserver les messages temporaires (ceux qui commencent par "temp-")
+      setConversationMessages(prev => {
+        // Garder les messages temporaires qui ne sont pas encore remplacés
+        const tempMessages = prev.filter(msg => msg.id.startsWith('temp-'));
+        // Fusionner les messages du contexte avec les messages temporaires
+        const allMessages = [...sortedMessages, ...tempMessages];
+        // Trier par date
+        const merged = allMessages.sort((a, b) => {
+          const dateA = new Date(a.createdAt).getTime();
+          const dateB = new Date(b.createdAt).getTime();
+          return dateA - dateB;
+        });
+        // Vérifier si quelque chose a changé
+        if (prev.length !== merged.length || 
+            prev.some((msg, idx) => msg.id !== merged[idx]?.id)) {
+          return merged;
+        }
+        return prev;
+      });
+    }
+  }, [selectedConversation?.id, messages]);
+
   // S'abonner aux nouveaux messages en temps réel
   useEffect(() => {
     if (selectedConversation) {
       const unsubscribe = subscribeToConversation(selectedConversation.id, (message) => {
-        setConversationMessages((prev) => {
-          // Vérifier si le message n'est pas déjà présent (éviter les doublons)
-          const exists = prev.some(msg => msg.id === message.id);
-          if (exists) {
-            return prev;
-          }
-          // Ajouter le message et trier par date
-          const updated = [...prev, message];
-          return updated.sort((a, b) => {
-            const dateA = new Date(a.createdAt).getTime();
-            const dateB = new Date(b.createdAt).getTime();
-            return dateA - dateB;
-          });
-        });
-        // Faire défiler vers le bas
+        // Le message est déjà ajouté au contexte par subscribeToConversation
+        // La synchronisation avec messages[conversationId] se fera automatiquement
+        // Faire défiler vers le bas immédiatement pour afficher le nouveau message
         setTimeout(() => {
           scrollViewRef.current?.scrollToEnd({ animated: true });
-        }, 100);
-        // Marquer comme lu si c'est pour l'utilisateur actuel
+        }, 50);
+        // Marquer comme lu en arrière-plan si c'est pour l'utilisateur actuel (non-bloquant)
         if (message.recipientId === currentUser?.id) {
-          markAsRead(selectedConversation.id);
+          markAsRead(selectedConversation.id).catch(() => {
+            // Ignorer les erreurs silencieusement
+          });
         }
       });
       unsubscribeRef.current = unsubscribe;
@@ -154,7 +206,10 @@ export default function ChatScreen() {
     }
   }, [selectedConversation?.id, subscribeToConversation, markAsRead, currentUser?.id]);
 
-  const loadConversationMessages = async (conversationId: string) => {
+  const loadConversationMessages = async (conversationId: string, showLoading: boolean = false) => {
+    if (showLoading) {
+      setRefreshing(true);
+    }
     try {
       const loadedMessages = await getMessages(conversationId);
       // S'assurer que les messages sont bien triés par date
@@ -164,15 +219,40 @@ export default function ChatScreen() {
         return dateA - dateB;
       });
       setConversationMessages(sortedMessages);
-      // Faire défiler vers le bas après le chargement
-      setTimeout(() => {
-        scrollViewRef.current?.scrollToEnd({ animated: false });
-      }, 100);
+      // Faire défiler vers le bas après le chargement (seulement si on n'est pas en train de rafraîchir)
+      if (!showLoading) {
+        setTimeout(() => {
+          scrollViewRef.current?.scrollToEnd({ animated: false });
+        }, 100);
+      }
     } catch (error) {
       console.error('Error loading conversation messages:', error);
       setConversationMessages([]);
+    } finally {
+      if (showLoading) {
+        setRefreshing(false);
+      }
     }
   };
+
+  // Fonction pour le pull to refresh dans la conversation
+  const onRefresh = useCallback(async () => {
+    if (selectedConversation) {
+      await loadConversationMessages(selectedConversation.id, true);
+    }
+  }, [selectedConversation]);
+
+  // Fonction pour le pull to refresh de la liste des conversations
+  const onRefreshConversations = useCallback(async () => {
+    setRefreshingConversations(true);
+    try {
+      await getConversations();
+    } catch (error) {
+      console.error('Error refreshing conversations:', error);
+    } finally {
+      setRefreshingConversations(false);
+    }
+  }, [getConversations]);
 
   const handleOpenConversationWithUser = async (userId: string) => {
     const conversation = await getOrCreateConversation(userId);
@@ -190,9 +270,9 @@ export default function ChatScreen() {
   const handleSendMessage = async () => {
     if (!newMessage.trim() || !selectedConversation || !currentUser?.id || isSending) return;
 
-    setIsSending(true);
     const content = newMessage.trim();
     setNewMessage(''); // Vider l'input immédiatement
+    setIsSending(true);
 
     const recipientId = selectedConversation.user1Id === currentUser.id 
       ? selectedConversation.user2Id 
@@ -200,7 +280,7 @@ export default function ChatScreen() {
 
     // Créer un message temporaire pour affichage immédiat
     const tempMessage: Message = {
-      id: `temp-${Date.now()}`,
+      id: `temp-${Date.now()}-${Math.random()}`,
       conversationId: selectedConversation.id,
       senderId: currentUser.id,
       recipientId: recipientId,
@@ -212,40 +292,67 @@ export default function ChatScreen() {
     };
 
     // Ajouter le message temporaire immédiatement pour un affichage instantané
-    setConversationMessages((prev) => [...prev, tempMessage]);
+    setConversationMessages((prev) => {
+      // Vérifier si le message n'est pas déjà présent
+      const exists = prev.some(msg => msg.id === tempMessage.id);
+      if (exists) return prev;
+      const updated = [...prev, tempMessage];
+      // Trier par date pour maintenir l'ordre
+      return updated.sort((a, b) => {
+        const dateA = new Date(a.createdAt).getTime();
+        const dateB = new Date(b.createdAt).getTime();
+        return dateA - dateB;
+      });
+    });
     
     // Faire défiler vers le bas immédiatement
     setTimeout(() => {
       scrollViewRef.current?.scrollToEnd({ animated: true });
     }, 50);
 
-    const sentMessage = await sendMessage(selectedConversation.id, recipientId, content);
-    
-    if (sentMessage) {
-      // Remplacer le message temporaire par le vrai message
-      setConversationMessages((prev) => {
-        // Retirer le message temporaire
-        const withoutTemp = prev.filter(msg => msg.id !== tempMessage.id);
-        // Vérifier si le message n'est pas déjà présent (éviter les doublons)
-        const exists = withoutTemp.some(msg => msg.id === sentMessage.id);
-        if (exists) {
-          return withoutTemp;
+    // Envoyer le message en arrière-plan (non-bloquant)
+    sendMessage(selectedConversation.id, recipientId, content)
+      .then((sentMessage) => {
+        if (sentMessage) {
+          // Remplacer le message temporaire par le vrai message
+          setConversationMessages((prev) => {
+            // Retirer le message temporaire
+            const withoutTemp = prev.filter(msg => msg.id !== tempMessage.id);
+            // Vérifier si le message n'est pas déjà présent (éviter les doublons)
+            const exists = withoutTemp.some(msg => msg.id === sentMessage.id);
+            if (exists) {
+              return withoutTemp;
+            }
+            const updated = [...withoutTemp, sentMessage];
+            // Trier par date
+            return updated.sort((a, b) => {
+              const dateA = new Date(a.createdAt).getTime();
+              const dateB = new Date(b.createdAt).getTime();
+              return dateA - dateB;
+            });
+          });
+          
+          // Faire défiler vers le bas après l'ajout du vrai message
+          setTimeout(() => {
+            scrollViewRef.current?.scrollToEnd({ animated: true });
+          }, 50);
+        } else {
+          // En cas d'erreur, retirer le message temporaire et remettre le message dans l'input
+          setConversationMessages((prev) => prev.filter(msg => msg.id !== tempMessage.id));
+          setNewMessage(content);
+          Alert.alert('Erreur', 'Impossible d\'envoyer le message. Veuillez réessayer.');
         }
-        return [...withoutTemp, sentMessage];
+      })
+      .catch((error) => {
+        console.error('Error sending message:', error);
+        // En cas d'erreur, retirer le message temporaire et remettre le message dans l'input
+        setConversationMessages((prev) => prev.filter(msg => msg.id !== tempMessage.id));
+        setNewMessage(content);
+        Alert.alert('Erreur', 'Impossible d\'envoyer le message. Veuillez réessayer.');
+      })
+      .finally(() => {
+        setIsSending(false);
       });
-      
-      // Faire défiler vers le bas après l'ajout du vrai message
-      setTimeout(() => {
-        scrollViewRef.current?.scrollToEnd({ animated: true });
-      }, 100);
-    } else {
-      // En cas d'erreur, retirer le message temporaire et remettre le message dans l'input
-      setConversationMessages((prev) => prev.filter(msg => msg.id !== tempMessage.id));
-      setNewMessage(content);
-      Alert.alert('Erreur', 'Impossible d\'envoyer le message. Veuillez réessayer.');
-    }
-    
-    setIsSending(false);
   };
 
   // Vérifier si l'utilisateur est bloqué
@@ -429,13 +536,13 @@ export default function ChatScreen() {
               <Ionicons name="arrow-back" size={24} color={colors.textSecondary} />
             </TouchableOpacity>
             <View style={styles.headerUser}>
-              <ImageWithFallback
-                source={{ uri: selectedConversation.otherUser?.photo || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400' }}
-                style={styles.headerAvatar}
-              />
-              {selectedConversation.otherUser?.lastSeen === 'En ligne' && (
-                <View style={styles.headerOnlineIndicator} />
-              )}
+                    <ImageWithFallback
+                      source={{ uri: selectedConversation.otherUser?.photo || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400' }}
+                      style={styles.headerAvatar}
+                    />
+                    {calculateOnlineStatus(selectedConversation.otherUser?.lastSeen) && (
+                      <View style={styles.headerOnlineIndicator} />
+                    )}
             </View>
             <View style={styles.headerInfo}>
               <Text style={styles.headerName}>{selectedConversation.otherUser?.pseudo || 'Utilisateur'}</Text>
@@ -457,9 +564,21 @@ export default function ChatScreen() {
               style={styles.messagesContainer}
               contentContainerStyle={styles.messagesContent}
               keyboardShouldPersistTaps="handled"
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                  tintColor={colors.pink500}
+                  colors={[colors.pink500]}
+                  progressViewOffset={Platform.OS === 'android' ? 20 : 0}
+                  // Le refresh se déclenche seulement lors d'un pull fort (comportement par défaut)
+                />
+              }
               onContentSizeChange={() => {
-                // Scroll automatique seulement si on est déjà près du bas
-                scrollViewRef.current?.scrollToEnd({ animated: false });
+                // Scroll automatique seulement si on est déjà près du bas et qu'on n'est pas en train de rafraîchir
+                if (!refreshing) {
+                  scrollViewRef.current?.scrollToEnd({ animated: false });
+                }
               }}
             >
               {conversationMessages.map((message) => {
@@ -687,7 +806,18 @@ export default function ChatScreen() {
           <Text style={styles.emptySubtitle}>Vos conversations apparaîtront ici</Text>
         </View>
       ) : (
-        <ScrollView style={styles.conversationsList}>
+        <ScrollView
+          style={styles.conversationsList}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshingConversations}
+              onRefresh={onRefreshConversations}
+              tintColor={colors.pink500}
+              colors={[colors.pink500]}
+              progressViewOffset={Platform.OS === 'android' ? 20 : 0}
+            />
+          }
+        >
           {conversations.map((conversation) => (
             <TouchableOpacity
               key={conversation.id}
@@ -701,7 +831,7 @@ export default function ChatScreen() {
                       source={{ uri: conversation.otherUser?.photo || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400' }}
                       style={styles.avatarImage}
                     />
-                    {conversation.otherUser?.lastSeen === 'En ligne' && (
+                    {calculateOnlineStatus(conversation.otherUser?.lastSeen) && (
                       <View style={styles.conversationOnlineIndicator} />
                     )}
                   </>
@@ -711,9 +841,18 @@ export default function ChatScreen() {
               </View>
               <View style={styles.conversationInfo}>
                 <View style={styles.conversationHeader}>
-                  <Text style={styles.conversationName}>
-                    {conversation.otherUser?.pseudo || 'Utilisateur'}
-                  </Text>
+                  <View style={styles.conversationHeaderLeft}>
+                    <Text style={styles.conversationName}>
+                      {conversation.otherUser?.pseudo || 'Utilisateur'}
+                    </Text>
+                    {conversation.unreadCount && conversation.unreadCount > 0 ? (
+                      <View style={styles.unreadBadge}>
+                        <Text style={styles.unreadText}>
+                          {conversation.unreadCount > 99 ? '99+' : String(conversation.unreadCount || 0)}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
                   {conversation.lastMessageAt && (
                     <Text style={styles.conversationTime}>
                       {formatConversationTime(conversation.lastMessageAt) || ''}
@@ -724,13 +863,6 @@ export default function ChatScreen() {
                   <Text style={styles.conversationMessage} numberOfLines={1}>
                     {conversation.lastMessage?.content || 'Aucun message'}
                   </Text>
-                  {conversation.unreadCount && conversation.unreadCount > 0 ? (
-                    <View style={styles.unreadBadge}>
-                      <Text style={styles.unreadText}>
-                        {conversation.unreadCount > 99 ? '99+' : String(conversation.unreadCount || 0)}
-                      </Text>
-                    </View>
-                  ) : null}
                 </View>
               </View>
             </TouchableOpacity>
@@ -943,6 +1075,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+  },
+  conversationHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
   },
   conversationName: {
     fontSize: 16,

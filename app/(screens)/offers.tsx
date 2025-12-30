@@ -124,24 +124,33 @@ export default function OffersScreen() {
             </TouchableOpacity>
           </View>
         ) : (
-          offers.map((offer) => (
-            <Animated.View key={offer.id} entering={FadeIn}>
-              <TouchableOpacity
-                style={styles.offerCard}
-                onPress={() => handleViewOffer(offer)}
-                activeOpacity={0.7}
-              >
-                <View style={styles.offerHeader}>
-                  <View style={styles.offerTypeBadge}>
-                    <Ionicons
-                      name={OFFER_TYPE_ICONS[offer.offerType] as any}
-                      size={20}
-                      color={colors.pink500}
-                    />
-                    <Text style={styles.offerTypeText}>
-                      {OFFER_TYPE_LABELS[offer.offerType]}
-                    </Text>
-                  </View>
+          offers.map((offer) => {
+            const offerTypesToDisplay = (offer.offerTypes && offer.offerTypes.length > 0) 
+              ? offer.offerTypes 
+              : (offer.offerType ? [offer.offerType] : []);
+            
+            return (
+              <Animated.View key={offer.id} entering={FadeIn}>
+                <TouchableOpacity
+                  style={styles.offerCard}
+                  onPress={() => handleViewOffer(offer)}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.offerHeader}>
+                    <View style={styles.offerTypesContainer}>
+                      {offerTypesToDisplay.map((type, index) => (
+                        <View key={index} style={styles.offerTypeBadge}>
+                          <Ionicons
+                            name={OFFER_TYPE_ICONS[type] as any}
+                            size={16}
+                            color={colors.pink500}
+                          />
+                          <Text style={styles.offerTypeText}>
+                            {OFFER_TYPE_LABELS[type]}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
                   {offer.applicationCount !== undefined && offer.applicationCount > 0 && (
                     <Badge variant="info" style={styles.applicationBadge}>
                       {offer.applicationCount} candidature{offer.applicationCount > 1 ? 's' : ''}
@@ -187,7 +196,8 @@ export default function OffersScreen() {
                 </View>
               </TouchableOpacity>
             </Animated.View>
-          ))
+            );
+          })
         )}
       </ScrollView>
     </SafeAreaView>
@@ -264,6 +274,12 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 12,
+  },
+  offerTypesContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    flex: 1,
   },
   offerTypeBadge: {
     flexDirection: 'row',

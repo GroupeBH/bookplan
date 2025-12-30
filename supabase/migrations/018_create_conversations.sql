@@ -97,3 +97,14 @@ GRANT EXECUTE ON FUNCTION get_or_create_conversation(UUID, UUID) TO authenticate
 
 
 
+
+
+
+
+
+
+
+
+
+
+

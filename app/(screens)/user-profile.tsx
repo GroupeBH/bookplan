@@ -15,9 +15,9 @@ import { useAlbum } from '../../context/AlbumContext';
 import { useAuth } from '../../context/AuthContext';
 import { useBlock } from '../../context/BlockContext';
 import { useBooking } from '../../context/BookingContext';
+import { useLike } from '../../context/LikeContext';
 import { useRating } from '../../context/RatingContext';
 import { useUser } from '../../context/UserContext';
-import { useLike } from '../../context/LikeContext';
 import { getProfileImage } from '../../lib/defaultImages';
 import { supabase } from '../../lib/supabase';
 import { User } from '../../types';
@@ -423,6 +423,49 @@ export default function UserProfileScreen() {
     return () => clearInterval(interval);
   }, [selectedUser?.id, selectedUser?.lastSeen]);
 
+  // Fonction pour recharger le profil depuis la DB
+  const reloadUserProfile = React.useCallback(async (userId: string) => {
+    try {
+      console.log('🔄 Rechargement du profil depuis la DB:', userId);
+      const { data: userProfile, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
+
+      if (error) {
+        console.error('Error reloading profile:', error);
+        return;
+      }
+
+      if (userProfile) {
+        const fullUser: User = {
+          id: userProfile.id,
+          pseudo: userProfile.pseudo || 'Utilisateur',
+          age: userProfile.age || 25,
+          phone: userProfile.phone || '',
+          photo: getProfileImage(userProfile.photo, userProfile.gender),
+          description: userProfile.description || '',
+          specialty: userProfile.specialty || undefined,
+          rating: parseFloat(userProfile.rating) || 0,
+          reviewCount: userProfile.review_count || 0,
+          isSubscribed: userProfile.is_subscribed || false,
+          subscriptionStatus: userProfile.subscription_status || 'pending',
+          lastSeen: userProfile.last_seen || 'En ligne',
+          gender: userProfile.gender || 'female',
+          lat: userProfile.lat ? parseFloat(userProfile.lat) : undefined,
+          lng: userProfile.lng ? parseFloat(userProfile.lng) : undefined,
+          isAvailable: userProfile.is_available ?? true,
+          currentBookingId: userProfile.current_booking_id,
+        };
+        setSelectedUser(fullUser);
+        console.log('✅ Profil rechargé avec succès');
+      }
+    } catch (error) {
+      console.error('Error in reloadUserProfile:', error);
+    }
+  }, [setSelectedUser]);
+
   // Charger les photos d'album au montage
   React.useEffect(() => {
     if (selectedUser?.id) {
@@ -479,6 +522,8 @@ export default function UserProfileScreen() {
             };
             setSelectedUser(fullUser);
             console.log('✅ Profil chargé depuis userId');
+            // Charger aussi les photos d'album
+            loadUserAlbumPhotos();
           }
         } catch (error) {
           console.error('Error loading profile from params:', error);
@@ -491,7 +536,7 @@ export default function UserProfileScreen() {
     };
 
     loadProfileFromParams();
-  }, [params.userId, selectedUser, setSelectedUser, router]);
+  }, [params.userId, selectedUser, setSelectedUser, router, loadUserAlbumPhotos]);
 
   // Recharger quand on revient sur la page (après avoir créé une demande par exemple)
   useFocusEffect(
@@ -506,7 +551,7 @@ export default function UserProfileScreen() {
         // Utiliser un petit délai pour éviter les appels multiples et laisser le temps à la DB de se mettre à jour
         const timer = setTimeout(() => {
           if (selectedUser?.id && currentUser?.id) {
-            console.log('🔄 Rechargement du profil - refreshRequests, loadActiveBooking et loadUserRatings');
+            console.log('🔄 Rechargement du profil - refreshRequests, loadActiveBooking, loadUserRatings, reloadUserProfile et loadUserAlbumPhotos');
             refreshRequests(); // Rafraîchir les demandes d'accès
             // Recharger la demande active quand on revient sur la page
             loadActiveBooking(true); // Force le rechargement quand on revient
@@ -515,6 +560,10 @@ export default function UserProfileScreen() {
             if (!isLoadingRatingsRef.current) {
               loadUserRatings(false);
             }
+            // Recharger le profil depuis la DB pour avoir les dernières données (photo, etc.)
+            reloadUserProfile(selectedUser.id);
+            // Recharger les photos d'album pour avoir les dernières photos
+            loadUserAlbumPhotos();
           }
         }, 500); // Délai augmenté à 500ms pour laisser le temps à la DB
 
@@ -524,7 +573,7 @@ export default function UserProfileScreen() {
       } else {
         console.log('⏭️ Focus trop récent, pas de rafraîchissement des avis');
       }
-    }, [selectedUser?.id, currentUser?.id, refreshRequests, loadActiveBooking]) // eslint-disable-line react-hooks/exhaustive-deps
+    }, [selectedUser?.id, currentUser?.id, refreshRequests, loadActiveBooking, loadUserRatings, reloadUserProfile, loadUserAlbumPhotos]) // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   // Vérifier si on a déjà demandé l'accès (doit être avant le return conditionnel)
@@ -607,24 +656,33 @@ export default function UserProfileScreen() {
   const handleRequestAccess = async () => {
     if (!currentUser) return;
 
-    setIsLoading(true);
-    try {
-      const { error } = await requestAccess(selectedUser.id);
-      
-      if (error) {
-        Alert.alert('Erreur', error.message || 'Impossible de créer la demande d\'accès');
-        setIsLoading(false);
-        return;
-      }
-
-      setShowAccessDialog(false);
-      Alert.alert('Succès', 'Votre demande d\'accès a été envoyée');
-    } catch (error: any) {
-      Alert.alert('Erreur', 'Une erreur est survenue');
-      console.error('Request access error:', error);
-    } finally {
-      setIsLoading(false);
-    }
+    // Fermer le dialog immédiatement pour une meilleure UX
+    setShowAccessDialog(false);
+    
+    // Mise à jour optimiste : on suppose que la demande va réussir
+    // L'UI sera mise à jour immédiatement
+    
+    // Lancer la requête en arrière-plan (non bloquant)
+    // La mise à jour optimiste dans requestAccess met déjà à jour l'état local immédiatement
+    requestAccess(selectedUser.id)
+      .then(({ error }) => {
+        if (error) {
+          // En cas d'erreur, afficher l'alerte mais ne pas bloquer l'UI
+          Alert.alert('Erreur', error.message || 'Impossible de créer la demande d\'accès');
+        }
+        // Pas besoin de refreshRequests car la mise à jour optimiste a déjà mis à jour l'état
+        // La synchronisation avec la DB se fait automatiquement en arrière-plan
+      })
+      .catch((error: any) => {
+        console.error('Request access error:', error);
+        // Ne pas afficher d'alerte pour les erreurs réseau silencieuses
+        if (!error?.message?.includes('network') && !error?.message?.includes('Network')) {
+          Alert.alert('Erreur', 'Une erreur est survenue lors de l\'envoi de la demande');
+        }
+      });
+    
+    // Afficher un message de succès immédiat (optimiste)
+    // L'utilisateur verra le changement immédiatement
   };
 
   const handleBooking = () => {

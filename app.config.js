@@ -22,7 +22,7 @@ export default {
     },
     android: {
       googleServicesFile: './google-services.json',
-      package: "com.kutana",
+      package: "com.kutana",  // Doit correspondre à google-services.json
       versionCode: 1,
       adaptiveIcon: {
         backgroundColor: "#E6F4FE",
@@ -35,6 +35,7 @@ export default {
       permissions: [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
         "RECEIVE_BOOT_COMPLETED",
         "VIBRATE"
       ],
@@ -55,6 +56,16 @@ export default {
           dark: {
             backgroundColor: "#000000"
           }
+        }
+      ],
+      [
+        "expo-location",
+        {
+          locationAlwaysAndWhenInUsePermission: "Cette application utilise votre localisation même en arrière-plan pour améliorer l'expérience sur la carte.",
+          locationAlwaysPermission: "Cette application utilise votre localisation même en arrière-plan pour améliorer l'expérience sur la carte.",
+          locationWhenInUsePermission: "Cette application a besoin de votre localisation pour afficher les utilisateurs à proximité et mettre à jour votre position sur la carte.",
+          isIosBackgroundLocationEnabled: true,
+          isAndroidBackgroundLocationEnabled: true,
         }
       ],
       [

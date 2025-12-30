@@ -146,44 +146,26 @@ export default function EditProfileScreen() {
     }
 
     setIsSaving(true);
+    
+    const updateData = {
+      pseudo: pseudo.trim(),
+      age: Number(age),
+      description: description.trim(),
+      specialty: specialty.trim() || null,
+      photo: photo || authUser.photo,
+    };
+
     try {
-      // Mettre à jour le profil dans Supabase
-      console.log('💾 Sauvegarde du profil avec:', {
-        pseudo: pseudo.trim(),
-        age: Number(age),
-        description: description.trim(),
-        photo: photo || authUser.photo,
-      });
-
-      const updateData = {
-        pseudo: pseudo.trim(),
-        age: Number(age),
-        description: description.trim(),
-        specialty: specialty.trim() || null,
-        photo: photo || authUser.photo,
-      };
-
-      console.log('💾 edit-profile - Données à sauvegarder:', updateData);
-      
+      // Mettre à jour le profil et attendre la confirmation
       await updateUser(updateData);
-
-      console.log('✅ edit-profile - Profil mis à jour avec succès');
       
-      // Attendre un peu pour que les données soient bien synchronisées
-      await new Promise(resolve => setTimeout(resolve, 300));
+      // Attendre un court instant pour que la mise à jour soit propagée
+      await new Promise(resolve => setTimeout(resolve, 100));
       
-      // Vérifier que les données ont bien été mises à jour
-      console.log('🔍 edit-profile - Vérification après mise à jour:', {
-        authUserDescription: authUser?.description,
-        authUserPseudo: authUser?.pseudo,
-        authUserAge: authUser?.age,
-      });
-      
-      Alert.alert('Succès', 'Profil modifié avec succès', [
-        { text: 'OK', onPress: () => router.back() },
-      ]);
+      // Naviguer en arrière après la mise à jour réussie
+      router.back();
     } catch (error) {
-      console.error('❌ Erreur lors de la sauvegarde:', error);
+      console.error('Erreur lors de la sauvegarde:', error);
       Alert.alert('Erreur', 'Une erreur est survenue lors de la sauvegarde. Veuillez réessayer.');
     } finally {
       setIsSaving(false);

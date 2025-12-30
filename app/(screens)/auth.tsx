@@ -1,14 +1,13 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, KeyboardAvoidingView, Platform, Alert, TouchableOpacity } from 'react-native';
-import { useRouter } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import * as Location from 'expo-location';
-import { colors } from '../../constants/colors';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useRouter } from 'expo-router';
+import React, { useState } from 'react';
+import { Alert, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
+import { colors } from '../../constants/colors';
 import { useAuth } from '../../context/AuthContext';
-import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 
 type AuthMode = 'signup' | 'login';
 type AuthStep = 'phone' | 'otp' | 'pseudo' | 'age' | 'gender' | 'specialty' | 'password';
@@ -99,25 +98,9 @@ export default function AuthScreen() {
 
     setIsLoading(true);
     try {
-      // Obtenir la position actuelle
-      let lat: number | undefined;
-      let lng: number | undefined;
-
-      try {
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status === 'granted') {
-          const location = await Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.Balanced,
-          });
-          lat = location.coords.latitude;
-          lng = location.coords.longitude;
-        }
-      } catch (error) {
-        console.error('Error getting location:', error);
-      }
-
       // Vérifier l'OTP sans créer le compte (le compte sera créé avec le mot de passe)
-      const { error, user: verifiedUser } = await verifyOTP(phone, otp, undefined, lat, lng);
+      // La position GPS sera récupérée lors de la création du compte (non bloquant)
+      const { error, user: verifiedUser } = await verifyOTP(phone, otp);
       
       if (error) {
         // Si l'utilisateur existe déjà, proposer de se connecter
@@ -219,34 +202,18 @@ export default function AuthScreen() {
     setIsLoading(true);
     try {
       if (mode === 'signup') {
-        // Obtenir la position actuelle
-        let lat: number | undefined;
-        let lng: number | undefined;
-
-        try {
-          const { status } = await Location.requestForegroundPermissionsAsync();
-          if (status === 'granted') {
-            const location = await Location.getCurrentPositionAsync({
-              accuracy: Location.Accuracy.Balanced,
-            });
-            lat = location.coords.latitude;
-            lng = location.coords.longitude;
-          }
-        } catch (error) {
-          console.error('Error getting location:', error);
-        }
-
         // Vérifier l'OTP et créer le compte avec le mot de passe saisi par l'utilisateur
         // Note: verifyOTP vérifie que l'OTP a été vérifié précédemment et crée le compte avec le mot de passe
+        // La position GPS sera récupérée automatiquement dans verifyOTP (non bloquant)
         const { error, user: newUser } = await verifyOTP(
           phone,
           '', // Pas besoin de token car l'OTP a déjà été vérifié
           pseudo.trim(),
-          lat,
-          lng,
+          undefined, // lat - sera récupéré automatiquement
+          undefined, // lng - sera récupéré automatiquement
           password, // Passer le mot de passe saisi par l'utilisateur
-          undefined, // password paramètre
-          specialty.trim() || undefined // Passer le savoir-faire
+          specialty.trim() || undefined, // Passer le savoir-faire
+          gender as 'male' | 'female' // Passer le genre choisi par l'utilisateur
         );
         
         if (error) {

@@ -2,17 +2,20 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Modal, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../constants/colors';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
+import { Image } from 'react-native';
 import { Badge } from '../../components/ui/Badge';
 import { useOffer } from '../../context/OfferContext';
 import { useAuth } from '../../context/AuthContext';
 import { useRating } from '../../context/RatingContext';
 import { Offer, OfferApplication, OfferType } from '../../types';
 import { supabase } from '../../lib/supabase';
+import { getProfileImage } from '../../lib/defaultImages';
 import Animated, { FadeIn } from 'react-native-reanimated';
 
 const OFFER_TYPE_LABELS: Record<OfferType, string> = {
@@ -27,6 +30,39 @@ const OFFER_TYPE_ICONS: Record<OfferType, string> = {
   food: 'restaurant-outline',
   transport: 'car-outline',
   gift: 'gift-outline',
+};
+
+/**
+ * Fonction utilitaire pour obtenir la source d'image correcte pour React Native Image
+ * Gère à la fois les URLs HTTP/HTTPS (Supabase) et les images locales par défaut
+ */
+const getImageSource = (photoUrl: string | null | undefined, gender: 'male' | 'female' = 'female') => {
+  // Vérifier si on a une URL valide
+  if (photoUrl && typeof photoUrl === 'string' && photoUrl.trim() !== '') {
+    const trimmedUrl = photoUrl.trim();
+    
+    // Rejeter les URIs locales (file://) - elles ne sont pas accessibles depuis d'autres appareils
+    if (trimmedUrl.startsWith('file://')) {
+      return gender === 'male' 
+        ? require('../../assets/images/avatar_men.png')
+        : require('../../assets/images/avatar_woman.png');
+    }
+    
+    // Si c'est une URL HTTP/HTTPS valide (Supabase Storage, etc.)
+    if (trimmedUrl.startsWith('https://') || 
+        (trimmedUrl.startsWith('http://') && 
+         !trimmedUrl.includes('10.0.2.2') && 
+         !trimmedUrl.includes('localhost') &&
+         !trimmedUrl.includes('127.0.0.1') &&
+         !trimmedUrl.includes('/assets/'))) {
+      return { uri: trimmedUrl };
+    }
+  }
+  
+  // Sinon, utiliser l'image par défaut selon le genre
+  return gender === 'male' 
+    ? require('../../assets/images/avatar_men.png')
+    : require('../../assets/images/avatar_woman.png');
 };
 
 export default function OfferDetailsScreen() {
@@ -53,6 +89,15 @@ export default function OfferDetailsScreen() {
   useEffect(() => {
     loadOffer();
   }, [offerId]);
+
+  // Recharger l'offre quand la page est mise au focus (après modification)
+  useFocusEffect(
+    React.useCallback(() => {
+      if (offerId) {
+        loadOffer();
+      }
+    }, [offerId])
+  );
 
   const loadOffer = async () => {
     if (!offerId) return;
@@ -81,6 +126,15 @@ export default function OfferDetailsScreen() {
             console.error('Error updating expired offer status:', updateError);
           }
         }
+        
+        // Debug: vérifier les données de l'auteur
+        console.log('📋 Offer loaded:', {
+          id: loadedOffer.id,
+          authorId: loadedOffer.authorId,
+          author: loadedOffer.author,
+          authorPhoto: loadedOffer.author?.photo,
+          authorGender: loadedOffer.author?.gender,
+        });
         
         setOffer(loadedOffer);
         
@@ -396,35 +450,47 @@ export default function OfferDetailsScreen() {
 
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
         <Animated.View entering={FadeIn}>
-          {/* Offer Type Badge */}
-          <View style={styles.typeBadge}>
-            <Ionicons
-              name={OFFER_TYPE_ICONS[offer.offerType] as any}
-              size={24}
-              color={colors.pink500}
-            />
-            <Text style={styles.typeText}>{OFFER_TYPE_LABELS[offer.offerType]}</Text>
+          {/* Offer Types Badges */}
+          <View style={styles.typesContainer}>
+            {(() => {
+              const offerTypesToDisplay = (offer.offerTypes && offer.offerTypes.length > 0) 
+                ? offer.offerTypes 
+                : (offer.offerType ? [offer.offerType] : []);
+              return offerTypesToDisplay.map((type, index) => (
+                <View key={index} style={styles.typeBadge}>
+                  <Ionicons
+                    name={OFFER_TYPE_ICONS[type] as any}
+                    size={20}
+                    color={colors.pink500}
+                  />
+                  <Text style={styles.typeText}>{OFFER_TYPE_LABELS[type]}</Text>
+                </View>
+              ));
+            })()}
           </View>
 
           {/* Title */}
           <Text style={styles.title}>{offer.title}</Text>
 
           {/* Author Card */}
-          <View style={styles.authorCard}>
-            <ImageWithFallback
-              source={{ uri: offer.author?.photo || '' }}
-              style={styles.authorImage}
-            />
-            <View style={styles.authorInfo}>
-              <Text style={styles.authorName}>{offer.author?.pseudo || 'Utilisateur'}</Text>
-              <View style={styles.authorRating}>
-                <Ionicons name="star" size={14} color={colors.yellow400} />
-                <Text style={styles.ratingText}>
-                  {authorRating.count > 0 ? authorRating.average.toFixed(1) : offer.author?.rating?.toFixed(1) || '0.0'} ({authorRating.count > 0 ? authorRating.count : offer.author?.reviewCount || 0})
-                </Text>
+          {offer.author && (
+            <View style={styles.authorCard}>
+              <Image
+                source={getImageSource(offer.author.photo, offer.author.gender || 'female')}
+                style={styles.authorImage}
+                resizeMode="cover"
+              />
+              <View style={styles.authorInfo}>
+                <Text style={styles.authorName}>{offer.author.pseudo || 'Utilisateur'}</Text>
+                <View style={styles.authorRating}>
+                  <Ionicons name="star" size={14} color={colors.yellow400} />
+                  <Text style={styles.ratingText}>
+                    {authorRating.count > 0 ? authorRating.average.toFixed(1) : offer.author.rating?.toFixed(1) || '0.0'} ({authorRating.count > 0 ? authorRating.count : offer.author.reviewCount || 0})
+                  </Text>
+                </View>
               </View>
             </View>
-          </View>
+          )}
 
           {/* Description */}
           {offer.description && (
@@ -886,15 +952,19 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: 16,
   },
+  typesContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 16,
+  },
   typeBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    alignSelf: 'flex-start',
     backgroundColor: colors.backgroundSecondary,
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 20,
-    marginBottom: 16,
     gap: 8,
   },
   typeText: {

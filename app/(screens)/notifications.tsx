@@ -1,117 +1,195 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../constants/colors';
 import { useNotification } from '../../context/NotificationContext';
-import { useBooking } from '../../context/BookingContext';
-import { useAccessRequest } from '../../context/AccessRequestContext';
+import { Notification, NotificationType } from '../../types';
 import Animated, { FadeIn } from 'react-native-reanimated';
 
 export default function NotificationsScreen() {
   const router = useRouter();
-  const { notifications, clearNotification, clearAllNotifications } = useNotification();
-  const { bookings } = useBooking();
-  const { accessRequests } = useAccessRequest();
+  const {
+    notifications,
+    unreadCount,
+    isLoading,
+    markAsRead,
+    markAllAsRead,
+    deleteNotification,
+    deleteAllNotifications,
+    refreshNotifications,
+  } = useNotification();
   const [refreshing, setRefreshing] = useState(false);
+  const [selectedNotifications, setSelectedNotifications] = useState<Set<string>>(new Set());
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
 
-  const onRefresh = React.useCallback(() => {
+  // Rafraîchir les notifications quand la page est mise au focus
+  useFocusEffect(
+    React.useCallback(() => {
+      refreshNotifications();
+    }, [refreshNotifications])
+  );
+
+  const onRefresh = React.useCallback(async () => {
     setRefreshing(true);
-    // Les notifications sont déjà chargées dans le contexte
-    setTimeout(() => setRefreshing(false), 1000);
-  }, []);
+    await refreshNotifications();
+    setRefreshing(false);
+  }, [refreshNotifications]);
 
-  const getNotificationIcon = (type: string) => {
+  const getNotificationIcon = (type: NotificationType) => {
     switch (type) {
-      case 'booking_request':
-        return 'heart-outline';
-      case 'booking_accepted':
-        return 'checkmark-circle-outline';
-      case 'booking_rejected':
-        return 'close-circle-outline';
-      case 'booking_completed':
-        return 'time-outline';
-      case 'booking_extension':
-      case 'booking_extension_confirmed':
-      case 'booking_extension_rejected':
-        return 'time-outline';
-      case 'booking_cancelled':
-        return 'close-circle-outline';
-      case 'access':
+      case 'access_request_received':
+      case 'access_request_accepted':
+      case 'access_request_rejected':
         return 'lock-open-outline';
-      case 'rating':
-        return 'star-outline';
-      case 'otp':
-        return 'key-outline';
+      case 'booking_request_received':
+      case 'booking_request_accepted':
+      case 'booking_request_rejected':
+      case 'booking_reminder':
+        return 'heart-outline';
+      case 'offer_application_received':
+      case 'offer_application_accepted':
+      case 'offer_application_rejected':
+        return 'gift-outline';
       default:
         return 'notifications-outline';
     }
   };
 
-  const getNotificationColor = (type: string) => {
+  const getNotificationColor = (type: NotificationType) => {
     switch (type) {
-      case 'booking_request':
+      case 'access_request_received':
+      case 'booking_request_received':
+      case 'offer_application_received':
         return colors.purple500;
-      case 'booking_accepted':
+      case 'access_request_accepted':
+      case 'booking_request_accepted':
+      case 'offer_application_accepted':
         return colors.green500;
-      case 'booking_rejected':
-      case 'booking_cancelled':
+      case 'access_request_rejected':
+      case 'booking_request_rejected':
+      case 'offer_application_rejected':
         return colors.red500;
-      case 'booking_completed':
-        return colors.blue500;
-      case 'booking_extension':
-      case 'booking_extension_confirmed':
+      case 'booking_reminder':
         return colors.yellow500;
-      case 'booking_extension_rejected':
-        return colors.red500;
-      case 'access':
-        return colors.purple400;
-      case 'rating':
-        return colors.yellow500;
-      case 'otp':
-        return colors.blue500;
       default:
         return colors.textSecondary;
     }
   };
 
-  const handleNotificationPress = (notification: any) => {
-    const { type, data } = notification;
-
-    // Marquer comme lue (optionnel)
-    // clearNotification(notification.id);
+  const handleNotificationPress = async (notification: Notification) => {
+    // Marquer comme lue si ce n'est pas déjà fait
+    if (!notification.isRead) {
+      await markAsRead(notification.id);
+    }
 
     // Naviguer selon le type
+    const { type, data } = notification;
+
     switch (type) {
-      case 'booking_request':
-      case 'booking_accepted':
-      case 'booking_rejected':
-      case 'booking_completed':
-      case 'booking_extension':
-      case 'booking_extension_confirmed':
-      case 'booking_extension_rejected':
-      case 'booking_cancelled':
-        if (data?.bookingId) {
-          router.push(`/(screens)/booking-details?bookingId=${data.bookingId}`);
+      case 'access_request_received':
+        // Rediriger vers la page des demandes d'accès
+        router.push('/(screens)/requests');
+        break;
+      case 'access_request_accepted':
+      case 'access_request_rejected':
+        if (data?.userId) {
+          router.push(`/(screens)/user-profile?userId=${data.userId}`);
         }
         break;
-      case 'access':
-        if (data?.targetId) {
-          // TODO: Navigate to user profile
-          // router.push(`/(screens)/user-profile?userId=${data.targetId}`);
+      case 'booking_request_received':
+        // Rediriger vers la page des demandes de compagnie
+        router.push('/(screens)/requests');
+        break;
+      case 'booking_request_accepted':
+      case 'booking_request_rejected':
+      case 'booking_reminder':
+        if (data?.bookingId) {
+          // TODO: Créer une page booking-details si elle n'existe pas
+          // router.push(`/(screens)/booking-details?bookingId=${data.bookingId}`);
+          router.push('/(screens)/requests');
+        }
+        break;
+      case 'offer_application_received':
+        if (data?.offerId) {
+          router.push(`/(screens)/offer-details?offerId=${data.offerId}`);
+        }
+        break;
+      case 'offer_application_accepted':
+      case 'offer_application_rejected':
+        if (data?.offerId) {
+          router.push(`/(screens)/offer-details?offerId=${data.offerId}`);
         }
         break;
       default:
-        // Pas de navigation pour les autres types
         break;
     }
   };
 
-  const formatTimestamp = (timestamp: Date) => {
+  const handleToggleSelection = (notificationId: string) => {
+    setSelectedNotifications((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(notificationId)) {
+        newSet.delete(notificationId);
+      } else {
+        newSet.add(notificationId);
+      }
+      return newSet;
+    });
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedNotifications.size === 0) return;
+
+    Alert.alert(
+      'Supprimer les notifications',
+      `Êtes-vous sûr de vouloir supprimer ${selectedNotifications.size} notification${selectedNotifications.size > 1 ? 's' : ''} ?`,
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Supprimer',
+          style: 'destructive',
+          onPress: async () => {
+            const promises = Array.from(selectedNotifications).map((id) => deleteNotification(id));
+            await Promise.all(promises);
+            setSelectedNotifications(new Set());
+            setIsSelectionMode(false);
+          },
+        },
+      ]
+    );
+  };
+
+  const handleDeleteAll = () => {
+    if (notifications.length === 0) return;
+
+    Alert.alert(
+      'Supprimer toutes les notifications',
+      'Êtes-vous sûr de vouloir supprimer toutes les notifications ?',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Supprimer',
+          style: 'destructive',
+          onPress: async () => {
+            await deleteAllNotifications();
+          },
+        },
+      ]
+    );
+  };
+
+  const handleMarkAllAsRead = async () => {
+    if (unreadCount === 0) return;
+    await markAllAsRead();
+  };
+
+  const formatTimestamp = (timestamp: string) => {
     const now = new Date();
-    const diff = now.getTime() - timestamp.getTime();
+    const date = new Date(timestamp);
+    const diff = now.getTime() - date.getTime();
     const minutes = Math.floor(diff / 60000);
     const hours = Math.floor(diff / 3600000);
     const days = Math.floor(diff / 86400000);
@@ -120,14 +198,14 @@ export default function NotificationsScreen() {
     if (minutes < 60) return `Il y a ${minutes} min`;
     if (hours < 24) return `Il y a ${hours}h`;
     if (days < 7) return `Il y a ${days}j`;
-    return timestamp.toLocaleDateString('fr-FR', {
+    return date.toLocaleDateString('fr-FR', {
       day: 'numeric',
       month: 'short',
     });
   };
 
   const sortedNotifications = [...notifications].sort(
-    (a, b) => b.timestamp.getTime() - a.timestamp.getTime()
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   );
 
   return (
@@ -137,22 +215,67 @@ export default function NotificationsScreen() {
           <Ionicons name="arrow-back" size={24} color={colors.textSecondary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Notifications</Text>
-        {notifications.length > 0 && (
-          <TouchableOpacity onPress={clearAllNotifications}>
-            <Ionicons name="trash-outline" size={24} color={colors.textSecondary} />
-          </TouchableOpacity>
-        )}
-        {notifications.length === 0 && <View style={{ width: 24 }} />}
+        <View style={styles.headerActions}>
+          {isSelectionMode ? (
+            <>
+              <TouchableOpacity
+                onPress={handleDeleteSelected}
+                disabled={selectedNotifications.size === 0}
+                style={selectedNotifications.size === 0 && styles.disabledButton}
+              >
+                <Ionicons
+                  name="trash-outline"
+                  size={24}
+                  color={selectedNotifications.size === 0 ? colors.textTertiary : colors.red500}
+                />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => {
+                setIsSelectionMode(false);
+                setSelectedNotifications(new Set());
+              }} style={{ marginLeft: 16 }}>
+                <Text style={styles.cancelSelectionText}>Annuler</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
+              {notifications.length > 0 && (
+                <TouchableOpacity onPress={() => setIsSelectionMode(true)}>
+                  <Ionicons name="checkmark-circle-outline" size={24} color={colors.textSecondary} />
+                </TouchableOpacity>
+              )}
+              {notifications.length === 0 && <View style={{ width: 24 }} />}
+            </>
+          )}
+        </View>
       </View>
+
+      {!isSelectionMode && notifications.length > 0 && (
+        <View style={styles.actionsBar}>
+          {unreadCount > 0 && (
+            <TouchableOpacity style={styles.actionButton} onPress={handleMarkAllAsRead}>
+              <Ionicons name="checkmark-done-outline" size={20} color={colors.pink500} />
+              <Text style={styles.actionButtonText}>Tout marquer comme lu</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity style={styles.actionButton} onPress={handleDeleteAll}>
+            <Ionicons name="trash-outline" size={20} color={colors.red500} />
+            <Text style={styles.actionButtonText}>Tout supprimer</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.purple500} />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.pink500} />
         }
       >
-        {sortedNotifications.length === 0 ? (
+        {isLoading && notifications.length === 0 ? (
+          <View style={styles.emptyContainer}>
+            <Text style={styles.emptyText}>Chargement...</Text>
+          </View>
+        ) : sortedNotifications.length === 0 ? (
           <View style={styles.emptyContainer}>
             <Ionicons name="notifications-off-outline" size={64} color={colors.textTertiary} />
             <Text style={styles.emptyTitle}>Aucune notification</Text>
@@ -167,10 +290,38 @@ export default function NotificationsScreen() {
               entering={FadeIn.delay(index * 50)}
             >
               <TouchableOpacity
-                style={styles.notificationCard}
-                onPress={() => handleNotificationPress(notification)}
+                style={[
+                  styles.notificationCard,
+                  !notification.isRead && styles.unreadCard,
+                  isSelectionMode && selectedNotifications.has(notification.id) && styles.selectedCard,
+                ]}
+                onPress={() => {
+                  if (isSelectionMode) {
+                    handleToggleSelection(notification.id);
+                  } else {
+                    handleNotificationPress(notification);
+                  }
+                }}
+                onLongPress={() => {
+                  if (!isSelectionMode) {
+                    setIsSelectionMode(true);
+                    handleToggleSelection(notification.id);
+                  }
+                }}
                 activeOpacity={0.7}
               >
+                {isSelectionMode && (
+                  <TouchableOpacity
+                    onPress={() => handleToggleSelection(notification.id)}
+                    style={styles.checkbox}
+                  >
+                    <Ionicons
+                      name={selectedNotifications.has(notification.id) ? 'checkbox' : 'checkbox-outline'}
+                      size={24}
+                      color={selectedNotifications.has(notification.id) ? colors.pink500 : colors.textTertiary}
+                    />
+                  </TouchableOpacity>
+                )}
                 <View
                   style={[
                     styles.iconContainer,
@@ -184,23 +335,39 @@ export default function NotificationsScreen() {
                   />
                 </View>
                 <View style={styles.notificationContent}>
-                  <Text style={styles.notificationTitle}>{notification.title}</Text>
+                  <View style={styles.notificationHeader}>
+                    <Text style={styles.notificationTitle}>{notification.title}</Text>
+                    {!notification.isRead && <View style={styles.unreadDot} />}
+                  </View>
                   <Text style={styles.notificationMessage} numberOfLines={2}>
                     {notification.message}
                   </Text>
                   <Text style={styles.notificationTime}>
-                    {formatTimestamp(notification.timestamp)}
+                    {formatTimestamp(notification.createdAt)}
                   </Text>
                 </View>
-                <TouchableOpacity
-                  onPress={(e) => {
-                    e.stopPropagation();
-                    clearNotification(notification.id);
-                  }}
-                  style={styles.deleteButton}
-                >
-                  <Ionicons name="close" size={20} color={colors.textTertiary} />
-                </TouchableOpacity>
+                {!isSelectionMode && (
+                  <TouchableOpacity
+                    onPress={(e) => {
+                      e.stopPropagation();
+                      Alert.alert(
+                        'Supprimer la notification',
+                        'Êtes-vous sûr de vouloir supprimer cette notification ?',
+                        [
+                          { text: 'Annuler', style: 'cancel' },
+                          {
+                            text: 'Supprimer',
+                            style: 'destructive',
+                            onPress: () => deleteNotification(notification.id),
+                          },
+                        ]
+                      );
+                    }}
+                    style={styles.deleteButton}
+                  >
+                    <Ionicons name="close" size={20} color={colors.textTertiary} />
+                  </TouchableOpacity>
+                )}
               </TouchableOpacity>
             </Animated.View>
           ))
@@ -228,6 +395,41 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 18,
     fontWeight: '600',
+    color: colors.text,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  cancelSelectionText: {
+    fontSize: 16,
+    color: colors.pink500,
+    fontWeight: '500',
+  },
+  disabledButton: {
+    opacity: 0.5,
+  },
+  actionsBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: colors.backgroundSecondary,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderSecondary,
+  },
+  actionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: colors.backgroundTertiary,
+  },
+  actionButtonText: {
+    fontSize: 14,
+    fontWeight: '500',
     color: colors.text,
   },
   scrollView: {
@@ -264,6 +466,17 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 12,
   },
+  unreadCard: {
+    backgroundColor: `${colors.pink500}15`,
+    borderLeftWidth: 4,
+    borderLeftColor: colors.pink500,
+  },
+  selectedCard: {
+    backgroundColor: `${colors.pink500}25`,
+  },
+  checkbox: {
+    padding: 4,
+  },
   iconContainer: {
     width: 48,
     height: 48,
@@ -275,10 +488,22 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 4,
   },
+  notificationHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   notificationTitle: {
     fontSize: 16,
     fontWeight: '600',
     color: colors.text,
+    flex: 1,
+  },
+  unreadDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.pink500,
   },
   notificationMessage: {
     fontSize: 14,
@@ -294,15 +519,3 @@ const styles = StyleSheet.create({
     padding: 4,
   },
 });
-
-
-
-
-
-
-
-
-
-
-
-

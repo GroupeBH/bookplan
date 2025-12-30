@@ -1,10 +1,10 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
 import { Alert } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getDefaultProfileImage } from '../lib/defaultImages';
 import { isNetworkError } from '../lib/errorUtils';
 import { supabase } from '../lib/supabase';
-import { getDefaultProfileImage } from '../lib/defaultImages';
 import { User } from '../types';
 
 interface AuthContextType {
@@ -13,7 +13,7 @@ interface AuthContextType {
   user: User | null;
   // Authentification par téléphone avec OTP interne
   sendOTP: (phone: string) => Promise<{ error: any; otpCode?: string }>;
-  verifyOTP: (phone: string, token: string, pseudo?: string, lat?: number, lng?: number, password?: string, specialty?: string) => Promise<{ error: any; user: User | null }>;
+  verifyOTP: (phone: string, token: string, pseudo?: string, lat?: number, lng?: number, password?: string, specialty?: string, gender?: 'male' | 'female') => Promise<{ error: any; user: User | null }>;
   verifyOTPSimple: (phone: string, token: string) => Promise<{ error: any }>;
   // Authentification par mot de passe
   signUpWithPassword: (phone: string, password: string, pseudo: string, age?: number, gender?: 'male' | 'female', lat?: number, lng?: number, specialty?: string) => Promise<{ error: any; user: User | null }>;
@@ -95,6 +95,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         
         if (getUserError || !authUser?.user) {
           console.log('🚪 L\'utilisateur n\'existe plus dans auth.users, déconnexion automatique...');
+          // Arrêter le suivi de localisation
+          const { LocationService } = await import('../lib/locationService');
+          LocationService.stopBackgroundTracking();
           // Nettoyer le cache
           try {
             await AsyncStorage.removeItem('auth_session');
@@ -108,8 +111,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           await supabase.auth.signOut();
         } else {
           await loadUserProfile(session.user.id);
+          // Démarrer le suivi de localisation en arrière-plan
+          const { LocationService } = await import('../lib/locationService');
+          LocationService.startBackgroundTracking(session.user.id).catch(() => {});
         }
       } else {
+        // Arrêter le suivi de localisation lors de la déconnexion
+        const { LocationService } = await import('../lib/locationService');
+        LocationService.stopBackgroundTracking();
         setUser(null);
         setIsAuthenticated(false);
       }
@@ -538,7 +547,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     lat?: number,
     lng?: number,
     password?: string, // Nouveau paramètre : mot de passe optionnel
-    specialty?: string // Savoir-faire particulier
+    specialty?: string, // Savoir-faire particulier
+    gender?: 'male' | 'female' // Genre de l'utilisateur
   ): Promise<{ error: any; user: User | null }> => {
     try {
       const formattedPhone = phone.startsWith('+') ? phone : `+${phone}`;
@@ -553,7 +563,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // Supprimer l'OTP vérifié du stockage
         verifiedOTPStorage.delete(formattedPhone);
       } else {
-        // Si pas de mot de passe fourni, vérifier l'OTP
+        // Si pas de mot de passe fourni, vérifier l'OTP (vérification rapide en mémoire)
         const storedOTP = otpStorage.get(formattedPhone);
         
         if (!storedOTP) {
@@ -582,12 +592,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { error: null, user: null };
       }
 
-      // Vérifier si l'utilisateur existe déjà dans profiles
-      const { data: existingProfile } = await supabase
+      // Vérifier si l'utilisateur existe déjà en parallèle avec la création du compte
+      const existingProfilePromise = supabase
         .from('profiles')
         .select('id')
         .eq('phone', formattedPhone)
-        .single();
+        .maybeSingle();
+
+      // Obtenir la position en parallèle (non bloquant, utilise les valeurs par défaut si échoue)
+      const locationPromise = (async () => {
+        if (lat && lng) return { lat, lng };
+        try {
+          const { status } = await Location.requestForegroundPermissionsAsync();
+          if (status === 'granted') {
+            const location = await Location.getCurrentPositionAsync({
+              accuracy: Location.Accuracy.Lowest, // Plus rapide
+            });
+            return { lat: location.coords.latitude, lng: location.coords.longitude };
+          }
+        } catch (error) {
+          // Ignorer les erreurs de localisation
+        }
+        return { lat: -4.3276, lng: 15.3136 }; // Valeurs par défaut
+      })();
+
+      // Attendre les deux en parallèle
+      const [{ data: existingProfile }, location] = await Promise.all([
+        existingProfilePromise,
+        locationPromise,
+      ]);
 
       let authUser;
       let isNewUser = false;
@@ -696,94 +729,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           authUser = signUpData?.user;
           console.log('✅ Compte créé avec succès. User ID:', authUser?.id);
           console.log('🔑 Mot de passe fourni lors de la création:', password ? 'OUI (***)' : 'NON');
-          
-          // Vérifier que le mot de passe a bien été stocké
-          if (authUser?.id) {
-            try {
-              // Attendre un peu pour que Supabase traite la création
-              await new Promise(resolve => setTimeout(resolve, 500));
-              
-              const { data: userInfo, error: userInfoError } = await supabase.rpc('verify_user_info', {
-                p_user_id: authUser.id,
-              });
-              
-              if (!userInfoError && userInfo && userInfo.length > 0) {
-                console.log('🔍 Vérification du mot de passe stocké:', {
-                  has_password: userInfo[0].has_password,
-                  email: userInfo[0].email,
-                  confirmed_at: userInfo[0].confirmed_at
-                });
-                
-                if (!userInfo[0].has_password) {
-                  console.error('❌ ERREUR: Le mot de passe n\'a PAS été stocké lors de la création du compte!');
-                  console.error('💡 Cela peut arriver si Supabase a des restrictions sur les emails non vérifiés.');
-                } else {
-                  console.log('✅ Le mot de passe a bien été stocké dans auth.users');
-                }
-              }
-            } catch (error) {
-              console.warn('⚠️ Erreur lors de la vérification du mot de passe:', error);
-            }
-          }
-          
-          // Marquer l'email comme vérifié automatiquement (car c'est un email temporaire)
-          if (authUser?.id) {
-            try {
-              const { error: verifyError } = await supabase.rpc('verify_user_email', {
-                p_user_id: authUser.id,
-              });
-              if (verifyError) {
-                console.warn('⚠️ Impossible de marquer l\'email comme vérifié:', verifyError);
-                // Ne pas bloquer la création du compte si cette étape échoue
-              } else {
-                console.log('✅ Email marqué comme vérifié automatiquement');
-              }
-            } catch (error) {
-              console.warn('⚠️ Erreur lors de la vérification de l\'email:', error);
-              // Ne pas bloquer la création du compte si cette étape échoue
-            }
-
-            // S'assurer que le profil existe (au cas où le trigger n'a pas fonctionné)
-            try {
-              const { data: existingProfile } = await supabase
-                .from('profiles')
-                .select('id')
-                .eq('id', authUser.id)
-                .single();
-
-              if (!existingProfile) {
-                console.log('⚠️ Le profil n\'existe pas, création manuelle...');
-                // Essayer d'utiliser la fonction ensure_profile_exists si elle existe
-                const { error: ensureError } = await supabase.rpc('ensure_profile_exists', {
-                  p_user_id: authUser.id,
-                });
-
-                if (ensureError) {
-                  // Si la fonction n'existe pas ou échoue, créer le profil manuellement
-                  console.log('⚠️ Fonction ensure_profile_exists non disponible, création directe...');
-                  const { error: insertError } = await supabase
-                    .from('profiles')
-                    .insert({
-                      id: authUser.id,
-                      phone: formattedPhone,
-                      pseudo: pseudo || 'Utilisateur',
-                    });
-
-                  if (insertError) {
-                    console.error('❌ Erreur lors de la création manuelle du profil:', insertError);
-                  } else {
-                    console.log('✅ Profil créé manuellement avec succès');
-                  }
-                } else {
-                  console.log('✅ Profil créé via ensure_profile_exists');
-                }
-              } else {
-                console.log('✅ Le profil existe déjà');
-              }
-            } catch (error) {
-              console.error('❌ Erreur lors de la vérification/création du profil:', error);
-            }
-          }
         }
         isNewUser = true;
       }
@@ -792,57 +737,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { error: { message: 'Impossible de créer ou récupérer l\'utilisateur' }, user: null };
       }
 
-      // Obtenir la position actuelle si non fournie
-      let userLat = lat;
-      let userLng = lng;
+      // Utiliser la position obtenue en parallèle
+      const userLat = location.lat;
+      const userLng = location.lng;
 
-      if (!userLat || !userLng) {
-        try {
-          const { status } = await Location.requestForegroundPermissionsAsync();
-          if (status === 'granted') {
-            const location = await Location.getCurrentPositionAsync({
-              accuracy: Location.Accuracy.Balanced,
-            });
-            userLat = location.coords.latitude;
-            userLng = location.coords.longitude;
-          } else {
-            // Position par défaut (Kinshasa) si permission refusée
-            userLat = -4.3276;
-            userLng = 15.3136;
+      // Marquer l'email comme vérifié en arrière-plan (non bloquant)
+      if (authUser.id) {
+        (async () => {
+          try {
+            await supabase.rpc('verify_user_email', { p_user_id: authUser.id });
+          } catch {
+            // Ignorer les erreurs, non critique
           }
-        } catch (error: any) {
-          if (!isNetworkError(error)) {
-            console.error('Error getting location:', error);
-          }
-          userLat = -4.3276;
-          userLng = 15.3136;
-        }
+        })();
       }
 
-      // Créer ou mettre à jour le profil
-      const userGender: 'male' | 'female' = 'female'; // Par défaut, sera mis à jour lors de l'édition du profil
-      const profileData: any = {
-        id: authUser.id,
-        phone: formattedPhone,
-        pseudo: pseudo || authUser.user_metadata?.pseudo || 'Utilisateur',
-        age: 25,
-        photo: getDefaultProfileImage(userGender),
-        description: '',
-        rating: 0,
-        review_count: 0,
-        is_subscribed: false,
-        subscription_status: 'pending',
-        gender: userGender,
-        lat: userLat,
-        lng: userLng,
-        is_available: true,
-        updated_at: new Date().toISOString(),
-      };
-
-      if (isNewUser) {
-        profileData.created_at = new Date().toISOString();
-      }
-
+      // Créer ou mettre à jour le profil (opération principale)
+      const userGender: 'male' | 'female' = gender || 'female'; // Utiliser le genre fourni ou 'female' par défaut
+      
       // Utiliser la fonction RPC upsert_profile qui bypass RLS
       // Cette fonction est nécessaire car juste après signUp, la session
       // peut ne pas être complètement établie pour que auth.uid() fonctionne
@@ -851,13 +763,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         p_phone: formattedPhone,
         p_pseudo: pseudo || authUser.user_metadata?.pseudo || 'Utilisateur',
         p_age: 25,
-        p_photo: null, // Pas de photo par défaut - utilisera l'image par défaut selon le genre
+        p_photo: getDefaultProfileImage(userGender), // Photo par défaut selon le genre
         p_description: '',
         p_rating: 0,
         p_review_count: 0,
         p_is_subscribed: false,
         p_subscription_status: 'pending',
-        p_gender: 'female',
+        p_gender: userGender,
         p_lat: userLat,
         p_lng: userLng,
         p_is_available: true,
@@ -871,8 +783,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { error: profileError, user: null };
       }
 
-      // Charger le profil créé
-      await loadUserProfile(authUser.id);
+      // Charger le profil créé en arrière-plan (non bloquant pour la réponse)
+      loadUserProfile(authUser.id).catch(() => {
+        // Ignorer les erreurs de chargement, le profil sera chargé au prochain checkAuth
+      });
+      
+      // Retourner immédiatement avec l'utilisateur (le profil sera chargé en arrière-plan)
       return { error: null, user: user };
     } catch (error: any) {
       // Gérer spécifiquement les erreurs réseau Supabase
@@ -935,7 +851,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const formattedPhone = phone.startsWith('+') ? phone : `+${phone}`;
 
-      // Obtenir la position actuelle si non fournie
+      // Obtenir la position actuelle si non fournie (non bloquant, utilise les valeurs par défaut si échoue)
       let userLat = lat;
       let userLng = lng;
 
@@ -944,7 +860,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const { status } = await Location.requestForegroundPermissionsAsync();
           if (status === 'granted') {
             const location = await Location.getCurrentPositionAsync({
-              accuracy: Location.Accuracy.Balanced,
+              accuracy: Location.Accuracy.Lowest, // Plus rapide
             });
             userLat = location.coords.latitude;
             userLng = location.coords.longitude;
@@ -953,9 +869,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             userLng = 15.3136;
           }
         } catch (error: any) {
-          if (!isNetworkError(error)) {
-            console.error('Error getting location:', error);
-          }
+          // Ignorer les erreurs de localisation, utiliser les valeurs par défaut
           userLat = -4.3276;
           userLng = 15.3136;
         }
@@ -1104,15 +1018,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { error: { message: 'Failed to create user' }, user: null };
       }
 
-      // Attendre 2 secondes pour respecter le rate limiting de Supabase
+      // Mettre à jour le profil immédiatement (sans attendre le rate limiting)
       // Le trigger crée un profil basique, on va le mettre à jour ensuite
-      // Supabase limite les requêtes d'authentification à 1 par seconde par IP
-      // Note: Le message d'erreur peut apparaître mais l'opération réussit généralement
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      // Toujours mettre à jour le profil avec le bon pseudo
-      // Le trigger peut avoir créé un profil avec "Utilisateur" si les metadata n'étaient pas encore disponibles
-      // On force la mise à jour pour s'assurer que le pseudo saisi par l'utilisateur est bien enregistré
       console.log('💾 Mise à jour du profil avec pseudo:', trimmedPseudo);
       
       const userGender: 'male' | 'female' = gender || 'female';
@@ -1139,13 +1046,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           console.error('Error creating/updating profile:', profileError);
         }
         // Ne pas retourner d'erreur ici, le profil peut avoir été créé par le trigger
-        // On va quand même charger le profil pour voir ce qui existe
       } else {
         console.log('✅ Profil créé/mis à jour avec le pseudo:', pseudo.trim());
       }
 
-      // Charger le profil créé
-      await loadUserProfile(authData.user.id);
+      // Charger le profil créé en arrière-plan (non bloquant)
+      loadUserProfile(authData.user.id).catch(() => {
+        // Ignorer les erreurs, le profil sera chargé au prochain checkAuth
+      });
+      
       return { error: null, user: user };
     } catch (error: any) {
       if (!isNetworkError(error)) {
@@ -1155,383 +1064,97 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  // Connexion avec mot de passe
+  // Connexion avec mot de passe (optimisée pour la vitesse - connexion instantanée)
   const loginWithPassword = async (phone: string, password: string): Promise<{ error: any; user: User | null }> => {
     try {
       const formattedPhone = phone.startsWith('+') ? phone : `+${phone}`;
-
-      console.log('\n🔐 ========== DÉBUT CONNEXION ==========');
-      console.log('📱 Téléphone saisi (formaté):', formattedPhone);
-      console.log('📱 Téléphone saisi (original):', phone);
-      console.log('🔑 Mot de passe fourni:', password ? '***' : 'VIDE');
-      console.log('🔑 Longueur du mot de passe:', password.length);
-
-      // D'abord, vérifier si l'utilisateur existe dans profiles
-      console.log('\n🔍 1. Vérification dans la table profiles...');
-      console.log('   Recherche avec téléphone:', formattedPhone);
-      console.log('   Recherche sans +:', formattedPhone.replace('+', ''));
       
-      // Chercher le profil avec plusieurs formats de téléphone
-      const phoneWithoutPlus = formattedPhone.replace('+', '');
-      const phoneWithPlus = formattedPhone.startsWith('+') ? formattedPhone : `+${formattedPhone}`;
+      // Générer l'email principal (le plus courant - 99% des cas)
+      const primaryEmail = generateTempEmail(formattedPhone);
       
-      const { data: profileData, error: profileError } = await supabase
-        .from('profiles')
-        .select('id, phone, pseudo')
-        .or(`phone.eq.${formattedPhone},phone.eq.${phoneWithoutPlus},phone.eq.${phoneWithPlus}`)
-        .maybeSingle();
-
-      console.log('📊 Résultat recherche dans profiles:', { 
-        profileData, 
-        profileError,
-        found: !!profileData 
-      });
-
-      if (profileData) {
-        console.log('✅ Utilisateur trouvé dans profiles:', {
-          id: profileData.id,
-          phone: profileData.phone,
-          pseudo: profileData.pseudo
-        });
-      } else {
-        console.log('❌ Utilisateur NON trouvé dans profiles');
-        if (profileError) {
-          if (!isNetworkError(profileError)) {
-            console.error('❌ Erreur lors de la recherche dans profiles:', profileError);
-          }
-        }
-      }
-
-      // D'abord, essayer de trouver l'email réel de l'utilisateur via la fonction RPC
-      console.log('\n🔍 2. Recherche de l\'email via RPC get_user_email_by_phone...');
-      console.log('   Paramètre p_phone:', formattedPhone);
-      
-      const { data: emailData, error: emailError } = await supabase.rpc('get_user_email_by_phone', {
-        p_phone: formattedPhone,
-      });
-      
-      console.log('📧 Résultat RPC get_user_email_by_phone:', { 
-        emailData, 
-        emailError,
-        hasData: !!emailData,
-        dataLength: emailData?.length || 0
-      });
-
-      let userEmail: string | null = null;
-      let userIdFromRPC: string | null = null;
-
-      if (!emailError && emailData && emailData.length > 0 && emailData[0]?.email) {
-        userEmail = emailData[0].email;
-        userIdFromRPC = emailData[0].user_id;
-        console.log('✅ Email trouvé via RPC:', userEmail);
-        console.log('🆔 User ID depuis RPC:', userIdFromRPC);
-      } else {
-        // Si la fonction RPC n'a pas fonctionné, essayer avec l'email généré
-        userEmail = generateTempEmail(formattedPhone);
-        console.log('⚠️ Utilisation de l\'email généré:', userEmail);
-        if (emailError) {
-          if (!isNetworkError(emailError)) {
-            console.error('❌ Erreur RPC get_user_email_by_phone:', emailError);
-          }
-        }
-      }
-
-      // Si l'utilisateur existe dans profiles, essayer aussi de récupérer l'email directement
-      if (profileData?.id && userEmail) {
-        console.log('   Tentative de récupération directe depuis auth.users avec ID:', profileData.id);
-        
-        // Essayer de récupérer les informations de l'utilisateur via une fonction RPC (si elle existe)
-        try {
-          const { data: userInfo, error: userInfoError } = await supabase.rpc('verify_user_info', {
-            p_user_id: profileData.id,
-          });
-          
-          if (!userInfoError && userInfo && userInfo.length > 0) {
-            console.log('   📋 Informations utilisateur depuis auth.users:', {
-              email: userInfo[0].email,
-              phone: userInfo[0].phone,
-              phone_in_metadata: userInfo[0].phone_in_metadata,
-              has_password: userInfo[0].has_password,
-              confirmed_at: userInfo[0].confirmed_at,
-            });
-            
-            // Si l'email trouvé est différent de celui de la RPC, utiliser celui-ci
-            if (userInfo[0].email && userInfo[0].email !== userEmail) {
-              console.log('   ⚠️ Email différent trouvé! RPC:', userEmail, 'vs Direct:', userInfo[0].email);
-              console.log('   🔄 Utilisation de l\'email direct depuis auth.users');
-              userEmail = userInfo[0].email; // Utiliser l'email direct
-            }
-            
-            // Vérifier si le mot de passe existe
-            if (!userInfo[0].has_password) {
-              console.log('   ⚠️ ATTENTION: L\'utilisateur n\'a PAS de mot de passe enregistré dans auth.users!');
-              console.log('   💡 Cela peut arriver si le compte a été créé sans mot de passe.');
-              console.log('   💡 Solution: Utiliser "Mot de passe oublié" pour définir un mot de passe.');
-              // Ne pas bloquer la connexion ici, laisser Supabase Auth gérer l'erreur
-              // Le message d'erreur sera géré plus bas dans le code
-            } else {
-              console.log('   ✅ L\'utilisateur a un mot de passe enregistré');
-            }
-          } else if (userInfoError) {
-            console.log('   ⚠️ Fonction verify_user_info non disponible ou erreur:', userInfoError.message);
-          }
-        } catch (error) {
-          console.log('   ⚠️ Impossible d\'appeler verify_user_info (fonction peut-être non créée)');
-        }
-      }
-
-      // S'assurer qu'on a un email valide
-      if (!userEmail) {
-        userEmail = generateTempEmail(formattedPhone);
-        console.log('⚠️ Email final utilisé:', userEmail);
-      }
-
-      // Vérifier si l'utilisateur existe dans auth.users avec cet email
-      console.log('\n🔍 3. Vérification de l\'existence dans auth.users...');
-      console.log('📧 Email utilisé pour la connexion:', userEmail);
-      console.log('📧 Email généré pour ce téléphone:', generateTempEmail(formattedPhone, false));
-      
-      // Afficher tous les emails possibles pour ce téléphone
-      const phoneDigits = formattedPhone.replace(/[^0-9]/g, '');
-      const phoneHash = phoneDigits.slice(-8);
-      console.log('📧 Emails possibles:');
-      console.log('   - jonathantshombe+' + phoneHash + '@gmail.com');
-      if (phoneDigits.length >= 8) {
-        console.log('   - jonathantshombe+' + phoneDigits.slice(-9) + '@gmail.com');
-      }
-
-      // Essayer de se connecter avec l'email trouvé
-      console.log('\n🔐 4. Tentative de connexion avec Supabase Auth...');
-      console.log('   Email utilisé:', userEmail);
-      console.log('   Mot de passe fourni:', password ? '*** (longueur: ' + password.length + ')' : 'VIDE');
-      
-      // IMPORTANT: Vérifier si l'utilisateur existe vraiment avec cet email
-      // On ne peut pas vérifier directement, mais on peut essayer de se connecter
-      // Si ça échoue, c'est soit le mauvais email, soit le mauvais mot de passe
-      
+      // Essayer directement la connexion avec l'email principal (cas le plus fréquent)
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-        email: userEmail,
+        email: primaryEmail,
         password: password,
       });
 
-      console.log('📊 Résultat connexion Supabase:', {
-        hasUser: !!authData?.user,
-        userId: authData?.user?.id,
-        userEmail: authData?.user?.email,
-        error: authError ? {
-          message: authError.message,
-          status: authError.status,
-          name: authError.name
-        } : null
-      });
+      // Si succès, charger le profil en arrière-plan et retourner immédiatement
+      if (!authError && authData?.user) {
+        // Marquer l'email comme vérifié en arrière-plan (non bloquant)
+        (async () => {
+          try {
+            await supabase.rpc('verify_user_email', { p_user_id: authData.user.id });
+          } catch {}
+        })();
+        
+        // Charger le profil en arrière-plan (non bloquant pour la réponse)
+        loadUserProfile(authData.user.id).catch(() => {});
+        
+        return { error: null, user: user };
+      }
 
-      if (authError) {
-        console.log('\n❌ 5. Échec de la connexion, analyse de l\'erreur...');
-        console.log('🔍 Détails de l\'erreur:', {
-          message: authError.message,
-          status: authError.status,
-          name: authError.name
+      // Si échec avec "email not confirmed", essayer de confirmer automatiquement
+      if (authError?.message?.toLowerCase().includes('email not confirmed')) {
+        // Essayer de trouver l'utilisateur via RPC pour obtenir son ID
+        const { data: emailData } = await supabase.rpc('get_user_email_by_phone', {
+          p_phone: formattedPhone,
         });
 
-        // Si l'erreur est "email not confirmed", essayer de confirmer l'email automatiquement
-        if (authError.message?.toLowerCase().includes('email not confirmed') || 
-            authError.message?.toLowerCase().includes('email not verified') ||
-            authError.message?.toLowerCase().includes('email_not_confirmed')) {
-          console.log('📧 Email non confirmé détecté, tentative de confirmation automatique...');
-          
-          // Essayer de trouver l'utilisateur par téléphone pour obtenir son ID
-          if (profileData?.id) {
-            try {
-              const { error: verifyError } = await supabase.rpc('verify_user_email', {
-                p_user_id: profileData.id,
-              });
-              if (!verifyError) {
-                console.log('✅ Email confirmé automatiquement, nouvelle tentative de connexion...');
-                // Réessayer la connexion après confirmation
-                const { data: retryAuthData, error: retryAuthError } = await supabase.auth.signInWithPassword({
-                  email: userEmail,
-                  password: password,
-                });
-                
-                if (!retryAuthError && retryAuthData?.user) {
-                  console.log('✅ Connexion réussie après confirmation de l\'email');
-                  await loadUserProfile(retryAuthData.user.id);
-                  console.log('========== FIN CONNEXION (SUCCÈS) ==========\n');
-                  return { error: null, user: user };
-                }
-              } else {
-                console.warn('⚠️ Impossible de confirmer l\'email:', verifyError);
-              }
-            } catch (error) {
-              console.warn('⚠️ Erreur lors de la confirmation de l\'email:', error);
-            }
-          }
-        }
-
-        // Essayer plusieurs variantes d'emails possibles
-        console.log('\n🔄 6. Essai avec différentes variantes d\'emails...');
-        const phoneDigits = formattedPhone.replace(/[^0-9]/g, '');
-        const emailVariants = [
-          generateTempEmail(formattedPhone, false), // Email généré standard
-          `jonathantshombe+${phoneDigits.slice(-8)}@gmail.com`, // 8 derniers chiffres
-          `jonathantshombe+${phoneDigits.slice(-9)}@gmail.com`, // 9 derniers chiffres
-          `jonathantshombe+${phoneDigits.slice(-10)}@gmail.com`, // 10 derniers chiffres
-          `jonathantshombe+${phoneDigits}@gmail.com`, // Tous les chiffres
-        ].filter((email, index, self) => self.indexOf(email) === index); // Supprimer les doublons
-
-        console.log('📧 Variantes d\'emails à essayer:', emailVariants);
-
-        for (const emailVariant of emailVariants) {
-          if (emailVariant === userEmail) {
-            console.log(`⏭️  Saut de ${emailVariant} (déjà essayé)`);
-            continue;
-          }
-
-          console.log(`🔄 Essai avec: ${emailVariant}`);
+        if (emailData && emailData.length > 0 && emailData[0]?.user_id) {
+          // Confirmer l'email et réessayer la connexion
+          try {
+            await supabase.rpc('verify_user_email', { p_user_id: emailData[0].user_id });
+          } catch {}
           
           const { data: retryAuthData, error: retryAuthError } = await supabase.auth.signInWithPassword({
-            email: emailVariant,
+            email: primaryEmail,
             password: password,
           });
 
-          console.log('📊 Résultat:', {
-            hasUser: !!retryAuthData?.user,
-            error: retryAuthError ? {
-              message: retryAuthError.message,
-              status: retryAuthError.status
-            } : null
-          });
-
           if (!retryAuthError && retryAuthData?.user) {
-            console.log('✅ Connexion réussie avec:', emailVariant);
-            
-            // Marquer l'email comme vérifié si ce n'est pas déjà fait
-            try {
-              const { error: verifyError } = await supabase.rpc('verify_user_email', {
-                p_user_id: retryAuthData.user.id,
-              });
-              if (verifyError) {
-                console.warn('⚠️ Impossible de marquer l\'email comme vérifié:', verifyError);
-              } else {
-                console.log('✅ Email marqué comme vérifié');
-              }
-            } catch (error) {
-              console.warn('⚠️ Erreur lors de la vérification de l\'email:', error);
-            }
-            
-            await loadUserProfile(retryAuthData.user.id);
-            console.log('========== FIN CONNEXION (SUCCÈS) ==========\n');
+            loadUserProfile(retryAuthData.user.id).catch(() => {});
             return { error: null, user: user };
           }
         }
+      }
 
-        // Si toutes les tentatives ont échoué
-        console.log('❌ 7. Toutes les tentatives ont échoué');
-        console.log('========== FIN CONNEXION (ÉCHEC) ==========');
+      // Si échec avec "Invalid login credentials", essayer une seule variante d'email (cas rare)
+      if (authError?.message?.includes('Invalid login credentials')) {
+        const phoneDigits = formattedPhone.replace(/[^0-9]/g, '');
+        const alternativeEmail = `jonathantshombe+${phoneDigits.slice(-8)}@gmail.com`;
         
-        // Message d'erreur plus détaillé
-        let errorMessage = 'Numéro de téléphone ou mot de passe incorrect';
-        
-        // Si l'utilisateur existe mais que la connexion échoue, c'est probablement le mot de passe
-        // Mais ne pas suggérer "mot de passe oublié" si l'utilisateur s'est inscrit avec un mot de passe
-        if (profileData) {
-          // Vérifier si l'utilisateur a un mot de passe en vérifiant dans auth.users
-          // (on ne peut pas le faire directement, mais on peut améliorer le message)
-          errorMessage = 'Mot de passe incorrect. Veuillez vérifier votre mot de passe.';
-        }
-        
-        if (authError.message.includes('Invalid login credentials')) {
-          return { error: { message: errorMessage }, user: null };
-        }
+        // Si l'email alternatif est différent, l'essayer
+        if (alternativeEmail !== primaryEmail) {
+          const { data: retryAuthData, error: retryAuthError } = await supabase.auth.signInWithPassword({
+            email: alternativeEmail,
+            password: password,
+          });
 
-        return { error: authError, user: null };
-      }
-
-      if (!authData?.user) {
-        console.log('❌ Aucun utilisateur retourné par Supabase Auth');
-        console.log('========== FIN CONNEXION (ÉCHEC) ==========');
-        return { error: { message: 'User not found' }, user: null };
-      }
-
-      // Vérifier que le téléphone correspond
-      const userPhone = authData.user.user_metadata?.phone || authData.user.phone;
-      console.log('📱 8. Vérification du téléphone:', {
-        phoneInMetadata: authData.user.user_metadata?.phone,
-        phoneInUser: authData.user.phone,
-        phoneSaisi: formattedPhone,
-        match: userPhone === formattedPhone
-      });
-      
-      if (userPhone && userPhone !== formattedPhone) {
-        console.warn('⚠️ Phone mismatch:', userPhone, 'vs', formattedPhone);
-      }
-
-      console.log('✅ 9. Connexion réussie pour l\'utilisateur:', authData.user.id);
-      console.log('📧 Email utilisé:', authData.user.email);
-
-      // Marquer l'email comme vérifié si ce n'est pas déjà fait
-      try {
-        const { error: verifyError } = await supabase.rpc('verify_user_email', {
-          p_user_id: authData.user.id,
-        });
-        if (verifyError) {
-          console.warn('⚠️ Impossible de marquer l\'email comme vérifié:', verifyError);
-        } else {
-          console.log('✅ Email marqué comme vérifié');
-        }
-      } catch (error) {
-        console.warn('⚠️ Erreur lors de la vérification de l\'email:', error);
-      }
-
-      // S'assurer que le profil existe (au cas où il n'a pas été créé par le trigger)
-      if (authData.user.id) {
-        try {
-          const { data: existingProfile } = await supabase
-            .from('profiles')
-            .select('id')
-            .eq('id', authData.user.id)
-            .single();
-
-          if (!existingProfile) {
-            console.log('⚠️ Le profil n\'existe pas pour cet utilisateur, création...');
-            // Essayer d'utiliser la fonction ensure_profile_exists si elle existe
-            const { error: ensureError } = await supabase.rpc('ensure_profile_exists', {
-              p_user_id: authData.user.id,
-            });
-
-            if (ensureError) {
-              // Si la fonction n'existe pas ou échoue, créer le profil manuellement
-              console.log('⚠️ Fonction ensure_profile_exists non disponible, création directe...');
-              const userPhone = authData.user.user_metadata?.phone || authData.user.phone || formattedPhone;
-              const userPseudo = authData.user.user_metadata?.pseudo || 'Utilisateur';
-              
-              const { error: insertError } = await supabase
-                .from('profiles')
-                .insert({
-                  id: authData.user.id,
-                  phone: userPhone,
-                  pseudo: userPseudo,
-                });
-
-              if (insertError) {
-                console.error('❌ Erreur lors de la création manuelle du profil:', insertError);
-              } else {
-                console.log('✅ Profil créé manuellement avec succès');
-              }
-            } else {
-              console.log('✅ Profil créé via ensure_profile_exists');
-            }
+          if (!retryAuthError && retryAuthData?.user) {
+            // Marquer l'email comme vérifié en arrière-plan (non bloquant)
+            (async () => {
+              try {
+                await supabase.rpc('verify_user_email', { p_user_id: retryAuthData.user.id });
+              } catch {}
+            })();
+            
+            // Charger le profil en arrière-plan (non bloquant)
+            loadUserProfile(retryAuthData.user.id).catch(() => {});
+            
+            return { error: null, user: user };
           }
-        } catch (error) {
-          console.error('❌ Erreur lors de la vérification/création du profil:', error);
         }
       }
 
-      // Charger le profil utilisateur
-      console.log('🔄 10. Chargement du profil utilisateur...');
-      await loadUserProfile(authData.user.id);
-      console.log('========== FIN CONNEXION (SUCCÈS) ==========');
-      return { error: null, user: user };
+      // Toutes les tentatives ont échoué
+      return { 
+        error: { 
+          message: authError?.message?.includes('Invalid login credentials') 
+            ? 'Numéro de téléphone ou mot de passe incorrect' 
+            : authError?.message || 'Erreur de connexion'
+        }, 
+        user: null 
+      };
     } catch (error: any) {
       // Gérer spécifiquement les erreurs réseau Supabase
       const isNetworkErr = isNetworkError(error) || 
@@ -1539,11 +1162,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                           error?.name === 'AuthPKCEGrantCodeExchangeError';
       
       if (isNetworkErr) {
-        console.log('⚠️ Erreur réseau lors de la connexion. Vérifiez votre connexion internet.');
         return { error: { message: 'Erreur de connexion. Vérifiez votre connexion internet et réessayez.' }, user: null };
-      } else if (!isNetworkError(error)) {
-        console.error('❌ Error in loginWithPassword:', error);
       }
+      
       return { error, user: null };
     }
   };
@@ -1586,24 +1207,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         p_specialty: userData.specialty !== undefined ? (userData.specialty || null) : (user?.specialty || null),
       };
 
-      console.log('💾 updateUserProfile - Paramètres envoyés:', {
-        userId,
-        description: rpcParams.p_description,
-        pseudo: rpcParams.p_pseudo,
-        age: rpcParams.p_age,
-        photo: rpcParams.p_photo,
-        specialty: rpcParams.p_specialty,
-        hasPhoto: userData.photo !== undefined,
-        photoValue: userData.photo,
-        currentUserPhoto: user?.photo,
-        hasDescription: userData.description !== undefined,
-        descriptionValue: userData.description,
-        currentUserDescription: user?.description,
-        hasSpecialty: userData.specialty !== undefined,
-        specialtyValue: userData.specialty,
-        currentUserSpecialty: user?.specialty,
-        rpcParams: JSON.stringify(rpcParams, null, 2),
-      });
+      // Logs réduits pour améliorer les performances
 
       // Utiliser la fonction RPC upsert_profile qui bypass RLS
       const { data, error } = await supabase.rpc('upsert_profile', rpcParams);
@@ -1615,7 +1219,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         
         // Fallback: Essayer une mise à jour directe si la RPC échoue
-        console.log('🔄 Tentative de mise à jour directe en fallback...');
         const updateData: any = {};
         if (userData.pseudo !== undefined) updateData.pseudo = userData.pseudo;
         if (userData.age !== undefined) updateData.age = userData.age;
@@ -1630,38 +1233,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           .eq('id', userId);
         
         if (updateError) {
-          console.error('❌ Error updating profile directly:', updateError);
+          if (!isNetworkError(updateError)) {
+            console.error('Error updating profile directly:', updateError);
+          }
           throw updateError;
         }
         
-        console.log('✅ updateUserProfile - Direct update successful (fallback)');
+        // Invalider le cache AsyncStorage en arrière-plan (non-bloquant)
+        AsyncStorage.removeItem(`user_profile_${userId}`).catch(() => {
+          // Ignorer les erreurs silencieusement
+        });
         
-        // Recharger le profil pour mettre à jour l'état local
-        await loadUserProfile(userId);
+        // Le rechargement du profil se fera en arrière-plan via updateUser
         return;
       }
 
-      console.log('✅ updateUserProfile - RPC call successful');
+      // Invalider le cache AsyncStorage en arrière-plan (non-bloquant)
+      AsyncStorage.removeItem(`user_profile_${userId}`).catch(() => {
+        // Ignorer les erreurs silencieusement
+      });
       
-      // Recharger le profil pour mettre à jour l'état local
-      await loadUserProfile(userId);
-      
-      // Vérifier que la mise à jour a bien été effectuée
-      const { data: verifyData, error: verifyError } = await supabase
-        .from('profiles')
-        .select('description, pseudo, age, photo, specialty')
-        .eq('id', userId)
-        .single();
-      
-      if (!verifyError && verifyData) {
-        console.log('✅ updateUserProfile - Vérification après mise à jour:', {
-          description: verifyData.description,
-          pseudo: verifyData.pseudo,
-          age: verifyData.age,
-          photo: verifyData.photo,
-          specialty: verifyData.specialty,
-        });
-      }
+      // Le rechargement du profil se fera en arrière-plan via updateUser
     } catch (error: any) {
       console.error('❌ Error in updateUserProfile:', error);
       if (!isNetworkError(error)) {
@@ -1706,33 +1298,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       // Mettre à jour dans Supabase (updateUserProfile gère maintenant le cas où la session n'est pas disponible)
-      console.log('🔄 updateUser - Appel de updateUserProfile avec:', userData);
       await updateUserProfile(userData);
-      console.log('✅ updateUser - updateUserProfile terminé');
       
-      // Attendre un peu pour s'assurer que la mise à jour est bien propagée
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Invalider le cache pour forcer le rechargement avec les nouvelles données
+      try {
+        await AsyncStorage.removeItem(`user_profile_${userId}`);
+      } catch (cacheError) {
+        // Ignorer les erreurs de cache silencieusement
+      }
       
-      // Recharger le profil depuis Supabase pour s'assurer que les données sont synchronisées
-      // Mais seulement si on est toujours authentifié
+      // Recharger le profil pour s'assurer que toutes les données sont synchronisées
+      // On attend le rechargement pour garantir la cohérence des données
+      // Ne pas utiliser le cache pour avoir les données fraîches
       if (isAuthenticated) {
-        console.log('🔄 updateUser - Rechargement du profil depuis Supabase...');
-        await loadUserProfile(userId);
-        
-        // Vérifier que les données ont bien été mises à jour
-        const { data: { session: newSession } } = await supabase.auth.getSession();
-        if (newSession?.user) {
-          const { data: updatedProfile } = await supabase
-            .from('profiles')
-            .select('description, pseudo, age, specialty')
-            .eq('id', userId)
-            .single();
-          
-          console.log('✅ updateUser - Profil rechargé depuis Supabase:', {
-            description: updatedProfile?.description,
-            pseudo: updatedProfile?.pseudo,
-            age: updatedProfile?.age,
-            specialty: updatedProfile?.specialty,
+        try {
+          await loadUserProfile(userId, false); // false = ne pas utiliser le cache
+        } catch (error) {
+          // Si le rechargement échoue, faire une mise à jour optimiste
+          if (user) {
+            setUser({
+              ...user,
+              ...userData,
+            });
+          }
+          if (!isNetworkError(error)) {
+            console.error('Error reloading profile:', error);
+          }
+        }
+      } else {
+        // Si pas authentifié, faire une mise à jour optimiste
+        if (user) {
+          setUser({
+            ...user,
+            ...userData,
           });
         }
       }
@@ -1746,14 +1344,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  // Mettre à jour la position de l'utilisateur
+  // Mettre à jour la position de l'utilisateur (avec last_seen)
+  // Les erreurs réseau sont gérées silencieusement
   const updateLocation = async (lat: number, lng: number) => {
     try {
-      await updateUser({ lat, lng });
+      const userId = user?.id;
+      if (!userId) return;
+
+      // Mettre à jour avec last_seen
+      const now = new Date().toISOString();
+
+      const { error } = await supabase
+        .from('profiles')
+        .update({
+          lat: lat.toString(),
+          lng: lng.toString(),
+          last_seen: now,
+          updated_at: now,
+        })
+        .eq('id', userId);
+
+      if (error) {
+        // Ne logger que les erreurs non-réseau
+        if (!isNetworkError(error)) {
+          console.error('Error updating location:', error);
+        }
+        // Si c'est une erreur réseau, on ignore silencieusement (l'utilisateur n'est pas connecté)
+      } else {
+        // Mettre à jour l'état local seulement si la mise à jour a réussi
+        if (user) {
+          setUser({ ...user, lat, lng, lastSeen: now });
+        }
+      }
     } catch (error: any) {
+      // Ne logger que les erreurs non-réseau
       if (!isNetworkError(error)) {
         console.error('Error updating location:', error);
       }
+      // Si c'est une erreur réseau, on ignore silencieusement
     }
   };
 
@@ -1811,6 +1439,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       
       // Arrêter les mises à jour en cours
       isUpdatingRef.current = true;
+      
+      // Arrêter le suivi de localisation en arrière-plan
+      const { LocationService } = await import('../lib/locationService');
+      LocationService.stopBackgroundTracking();
       
       // D'abord, mettre à jour l'état local pour déclencher les redirections
       setUser(null);

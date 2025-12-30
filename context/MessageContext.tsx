@@ -92,7 +92,7 @@ export function MessageProvider({ children }: { children: React.ReactNode }) {
                 reviewCount: profileData.review_count || 0,
                 isSubscribed: profileData.is_subscribed || false,
                 subscriptionStatus: profileData.subscription_status || 'pending',
-                lastSeen: profileData.last_seen || 'En ligne',
+                lastSeen: profileData.last_seen || null,
                 gender: profileData.gender || 'female',
                 lat: profileData.lat ? parseFloat(profileData.lat) : undefined,
                 lng: profileData.lng ? parseFloat(profileData.lng) : undefined,
@@ -263,14 +263,33 @@ export function MessageProvider({ children }: { children: React.ReactNode }) {
         updatedAt: messageData.updated_at,
       };
 
-      // Ajouter le message au cache
-      setMessages((prev) => ({
-        ...prev,
-        [conversationId]: [...(prev[conversationId] || []), newMessage],
-      }));
+      // Ajouter le message au cache immédiatement
+      setMessages((prev) => {
+        const existingMessages = prev[conversationId] || [];
+        // Vérifier si le message n'est pas déjà présent (éviter les doublons)
+        const exists = existingMessages.some(msg => msg.id === newMessage.id);
+        if (exists) {
+          return prev;
+        }
+        const updated = [...existingMessages, newMessage];
+        // Trier par date pour maintenir l'ordre
+        updated.sort((a, b) => {
+          const dateA = new Date(a.createdAt).getTime();
+          const dateB = new Date(b.createdAt).getTime();
+          return dateA - dateB;
+        });
+        return {
+          ...prev,
+          [conversationId]: updated,
+        };
+      });
 
-      // Rafraîchir les conversations pour mettre à jour le dernier message
-      await getConversations();
+      // Rafraîchir les conversations en arrière-plan (non-bloquant)
+      getConversations().catch((error) => {
+        if (!isNetworkError(error)) {
+          console.error('Error refreshing conversations:', error);
+        }
+      });
 
       return newMessage;
     } catch (error: any) {
@@ -377,7 +396,7 @@ export function MessageProvider({ children }: { children: React.ReactNode }) {
           reviewCount: profileData.review_count || 0,
           isSubscribed: profileData.is_subscribed || false,
           subscriptionStatus: profileData.subscription_status || 'pending',
-          lastSeen: profileData.last_seen || 'En ligne',
+          lastSeen: profileData.last_seen || null,
           gender: profileData.gender || 'female',
           lat: profileData.lat ? parseFloat(profileData.lat) : undefined,
           lng: profileData.lng ? parseFloat(profileData.lng) : undefined,
@@ -452,17 +471,36 @@ export function MessageProvider({ children }: { children: React.ReactNode }) {
             updatedAt: newMessage.updated_at,
           };
 
-          // Ajouter au cache
-          setMessages((prev) => ({
-            ...prev,
-            [conversationId]: [...(prev[conversationId] || []), message],
-          }));
+          // Ajouter au cache immédiatement
+          setMessages((prev) => {
+            const existingMessages = prev[conversationId] || [];
+            // Vérifier si le message n'est pas déjà présent (éviter les doublons)
+            const exists = existingMessages.some(msg => msg.id === message.id);
+            if (exists) {
+              return prev;
+            }
+            const updated = [...existingMessages, message];
+            // Trier par date pour maintenir l'ordre
+            updated.sort((a, b) => {
+              const dateA = new Date(a.createdAt).getTime();
+              const dateB = new Date(b.createdAt).getTime();
+              return dateA - dateB;
+            });
+            return {
+              ...prev,
+              [conversationId]: updated,
+            };
+          });
 
-          // Appeler le callback
+          // Appeler le callback immédiatement pour affichage en temps réel
           callback(message);
 
-          // Rafraîchir les conversations
-          getConversations();
+          // Rafraîchir les conversations en arrière-plan (non-bloquant)
+          getConversations().catch((error) => {
+            if (!isNetworkError(error)) {
+              console.error('Error refreshing conversations:', error);
+            }
+          });
         }
       )
       .subscribe();

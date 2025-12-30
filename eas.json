@@ -30,6 +30,17 @@
       "env": {
         "EXPO_PUBLIC_ENV": "production"
       }
+    },
+    "production-android": {
+      "distribution": "store",
+      "autoIncrement": true,
+      "android": {
+        "buildType": "app-bundle",
+        "image": "latest"
+      },
+      "env": {
+        "EXPO_PUBLIC_ENV": "production"
+      }
     }
   },
   "submit": {

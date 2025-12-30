@@ -1,5 +1,36 @@
 export type Screen = 'splash' | 'auth' | 'subscription' | 'dashboard' | 'profile' | 'user-profile' | 'search' | 'booking' | 'kyc' | 'chat' | 'admin' | 'settings';
 
+export type NotificationType = 
+  | 'access_request_received'      // Demande d'accès reçue
+  | 'access_request_accepted'      // Ma demande d'accès acceptée
+  | 'access_request_rejected'      // Ma demande d'accès rejetée
+  | 'booking_request_received'     // Demande de compagnie reçue
+  | 'booking_request_accepted'     // Ma demande de compagnie acceptée
+  | 'booking_request_rejected'     // Ma demande de compagnie rejetée
+  | 'offer_application_received'    // Candidature à mon offre
+  | 'offer_application_accepted'   // Ma candidature acceptée
+  | 'offer_application_rejected'   // Ma candidature rejetée
+  | 'booking_reminder';            // Rappel pour rendez-vous
+
+export interface Notification {
+  id: string;
+  userId: string;
+  type: NotificationType;
+  title: string;
+  message: string;
+  data?: {
+    bookingId?: string;
+    offerId?: string;
+    applicationId?: string;
+    userId?: string;
+    accessRequestId?: string;
+    [key: string]: any;
+  };
+  isRead: boolean;
+  createdAt: string;
+  readAt?: string;
+}
+
 export interface User {
   id: string;
   pseudo: string;
@@ -140,7 +171,8 @@ export type OfferType = 'drink' | 'food' | 'transport' | 'gift';
 export interface Offer {
   id: string;
   authorId: string;
-  offerType: OfferType;
+  offerType: OfferType; // Gardé pour rétrocompatibilité (premier type)
+  offerTypes?: OfferType[]; // Nouveau : tous les types de l'offre (optionnel pour rétrocompatibilité)
   title: string;
   description?: string;
   notes?: string;

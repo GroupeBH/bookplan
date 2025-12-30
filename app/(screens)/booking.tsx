@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Keyboard, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CalendarPicker } from '../../components/CalendarPicker';
@@ -79,10 +79,13 @@ export default function BookingScreen() {
     setTimeInput(now.toTimeString().slice(0, 5)); // Format HH:MM
   }, []);
 
-  // Charger les sujets de compagnie disponibles
+  // Charger les sujets de compagnie disponibles (chargement immédiat au montage)
   React.useEffect(() => {
     const loadTopics = async () => {
-      setIsLoadingTopics(true);
+      // Ne pas afficher le loading si on a déjà des sujets (cache)
+      if (topics.length === 0) {
+        setIsLoadingTopics(true);
+      }
       try {
         const { error, topics: loadedTopics } = await getCompanionshipTopics();
         if (!error && loadedTopics) {
@@ -97,31 +100,85 @@ export default function BookingScreen() {
     loadTopics();
   }, [getCompanionshipTopics]);
 
-  // Initialiser la carte avec la position de l'utilisateur
+  // Précharger les sujets quand on clique sur le bouton (avant d'ouvrir le modal)
+  const handleOpenTopicPicker = useCallback(async () => {
+    // Si les sujets ne sont pas encore chargés, les charger avant d'ouvrir le modal
+    if (topics.length === 0 && !isLoadingTopics) {
+      setIsLoadingTopics(true);
+      try {
+        const { error, topics: loadedTopics } = await getCompanionshipTopics();
+        if (!error && loadedTopics) {
+          setTopics(loadedTopics);
+        }
+      } catch (error) {
+        console.error('Error loading topics:', error);
+      } finally {
+        setIsLoadingTopics(false);
+      }
+    }
+    // Ouvrir le modal (même si les sujets sont en cours de chargement, ils s'afficheront dès qu'ils sont prêts)
+    setShowTopicPicker(true);
+  }, [topics.length, isLoadingTopics, getCompanionshipTopics]);
+
+  // Initialiser la carte avec la position de l'utilisateur (optimisé pour performance)
   useEffect(() => {
     const initializeMap = async () => {
+      // Position par défaut (Kinshasa) - utilisée immédiatement pour un chargement instantané
+      const defaultRegion = {
+        latitude: -4.3276,
+        longitude: 15.3136,
+        latitudeDelta: 0.05,
+        longitudeDelta: 0.05,
+      };
+
+      // Utiliser d'abord la position de l'utilisateur actuel si disponible (plus rapide)
+      if (currentUser?.lat && currentUser?.lng) {
+        const userRegion = {
+          latitude: currentUser.lat,
+          longitude: currentUser.lng,
+          latitudeDelta: 0.05,
+          longitudeDelta: 0.05,
+        };
+        setMapRegion(userRegion);
+        setSelectedLocation({
+          lat: currentUser.lat,
+          lng: currentUser.lng,
+        });
+        // Continuer en arrière-plan pour obtenir une position plus précise si possible
+        updateLocationInBackground();
+        return;
+      }
+
+      // Sinon, définir la position par défaut immédiatement
+      setMapRegion(defaultRegion);
+      setSelectedLocation({
+        lat: defaultRegion.latitude,
+        lng: defaultRegion.longitude,
+      });
+
+      // Essayer d'obtenir la position GPS en arrière-plan (non bloquant)
+      updateLocationInBackground();
+    };
+
+    // Fonction pour mettre à jour la position en arrière-plan
+    const updateLocationInBackground = async () => {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== 'granted') {
-          // Utiliser une position par défaut (Kinshasa)
-          const defaultRegion = {
-            latitude: -4.3276,
-            longitude: 15.3136,
-            latitudeDelta: 0.05,
-            longitudeDelta: 0.05,
-          };
-          setMapRegion(defaultRegion);
-          setSelectedLocation({
-            lat: -4.3276,
-            lng: 15.3136,
-          });
-          return;
+          return; // Garder la position par défaut ou celle de l'utilisateur
         }
 
+        // Utiliser Promise.race avec un timeout pour éviter d'attendre trop longtemps
+        const locationPromise = Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Lowest, // Plus rapide que Balanced
+        });
+
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Location timeout')), 2000)
+        );
+
         try {
-          const currentLocation = await Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.Balanced,
-          });
+          const currentLocation = await Promise.race([locationPromise, timeoutPromise]) as any;
 
           const region = {
             latitude: currentLocation.coords.latitude,
@@ -135,49 +192,11 @@ export default function BookingScreen() {
             lng: currentLocation.coords.longitude,
           });
         } catch (locationError: any) {
-          // Si la localisation n'est pas disponible (émulateur, services désactivés, etc.)
-          // Utiliser une position par défaut sans afficher d'erreur
-          if (locationError.message?.includes('location is unavailable') || 
-              locationError.message?.includes('Current location is unavailable')) {
-            const defaultRegion = {
-              latitude: -4.3276,
-              longitude: 15.3136,
-              latitudeDelta: 0.05,
-              longitudeDelta: 0.05,
-            };
-            setMapRegion(defaultRegion);
-            setSelectedLocation({
-              lat: -4.3276,
-              lng: 15.3136,
-            });
-          } else {
-            // Pour les autres erreurs, utiliser aussi la position par défaut
-            const defaultRegion = {
-              latitude: -4.3276,
-              longitude: 15.3136,
-              latitudeDelta: 0.05,
-              longitudeDelta: 0.05,
-            };
-            setMapRegion(defaultRegion);
-            setSelectedLocation({
-              lat: -4.3276,
-              lng: 15.3136,
-            });
-          }
+          // En cas d'erreur ou timeout, garder la position déjà définie (par défaut ou utilisateur)
+          // Ne pas afficher d'erreur, la carte est déjà chargée
         }
       } catch (error: any) {
-        // En cas d'erreur générale, utiliser une position par défaut
-        const defaultRegion = {
-          latitude: -4.3276,
-          longitude: 15.3136,
-          latitudeDelta: 0.05,
-          longitudeDelta: 0.05,
-        };
-        setMapRegion(defaultRegion);
-        setSelectedLocation({
-          lat: -4.3276,
-          lng: 15.3136,
-        });
+        // En cas d'erreur générale, garder la position déjà définie
       }
     };
 
@@ -187,7 +206,7 @@ export default function BookingScreen() {
     } else if (!showMapPicker) {
       mapInitializedRef.current = false;
     }
-  }, [showMapPicker]);
+  }, [showMapPicker, currentUser?.lat, currentUser?.lng]);
 
   // Fonction pour obtenir l'adresse à partir des coordonnées (géocodage inverse)
   const reverseGeocode = async (lat: number, lng: number) => {
@@ -479,14 +498,14 @@ export default function BookingScreen() {
       return;
     }
 
-    // Débounce: attendre 500ms après la dernière frappe avant de rechercher
+    // Débounce: attendre 300ms après la dernière frappe avant de rechercher (plus rapide)
     mapSearchTimeoutRef.current = setTimeout(() => {
       const trimmedText = text.trim();
       if (trimmedText && trimmedText.length >= 2) {
         searchMapAddressSuggestions(trimmedText);
       }
       mapSearchTimeoutRef.current = null;
-    }, 500);
+    }, 300);
   }, [searchMapAddressSuggestions]);
 
   // Rechercher une adresse (bouton recherche)
@@ -504,27 +523,74 @@ export default function BookingScreen() {
       const results = await Location.geocodeAsync(searchQuery);
       
       if (results && results.length > 0) {
-        // Enrichir les résultats avec l'adresse complète
-        const enrichedResults = results.map((result: any) => ({
-          ...result,
-          fullAddress: buildFullAddress(result),
-        }));
+        // Enrichir les résultats avec l'adresse complète (comme dans searchMapAddressSuggestions)
+        const enrichedResults = await Promise.all(
+          results.slice(0, 5).map(async (result: any) => {
+            try {
+              // Essayer d'obtenir l'adresse complète via géocodage inverse
+              const reverseResults = await Location.reverseGeocodeAsync({
+                latitude: result.latitude,
+                longitude: result.longitude,
+              });
+              
+              if (reverseResults && reverseResults.length > 0) {
+                const reverseResult = reverseResults[0];
+                const addressParts = [];
+                
+                if (reverseResult.streetNumber && reverseResult.street) {
+                  addressParts.push(`${reverseResult.streetNumber} ${reverseResult.street}`);
+                } else if (reverseResult.street) {
+                  addressParts.push(reverseResult.street);
+                }
+                
+                if (reverseResult.district) addressParts.push(reverseResult.district);
+                if (reverseResult.city) addressParts.push(reverseResult.city);
+                if (reverseResult.region) addressParts.push(reverseResult.region);
+                if (reverseResult.postalCode) addressParts.push(reverseResult.postalCode);
+                if (reverseResult.country) addressParts.push(reverseResult.country);
+                
+                return {
+                  ...result,
+                  fullAddress: addressParts.length > 0 
+                    ? addressParts.join(', ')
+                    : buildFullAddress(result),
+                };
+              }
+            } catch (reverseError) {
+              // Si le géocodage inverse échoue, utiliser la construction normale
+            }
+            
+            return {
+              ...result,
+              fullAddress: buildFullAddress(result),
+            };
+          })
+        );
         
         setSearchResults(enrichedResults);
         
         // Centrer la carte sur le premier résultat avec animation
         const firstResult = enrichedResults[0];
-        const region = {
-          latitude: firstResult.latitude,
-          longitude: firstResult.longitude,
-          latitudeDelta: 0.01,
-          longitudeDelta: 0.01,
-        };
-        setMapRegion(region);
-        setSelectedLocation({
-          lat: firstResult.latitude,
-          lng: firstResult.longitude,
-        });
+        if (firstResult) {
+          const region = {
+            latitude: firstResult.latitude,
+            longitude: firstResult.longitude,
+            latitudeDelta: 0.01,
+            longitudeDelta: 0.01,
+          };
+          setMapRegion(region);
+          setSelectedLocation({
+            lat: firstResult.latitude,
+            lng: firstResult.longitude,
+          });
+          
+          // Mettre à jour le champ de recherche avec l'adresse complète
+          const fullAddress = firstResult.fullAddress || buildFullAddress(firstResult);
+          setSearchQuery(fullAddress);
+          
+          // Mettre à jour le champ lieu dans le formulaire principal
+          setLocation(fullAddress);
+        }
       } else {
         Alert.alert('Aucun résultat', 'Aucune adresse trouvée pour cette recherche');
       }
@@ -598,21 +664,25 @@ export default function BookingScreen() {
   };
 
   const handleDateConfirm = () => {
-    // Combiner date et heure
-    const dateStr = dateInput; // YYYY-MM-DD
-    const timeStr = timeInput; // HH:MM
-    const combinedDateTime = new Date(`${dateStr}T${timeStr}:00`);
-    
-    if (isNaN(combinedDateTime.getTime())) {
-      Alert.alert('Erreur', 'Date ou heure invalide');
+    // Vérifier que la date est valide
+    if (!dateInput) {
+      Alert.alert('Erreur', 'Veuillez sélectionner une date');
       return;
     }
 
-    if (combinedDateTime < new Date()) {
-      Alert.alert('Erreur', 'La date et l\'heure doivent être dans le futur');
+    const selectedDate = new Date(`${dateInput}T00:00:00`);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    selectedDate.setHours(0, 0, 0, 0);
+
+    if (selectedDate < today) {
+      Alert.alert('Erreur', 'Vous ne pouvez sélectionner que la date actuelle ou une date à venir');
       return;
     }
 
+    // Combiner avec l'heure actuelle pour setBookingDate (sera mis à jour avec l'heure saisie)
+    const timeStr = timeInput || '00:00';
+    const combinedDateTime = new Date(`${dateInput}T${timeStr}:00`);
     setBookingDate(combinedDateTime);
     setShowDatePicker(false);
   };
@@ -620,7 +690,12 @@ export default function BookingScreen() {
   const handleSendRequest = async () => {
     if (!currentUser) return;
 
-    // Valider la date
+    // Valider la date et l'heure
+    if (!dateInput || !timeInput) {
+      Alert.alert('Erreur', 'Veuillez sélectionner une date et saisir une heure');
+      return;
+    }
+
     const dateStr = dateInput;
     const timeStr = timeInput;
     const combinedDateTime = new Date(`${dateStr}T${timeStr}:00`);
@@ -630,62 +705,59 @@ export default function BookingScreen() {
       return;
     }
 
-    if (combinedDateTime < new Date()) {
-      Alert.alert('Erreur', 'La date et l\'heure doivent être dans le futur');
+    // Vérifier que la date n'est pas dans le passé
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const selectedDate = new Date(`${dateStr}T00:00:00`);
+    selectedDate.setHours(0, 0, 0, 0);
+
+    if (selectedDate < today) {
+      Alert.alert('Erreur', 'Vous ne pouvez sélectionner que la date actuelle ou une date à venir');
       return;
     }
 
-    setIsLoading(true);
-    setRequestSent(true); // Afficher immédiatement le feedback visuel
-    
-    try {
-      const { error, booking } = await createBooking(
-        selectedUser.id,
-        combinedDateTime.toISOString(),
-        parseInt(durationHours) || 1,
-        location || undefined,
-        selectedUser.lat,
-        selectedUser.lng,
-        notes || undefined,
-        selectedTopicId || undefined
-      );
-
-      if (error) {
-        setRequestSent(false); // Réinitialiser en cas d'erreur
-        Alert.alert('Erreur', error.message || 'Impossible de créer la demande');
-        setIsLoading(false);
-        return;
-      }
-
-      // Rafraîchir les bookings en arrière-plan (sans attendre)
-      refreshBookings().catch(err => console.error('Error refreshing bookings:', err));
-      
-      // Afficher la confirmation immédiatement
-      Alert.alert('Succès', 'Votre demande a été envoyée', [
-        {
-          text: 'OK',
-          onPress: () => {
-            // Utiliser setTimeout pour s'assurer que le composant est monté avant la navigation
-            setTimeout(() => {
-              try {
-                router.back();
-              } catch (error) {
-                console.error('Error navigating back:', error);
-                // En cas d'erreur, utiliser router.replace pour forcer la navigation
-                router.replace('/(screens)/user-profile');
-              }
-            }, 100);
-          },
-        },
-      ]);
-      
-      setIsLoading(false);
-    } catch (error: any) {
-      setRequestSent(false); // Réinitialiser en cas d'erreur
-      Alert.alert('Erreur', 'Une erreur est survenue');
-      console.error('Create booking error:', error);
-      setIsLoading(false);
+    // Vérifier que l'heure est dans le futur si la date est aujourd'hui
+    const validation = validateTime();
+    if (!validation.isValid) {
+      Alert.alert('Erreur', validation.errorMessage);
+      return;
     }
+
+    // Afficher immédiatement le feedback visuel (optimiste)
+    setRequestSent(true);
+    setIsLoading(true);
+    
+    // Lancer la création en arrière-plan (non bloquant pour l'UI)
+    createBooking(
+      selectedUser.id,
+      combinedDateTime.toISOString(),
+      parseInt(durationHours) || 1,
+      location || undefined,
+      selectedUser.lat,
+      selectedUser.lng,
+      notes || undefined,
+      selectedTopicId || undefined
+    )
+      .then(({ error, booking }) => {
+        if (error) {
+          setRequestSent(false); // Réinitialiser en cas d'erreur
+          setIsLoading(false);
+          Alert.alert('Erreur', error.message || 'Impossible de créer la demande');
+          return;
+        }
+
+        // Succès - le feedback visuel est déjà affiché
+        setIsLoading(false);
+        
+        // Afficher la confirmation (optionnel, car le feedback visuel est déjà là)
+        // Alert.alert('Succès', 'Votre demande a été envoyée');
+      })
+      .catch((error: any) => {
+        setRequestSent(false);
+        setIsLoading(false);
+        console.error('Error creating booking:', error);
+        Alert.alert('Erreur', 'Une erreur est survenue lors de l\'envoi de la demande');
+      });
   };
 
   const formatDate = (dateStr: string) => {
@@ -704,6 +776,46 @@ export default function BookingScreen() {
     return timeStr;
   };
 
+  // Valider si l'heure est dans le futur (si la date est aujourd'hui)
+  const validateTime = (): { isValid: boolean; errorMessage: string } => {
+    // Si pas de date ou d'heure, on ne valide pas (l'utilisateur doit d'abord remplir)
+    if (!dateInput || !timeInput) {
+      return { isValid: true, errorMessage: '' };
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const selectedDate = new Date(`${dateInput}T00:00:00`);
+    selectedDate.setHours(0, 0, 0, 0);
+
+    // Si la date sélectionnée est aujourd'hui
+    if (selectedDate.getTime() === today.getTime()) {
+      // Vérifier si l'heure est dans le futur
+      const [hours, minutes] = timeInput.split(':').map(Number);
+      if (isNaN(hours) || isNaN(minutes)) {
+        // Format invalide, mais on ne bloque pas (sera validé lors de l'envoi)
+        return { isValid: true, errorMessage: '' };
+      }
+
+      const now = new Date();
+      const selectedTime = new Date();
+      selectedTime.setHours(hours, minutes, 0, 0);
+
+      if (selectedTime <= now) {
+        return {
+          isValid: false,
+          errorMessage: 'Vous devez choisir une heure à venir'
+        };
+      }
+    }
+
+    // Si la date est dans le futur, l'heure est toujours valide
+    return { isValid: true, errorMessage: '' };
+  };
+
+  const timeValidation = validateTime();
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
@@ -714,7 +826,19 @@ export default function BookingScreen() {
         <View style={{ width: 24 }} />
       </View>
 
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+      <KeyboardAvoidingView
+        style={styles.keyboardAvoidingView}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+      >
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          showsVerticalScrollIndicator={true}
+          nestedScrollEnabled={true}
+        >
         {/* User Card */}
         <View style={styles.userCard}>
           <ImageWithFallback source={{ uri: selectedUser.photo }} style={styles.userImage} />
@@ -734,9 +858,9 @@ export default function BookingScreen() {
               >
                 <Ionicons name="calendar-outline" size={20} color={colors.pink400} />
                 <View style={styles.detailInfo}>
-                  <Text style={styles.detailLabel}>Date et heure</Text>
+                  <Text style={styles.detailLabel}>Date</Text>
                   <Text style={styles.detailValue}>
-                    {formatDate(dateInput)} à {formatTime(timeInput)}
+                    {formatDate(dateInput)}
                   </Text>
                 </View>
                 <Ionicons name="chevron-forward" size={20} color={colors.textTertiary} />
@@ -744,6 +868,25 @@ export default function BookingScreen() {
               <View style={styles.separator} />
               <View style={styles.detailRow}>
                 <Ionicons name="time-outline" size={20} color={colors.pink400} />
+                <View style={styles.detailInfo}>
+                  <Text style={styles.detailLabel}>Heure</Text>
+                  <Input
+                    value={timeInput}
+                    onChangeText={setTimeInput}
+                    placeholder="HH:MM"
+                    keyboardType="default"
+                    style={styles.durationInput}
+                    containerStyle={{ marginTop: 8 }}
+                  />
+                  <Text style={styles.inputHint}>Format: HH:MM (ex: 20:00)</Text>
+                  {timeValidation.errorMessage ? (
+                    <Text style={styles.errorText}>{timeValidation.errorMessage}</Text>
+                  ) : null}
+                </View>
+              </View>
+              <View style={styles.separator} />
+              <View style={styles.detailRow}>
+                <Ionicons name="hourglass-outline" size={20} color={colors.pink400} />
                 <View style={styles.detailInfo}>
                   <Text style={styles.detailLabel}>Durée (heures)</Text>
                   <Input
@@ -826,7 +969,7 @@ export default function BookingScreen() {
               <View style={styles.separator} />
               <TouchableOpacity
                 style={styles.detailRow}
-                onPress={() => setShowTopicPicker(true)}
+                onPress={handleOpenTopicPicker}
               >
                 <Ionicons name="bookmark-outline" size={20} color={colors.pink400} />
                 <View style={styles.detailInfo}>
@@ -849,9 +992,10 @@ export default function BookingScreen() {
                     onChangeText={setNotes}
                     placeholder="Ajoutez des détails..."
                     multiline
-                    numberOfLines={3}
+                    numberOfLines={4}
                     style={styles.notesInput}
                     containerStyle={{ marginTop: 8 }}
+                    textAlignVertical="top"
                   />
                 </View>
               </View>
@@ -869,7 +1013,7 @@ export default function BookingScreen() {
               icon={<Ionicons name="send" size={20} color="#ffffff" />}
               style={styles.button}
               loading={isLoading}
-              disabled={isLoading}
+              disabled={isLoading || !timeValidation.isValid}
             />
           </Animated.View>
         ) : !requestAccepted ? (
@@ -918,7 +1062,8 @@ export default function BookingScreen() {
             />
           </Animated.View>
         )}
-      </ScrollView>
+        </ScrollView>
+      </KeyboardAvoidingView>
 
       {/* Date/Time Picker Modal */}
       <Modal
@@ -928,47 +1073,52 @@ export default function BookingScreen() {
         onRequestClose={() => setShowDatePicker(false)}
       >
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Sélectionner la date et l'heure</Text>
-            
-            <ScrollView style={styles.modalScrollView} showsVerticalScrollIndicator={false}>
-              {/* Calendrier */}
-              <View style={styles.calendarContainer}>
-                <CalendarPicker
-                  selectedDate={selectedDate}
-                  onDateSelect={handleDateSelect}
-                  minimumDate={new Date()}
+          <TouchableOpacity
+            style={StyleSheet.absoluteFill}
+            activeOpacity={1}
+            onPress={() => setShowDatePicker(false)}
+          />
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+            style={styles.modalKeyboardView}
+          >
+            <View style={styles.modalContent} onStartShouldSetResponder={() => true}>
+              <Text style={styles.modalTitle}>Sélectionner la date</Text>
+              
+              <ScrollView
+                style={styles.modalScrollView}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={styles.modalScrollContent}
+                nestedScrollEnabled={true}
+                bounces={true}
+              >
+                {/* Calendrier */}
+                <View style={styles.calendarContainer}>
+                  <CalendarPicker
+                    selectedDate={selectedDate}
+                    onDateSelect={handleDateSelect}
+                    minimumDate={new Date()}
+                  />
+                </View>
+              </ScrollView>
+
+              <View style={styles.modalActions}>
+                <Button
+                  title="Annuler"
+                  onPress={() => setShowDatePicker(false)}
+                  variant="outline"
+                  style={styles.modalButton}
+                />
+                <Button
+                  title="Confirmer"
+                  onPress={handleDateConfirm}
+                  style={styles.modalButton}
                 />
               </View>
-
-              {/* Input pour l'heure */}
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Heure</Text>
-                <Input
-                  value={timeInput}
-                  onChangeText={setTimeInput}
-                  placeholder="HH:MM"
-                  keyboardType="default"
-                  containerStyle={styles.modalInput}
-                />
-                <Text style={styles.inputHint}>Format: HH:MM (ex: 20:00)</Text>
-              </View>
-            </ScrollView>
-
-            <View style={styles.modalActions}>
-              <Button
-                title="Annuler"
-                onPress={() => setShowDatePicker(false)}
-                variant="outline"
-                style={styles.modalButton}
-              />
-              <Button
-                title="Confirmer"
-                onPress={handleDateConfirm}
-                style={styles.modalButton}
-              />
             </View>
-          </View>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
 
@@ -1003,6 +1153,7 @@ export default function BookingScreen() {
               {searchQuery.length > 0 && (
                 <TouchableOpacity
                   onPress={() => {
+                    Keyboard.dismiss(); // Fermer le clavier
                     setSearchQuery('');
                     setSearchResults([]);
                     lastSearchQueryRef.current = '';
@@ -1081,7 +1232,7 @@ export default function BookingScreen() {
                   centerCoordinate={[mapRegion.longitude, mapRegion.latitude]}
                   zoomLevel={Math.log2(360 / mapRegion.longitudeDelta)}
                   animationMode="flyTo"
-                  animationDuration={2000}
+                  animationDuration={500}
                 />
                 
                 {selectedLocation && (
@@ -1147,7 +1298,7 @@ export default function BookingScreen() {
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Choisir un sujet de compagnie</Text>
             
-            {isLoadingTopics ? (
+            {isLoadingTopics && topics.length === 0 ? (
               <View style={styles.loadingContainer}>
                 <ActivityIndicator size="large" color={colors.pink500} />
                 <Text style={styles.loadingText}>Chargement des sujets...</Text>
@@ -1246,6 +1397,9 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
+  keyboardAvoidingView: {
+    flex: 1,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1266,6 +1420,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: 24,
+    paddingBottom: 100, // Espace supplémentaire en bas pour permettre le scroll avec le clavier
     gap: 24,
   },
   userCard: {
@@ -1424,13 +1579,20 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   notesInput: {
-    minHeight: 80,
+    minHeight: 100,
+    maxHeight: 200,
     textAlignVertical: 'top',
     fontSize: 16,
+    paddingTop: 12,
+    paddingBottom: 12,
   },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'flex-end',
+  },
+  modalKeyboardView: {
+    width: '100%',
     justifyContent: 'flex-end',
   },
   modalContent: {
@@ -1438,8 +1600,10 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     padding: 24,
-    paddingBottom: 40,
-    maxHeight: '80%',
+    paddingBottom: Platform.OS === 'ios' ? 40 : 24,
+    maxHeight: '90%',
+    minHeight: 600,
+    width: '100%',
   },
   modalTitle: {
     fontSize: 20,
@@ -1466,11 +1630,19 @@ const styles = StyleSheet.create({
     color: colors.textTertiary,
     marginTop: -4,
   },
+  errorText: {
+    fontSize: 12,
+    color: colors.red500 || '#ef4444',
+    marginTop: 4,
+  },
   modalScrollView: {
-    maxHeight: 500,
+    maxHeight: 400,
+  },
+  modalScrollContent: {
+    paddingBottom: 20,
   },
   calendarContainer: {
-    marginBottom: 20,
+    marginBottom: 24,
   },
   modalActions: {
     flexDirection: 'row',
@@ -1613,6 +1785,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: colors.background,
     borderRadius: 12,
+    position: 'relative',
     borderWidth: 1,
     borderColor: colors.borderSecondary,
     paddingHorizontal: 12,

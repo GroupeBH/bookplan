@@ -3,32 +3,68 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
 import { Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { PanGestureHandler, PanGestureHandlerGestureEvent } from 'react-native-gesture-handler';
 import Animated, {
+  Extrapolate,
+  interpolate,
+  runOnJS,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
   withTiming,
-  runOnJS,
-  interpolate,
-  Extrapolate,
 } from 'react-native-reanimated';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
 import { Button } from '../../components/ui/Button';
 import { colors } from '../../constants/colors';
 import { useAuth } from '../../context/AuthContext';
 import { useBooking } from '../../context/BookingContext';
+import { useLike } from '../../context/LikeContext';
 import { useUser } from '../../context/UserContext';
 import { User } from '../../types';
+import { Image, ImageSourcePropType } from 'react-native';
 
 type Filter = 'all' | 'male' | 'female';
+
+/**
+ * Fonction utilitaire pour obtenir la source d'image correcte pour React Native Image
+ * Gère à la fois les URLs HTTP/HTTPS (Supabase) et les images locales par défaut
+ */
+const getImageSource = (photoUrl: string | null | undefined, gender: 'male' | 'female' = 'female'): ImageSourcePropType => {
+  // Vérifier si on a une URL valide
+  if (photoUrl && typeof photoUrl === 'string' && photoUrl.trim() !== '') {
+    const trimmedUrl = photoUrl.trim();
+    
+    // Rejeter les URIs locales (file://) - elles ne sont pas accessibles depuis d'autres appareils
+    if (trimmedUrl.startsWith('file://')) {
+      return gender === 'male' 
+        ? require('../../assets/images/avatar_men.png')
+        : require('../../assets/images/avatar_woman.png');
+    }
+    
+    // Si c'est une URL HTTP/HTTPS valide (Supabase Storage, etc.)
+    if (trimmedUrl.startsWith('https://') || 
+        (trimmedUrl.startsWith('http://') && 
+         !trimmedUrl.includes('10.0.2.2') && 
+         !trimmedUrl.includes('localhost') &&
+         !trimmedUrl.includes('127.0.0.1') &&
+         !trimmedUrl.includes('/assets/'))) {
+      return { uri: trimmedUrl };
+    }
+  }
+  
+  // Sinon, utiliser l'image par défaut selon le genre
+  return gender === 'male' 
+    ? require('../../assets/images/avatar_men.png')
+    : require('../../assets/images/avatar_woman.png');
+};
 
 export default function SearchScreen() {
   const router = useRouter();
   const { setSelectedUser } = useUser();
   const { user: currentAuthUser } = useAuth();
-  const { getAvailableUsers } = useBooking();
+  const { getAllUsers } = useBooking();
+  const { likeUser, unlikeUser, isUserLiked } = useLike();
   const [filter, setFilter] = useState<Filter>('all');
   const [currentIndex, setCurrentIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
@@ -61,6 +97,29 @@ export default function SearchScreen() {
   const scale = useSharedValue(1);
   const SWIPE_THRESHOLD = screenWidth * 0.3; // 30% de l'écran
   const SWIPE_VELOCITY_THRESHOLD = 500;
+
+  // Fonction pour calculer si un utilisateur est en ligne
+  const calculateOnlineStatus = (lastSeenValue: string | null | undefined): boolean => {
+    if (!lastSeenValue) {
+      return false; // Pas de last_seen = pas en ligne
+    }
+    if (lastSeenValue === 'En ligne' || lastSeenValue.toLowerCase() === 'en ligne') {
+      return true;
+    }
+    // Vérifier si c'est une date récente (moins de 5 minutes)
+    try {
+      const lastSeenDate = new Date(lastSeenValue);
+      if (isNaN(lastSeenDate.getTime())) {
+        return false; // Date invalide = pas en ligne
+      }
+      const now = new Date();
+      const diffMs = now.getTime() - lastSeenDate.getTime();
+      const diffMinutes = diffMs / (1000 * 60);
+      return diffMinutes < 5; // En ligne si vu il y a moins de 5 minutes
+    } catch {
+      return false; // Erreur de parsing = pas en ligne
+    }
+  };
 
   // Calculer la distance entre deux points (formule de Haversine)
   const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
@@ -97,7 +156,7 @@ export default function SearchScreen() {
     lastLoadTimeRef.current = now;
 
     try {
-      const availableUsers = await getAvailableUsers();
+      const availableUsers = await getAllUsers();
       
       // Convertir les données de la DB en format User
       const formattedUsers: User[] = availableUsers.map((u: any) => ({
@@ -111,8 +170,8 @@ export default function SearchScreen() {
         reviewCount: u.review_count || 0,
         isSubscribed: u.is_subscribed || false,
         subscriptionStatus: u.subscription_status || 'pending',
-        lastSeen: u.last_seen || 'En ligne',
-        gender: u.gender || 'female',
+        lastSeen: u.last_seen || 'Hors ligne', // Ne pas mettre 'En ligne' par défaut
+        gender: (u.gender === 'male' || u.gender === 'female') ? u.gender : 'female', // Garder le genre tel quel s'il est valide, sinon 'female' par défaut
         lat: u.lat ? parseFloat(u.lat) : undefined,
         lng: u.lng ? parseFloat(u.lng) : undefined,
         isAvailable: u.is_available,
@@ -162,20 +221,30 @@ export default function SearchScreen() {
       // Utiliser un petit délai pour éviter les appels multiples
       const timer = setTimeout(() => {
         if (currentAuthUser?.id) {
-          loadUsers(false); // Ne pas forcer, respecter le rate limiting
+          console.log('🔄 Rechargement des utilisateurs sur la page de recherche');
+          loadUsers(true); // Forcer le rechargement pour avoir les dernières photos de profil
         }
       }, 300);
 
       return () => {
         clearTimeout(timer);
       };
-    }, [currentAuthUser?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+    }, [currentAuthUser?.id, loadUsers]) // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   // Filtrer les utilisateurs
   const filteredUsers = users.filter((user) => {
-    // Filtre par genre
-    if (filter !== 'all' && user.gender !== filter) return false;
+    // Filtre par genre - comparer strictement avec le genre de l'utilisateur
+    if (filter !== 'all') {
+      // Normaliser le genre pour la comparaison (en minuscules et supprimer les espaces)
+      const userGender = user.gender?.toLowerCase().trim();
+      const filterGender = filter.toLowerCase().trim();
+      // Debug: afficher les valeurs pour comprendre le problème
+      if (userGender !== filterGender) {
+        console.log(`🔍 Filtre genre: ${filterGender}, Genre utilisateur: ${userGender}, Match: ${userGender === filterGender}`);
+        return false;
+      }
+    }
     
     // Filtre par recherche textuelle
     if (searchQuery.trim()) {
@@ -230,6 +299,8 @@ export default function SearchScreen() {
     }
   }, [filteredUsers.length, currentIndex]);
 
+  const currentUser = filteredUsers.length > 0 ? filteredUsers[safeIndex] : null;
+
   // Réinitialiser les animations quand l'utilisateur change
   React.useEffect(() => {
     translateX.value = 0;
@@ -237,8 +308,6 @@ export default function SearchScreen() {
     opacity.value = 1;
     scale.value = 1;
   }, [currentIndex, currentUser?.id]);
-
-  const currentUser = filteredUsers.length > 0 ? filteredUsers[safeIndex] : null;
 
   const handleViewProfile = (user: User) => {
     setSelectedUser(user);
@@ -283,6 +352,22 @@ export default function SearchScreen() {
     handlePrevious();
   };
 
+  // Fonction pour liker l'utilisateur actuel (appelée depuis le geste)
+  const handleLikeCurrentUser = useCallback(() => {
+    const user = filteredUsers.length > 0 ? filteredUsers[Math.min(Math.max(0, currentIndex), filteredUsers.length - 1)] : null;
+    if (user && !isUserLiked(user.id)) {
+      likeUser(user.id);
+    }
+  }, [filteredUsers, currentIndex, isUserLiked, likeUser]);
+
+  // Fonction pour unliker l'utilisateur actuel (appelée depuis le geste)
+  const handleUnlikeCurrentUser = useCallback(() => {
+    const user = filteredUsers.length > 0 ? filteredUsers[Math.min(Math.max(0, currentIndex), filteredUsers.length - 1)] : null;
+    if (user && isUserLiked(user.id)) {
+      unlikeUser(user.id);
+    }
+  }, [filteredUsers, currentIndex, isUserLiked, unlikeUser]);
+
   // Gérer le geste de swipe
   const onGestureEvent = (event: PanGestureHandlerGestureEvent) => {
     const { translationX, translationY } = event.nativeEvent;
@@ -316,6 +401,8 @@ export default function SearchScreen() {
       const shouldSwipeRight = translationX > SWIPE_THRESHOLD || velocityX > SWIPE_VELOCITY_THRESHOLD;
       
       if (shouldSwipeLeft) {
+        // Swipe vers la gauche - si déjà liké, enlever le like
+        runOnJS(handleUnlikeCurrentUser)();
         // Swipe vers la gauche (suivant)
         translateX.value = withTiming(-screenWidth * 1.5, { duration: 300 });
         opacity.value = withTiming(0, { duration: 300 });
@@ -323,6 +410,8 @@ export default function SearchScreen() {
           runOnJS(goToNext)();
         });
       } else if (shouldSwipeRight) {
+        // Swipe vers la droite (côté cœur) - like automatique
+        runOnJS(handleLikeCurrentUser)();
         // Swipe vers la droite (précédent)
         translateX.value = withTiming(screenWidth * 1.5, { duration: 300 });
         opacity.value = withTiming(0, { duration: 300 });
@@ -1084,13 +1173,43 @@ export default function SearchScreen() {
           <Animated.View style={[styles.card, animatedCardStyle]}>
             {currentUser && (
               <>
-                <ImageWithFallback source={{ uri: currentUser.photo }} style={styles.cardImage} />
+                <View style={styles.cardImageContainer}>
+                  {(() => {
+                    const imageSource = getImageSource(currentUser.photo, currentUser.gender || 'female');
+                    const isRemoteUri = typeof imageSource === 'object' && 'uri' in imageSource;
+                    
+                    if (isRemoteUri) {
+                      return (
+                        <ImageWithFallback
+                          source={imageSource}
+                          style={styles.cardImage}
+                        />
+                      );
+                    } else {
+                      return (
+                        <Image
+                          source={imageSource}
+                          style={styles.cardImage}
+                          resizeMode="cover"
+                        />
+                      );
+                    }
+                  })()}
+                  {(() => {
+                    const isOnline = calculateOnlineStatus(currentUser.lastSeen);
+                    return isOnline ? <View style={styles.onlineBadge} /> : null;
+                  })()}
+                </View>
                 <View style={styles.cardOverlay} />
                 <View style={styles.cardInfo}>
                   <View style={styles.cardHeader}>
                     <Text style={styles.cardName}>{currentUser.pseudo}</Text>
                     <Text style={styles.cardSeparator}>·</Text>
                     <Text style={styles.cardAge}>{currentUser.age} ans</Text>
+                    <Text style={styles.cardSeparator}>·</Text>
+                    <Text style={styles.cardGender}>
+                      {currentUser.gender === 'male' ? 'Homme' : currentUser.gender === 'female' ? 'Femme' : ''}
+                    </Text>
                   </View>
                   <Text style={styles.cardDescription}>{currentUser.description}</Text>
                   <View style={styles.cardMeta}>
@@ -1372,10 +1491,26 @@ const styles = StyleSheet.create({
     borderColor: colors.borderSecondary,
     zIndex: 0,
   },
+  cardImageContainer: {
+    width: '100%',
+    height: '100%',
+    position: 'relative',
+  },
   cardImage: {
     width: '100%',
     height: '100%',
     resizeMode: 'cover',
+  },
+  onlineBadge: {
+    position: 'absolute',
+    bottom: 16,
+    right: 16,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: colors.green500,
+    borderWidth: 3,
+    borderColor: colors.background,
   },
   cardOverlay: {
     position: 'absolute',
@@ -1410,6 +1545,11 @@ const styles = StyleSheet.create({
   cardAge: {
     fontSize: 24,
     color: colors.text,
+  },
+  cardGender: {
+    fontSize: 24,
+    color: colors.text,
+    textTransform: 'capitalize',
   },
   cardDescription: {
     fontSize: 16,

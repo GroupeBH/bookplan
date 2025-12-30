@@ -1,17 +1,20 @@
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import * as Location from 'expo-location';
 import { usePathname, useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, AppState, Image, Linking, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ImageWithFallback } from '../../components/ImageWithFallback';
 import { Badge } from '../../components/ui/Badge';
 import { colors } from '../../constants/colors';
 import { useAuth } from '../../context/AuthContext';
 import { useBooking } from '../../context/BookingContext';
+import { useMessage } from '../../context/MessageContext';
+import { useNotification } from '../../context/NotificationContext';
 import { useRating } from '../../context/RatingContext';
 import { useUser } from '../../context/UserContext';
+import { getDefaultProfileImage } from '../../lib/defaultImages';
 import { isMapboxAvailable } from '../../lib/mapbox';
 import { User } from '../../types';
 
@@ -20,6 +23,7 @@ let Mapbox: any = null;
 let MapView: any = null;
 let PointAnnotation: any = null;
 let Camera: any = null;
+let Callout: any = null;
 
 if (isMapboxAvailable) {
   try {
@@ -28,6 +32,7 @@ if (isMapboxAvailable) {
     MapView = mapboxModule.MapView;
     PointAnnotation = mapboxModule.PointAnnotation;
     Camera = mapboxModule.Camera;
+    Callout = mapboxModule.Callout;
   } catch (error) {
     console.warn('Failed to load Mapbox components');
   }
@@ -100,26 +105,166 @@ const mockUsers: User[] = [
   },
 ];
 
-type Tab = 'home' | 'search' | 'messages' | 'profile';
+type Tab = 'home' | 'search' | 'messages' | 'notifications' | 'profile';
+
+/**
+ * Fonction utilitaire pour obtenir la source d'image correcte pour React Native Image
+ * Gère à la fois les URLs HTTP/HTTPS (Supabase) et les images locales par défaut
+ */
+const getImageSource = (photoUrl: string | null | undefined, gender: 'male' | 'female' = 'female') => {
+  // Vérifier si on a une URL valide
+  if (photoUrl && typeof photoUrl === 'string' && photoUrl.trim() !== '') {
+    const trimmedUrl = photoUrl.trim();
+    
+    // Rejeter les URIs locales (file://) - elles ne sont pas accessibles depuis d'autres appareils
+    if (trimmedUrl.startsWith('file://')) {
+      console.warn(`⚠️ URI locale détectée (non accessible): ${trimmedUrl.substring(0, 50)}... - Utilisation de l'image par défaut`);
+      return gender === 'male' 
+        ? require('../../assets/images/avatar_men.png')
+        : require('../../assets/images/avatar_woman.png');
+    }
+    
+    // Si c'est une URL HTTP/HTTPS valide (Supabase Storage, etc.)
+    // Accepter toutes les URLs HTTPS et HTTP (sauf les URLs locales du serveur Expo)
+    if (trimmedUrl.startsWith('https://') || 
+        (trimmedUrl.startsWith('http://') && 
+         !trimmedUrl.includes('10.0.2.2') && 
+         !trimmedUrl.includes('localhost') &&
+         !trimmedUrl.includes('127.0.0.1') &&
+         !trimmedUrl.includes('/assets/'))) {
+      return { uri: trimmedUrl };
+    }
+  }
+  
+  // Sinon, utiliser l'image par défaut selon le genre
+  return gender === 'male' 
+    ? require('../../assets/images/avatar_men.png')
+    : require('../../assets/images/avatar_woman.png');
+};
+
+// Composant mémorisé pour le callout utilisateur
+const UserCallout = React.memo(({ 
+  user, 
+  onViewProfile, 
+  onClose 
+}: { 
+  user: User; 
+  onViewProfile: (user: User) => void;
+  onClose: () => void;
+}) => {
+  const imageSource = useMemo(() => {
+    const rawPhoto = (user as any).rawPhoto || user.photo || null;
+    return getImageSource(rawPhoto, user.gender);
+  }, [(user as any).rawPhoto, user.photo, user.gender]);
+
+  const handlePress = useCallback(() => {
+    onClose();
+    onViewProfile(user);
+  }, [user, onClose, onViewProfile]);
+
+  return (
+    <View style={styles.calloutContainer}>
+      <View style={styles.calloutHeader}>
+        <Image
+          source={imageSource}
+          style={styles.calloutImage}
+          resizeMode="cover"
+        />
+        <View style={styles.calloutInfo}>
+          <Text style={styles.calloutName}>{user.pseudo}</Text>
+          <View style={styles.calloutDistance}>
+            <Ionicons name="location" size={12} color={colors.textSecondary} />
+            <Text style={styles.calloutDistanceText}>
+              {user.distance !== undefined ? `${user.distance.toFixed(2)} km` : 'N/A'}
+            </Text>
+          </View>
+        </View>
+      </View>
+      <TouchableOpacity
+        style={styles.calloutButton}
+        onPress={handlePress}
+        activeOpacity={0.7}
+      >
+        <Text style={styles.calloutButtonText}>Profil</Text>
+        <Ionicons name="chevron-forward" size={16} color="#ffffff" />
+      </TouchableOpacity>
+    </View>
+  );
+}, (prevProps, nextProps) => {
+  // Comparaison personnalisée pour éviter les re-renders inutiles
+  const prevRawPhoto = (prevProps.user as any).rawPhoto || prevProps.user.photo;
+  const nextRawPhoto = (nextProps.user as any).rawPhoto || nextProps.user.photo;
+  return prevProps.user.id === nextProps.user.id &&
+         prevRawPhoto === nextRawPhoto &&
+         prevProps.user.pseudo === nextProps.user.pseudo &&
+         prevProps.user.distance === nextProps.user.distance &&
+         prevProps.user.gender === nextProps.user.gender;
+});
+
+UserCallout.displayName = 'UserCallout';
 
 export default function Dashboard() {
   const router = useRouter();
   const { currentUser, setSelectedUser } = useUser();
-  const { isAuthenticated, isLoading, user, updateUser } = useAuth();
+  const { isAuthenticated, isLoading, user, updateLocation } = useAuth();
   const { getAvailableUsers } = useBooking();
   const { getUserAverageRating } = useRating();
+  const { conversations } = useMessage();
+  const { unreadCount: unreadNotificationsCount } = useNotification();
+  
+  // Calculer le total des messages non lus
+  const totalUnreadMessages = useMemo(() => {
+    return conversations.reduce((total, conv) => {
+      return total + (conv.unreadCount || 0);
+    }, 0);
+  }, [conversations]);
   const [activeTab, setActiveTab] = useState<Tab>('home');
   const [availableUsers, setAvailableUsers] = useState<User[]>([]);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
   const [userRatings, setUserRatings] = useState<Map<string, { average: number; count: number }>>(new Map());
+  const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(null);
+  const [selectedUserForCallout, setSelectedUserForCallout] = useState<User | null>(null);
+  const [mapReady, setMapReady] = useState(false);
 
-  // Protection de route
+  // Protection de route - ne rediriger que si vraiment non authentifié (pas pendant le chargement initial ou retour des paramètres)
+  const hasCheckedAuthRef = useRef(false);
+  const authCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
   useEffect(() => {
-    if (!isLoading && !isAuthenticated) {
-      router.replace('/(screens)/auth');
+    // Annuler tout timeout précédent
+    if (authCheckTimeoutRef.current) {
+      clearTimeout(authCheckTimeoutRef.current);
     }
-  }, [isAuthenticated, isLoading]);
+    
+    if (isLoading) {
+      // Attendre que le chargement soit terminé avant de vérifier l'authentification
+      hasCheckedAuthRef.current = false;
+      return;
+    }
+    
+    // Ne vérifier qu'une fois que le chargement est terminé
+    if (!hasCheckedAuthRef.current) {
+      hasCheckedAuthRef.current = true;
+    }
+    
+    // Ajouter un délai pour éviter les redirections immédiates après retour des paramètres système
+    // Cela donne le temps à l'état d'authentification de se stabiliser
+    authCheckTimeoutRef.current = setTimeout(() => {
+      // Ne rediriger que si on est sûr que l'utilisateur n'est pas authentifié
+      // et qu'on a déjà vérifié au moins une fois
+      // ET que l'utilisateur n'est vraiment pas authentifié (pas juste en cours de chargement)
+      if (hasCheckedAuthRef.current && !isLoading && !isAuthenticated && user === null) {
+        router.replace('/(screens)/auth');
+      }
+    }, 1000); // Délai de 1 seconde pour laisser le temps à l'état de se stabiliser
+    
+    return () => {
+      if (authCheckTimeoutRef.current) {
+        clearTimeout(authCheckTimeoutRef.current);
+      }
+    };
+  }, [isAuthenticated, isLoading, user, router]);
 
   // Réinitialiser l'onglet actif quand on revient au dashboard
   const pathname = usePathname();
@@ -132,14 +277,43 @@ export default function Dashboard() {
     }, [pathname])
   );
 
-  // Charger les utilisateurs disponibles
+  // Charger les utilisateurs disponibles - optimisé pour charger immédiatement
+  const initialLoadDone = useRef(false);
+  
   useEffect(() => {
-    if (isAuthenticated && user) {
-      loadAvailableUsers();
+    if (isAuthenticated && user && !initialLoadDone.current) {
+      initialLoadDone.current = true;
+      // Utiliser la position du profil utilisateur en premier (si disponible) pour un chargement instantané
+      if (user.lat && user.lng) {
+        const profileLocation = { lat: user.lat, lng: user.lng };
+        setUserLocation(profileLocation);
+        // Charger les utilisateurs immédiatement avec la position du profil
+        loadAvailableUsers(profileLocation);
+      } else {
+        // Sinon, charger sans position (sera mis à jour quand la position arrive)
+        loadAvailableUsers();
+      }
     }
-  }, [isAuthenticated, user, userLocation]); // Recharger si la position change
+  }, [isAuthenticated, user?.id]); // Seulement au montage ou si l'utilisateur change
 
-  // Demander la permission de géolocalisation et suivre la position
+  // Recharger les utilisateurs quand la position GPS est mise à jour (seulement si différente)
+  const lastLocationRef = useRef<{ lat: number; lng: number } | null>(null);
+  useEffect(() => {
+    if (userLocation && isAuthenticated && user) {
+      // Vérifier si la position a vraiment changé
+      const hasChanged = !lastLocationRef.current || 
+        Math.abs(lastLocationRef.current.lat - userLocation.lat) > 0.0001 ||
+        Math.abs(lastLocationRef.current.lng - userLocation.lng) > 0.0001;
+      
+      if (hasChanged) {
+        lastLocationRef.current = userLocation;
+        loadAvailableUsers(userLocation);
+      }
+    }
+  }, [userLocation?.lat, userLocation?.lng]); // Seulement si la position change vraiment
+
+  // Demander la permission de géolocalisation et suivre la position (non bloquant)
+  const locationPermissionRequestedRef = useRef(false);
   useEffect(() => {
     // Ne démarrer le suivi que si authentifié
     if (!isAuthenticated || !user) {
@@ -148,10 +322,20 @@ export default function Dashboard() {
         locationSubscriptionRef.current.remove();
         locationSubscriptionRef.current = null;
       }
+      locationPermissionRequestedRef.current = false;
       return;
     }
 
-    requestLocationPermission();
+    // Demander la permission de localisation de manière non bloquante (une seule fois)
+    if (!locationPermissionRequestedRef.current) {
+      locationPermissionRequestedRef.current = true;
+      // Démarrer la demande de permission en arrière-plan (non bloquant)
+      requestLocationPermission().catch(() => {
+        // Ignorer les erreurs, ne pas bloquer l'authentification
+      });
+    }
+
+    // Démarrer le suivi de position (même si la permission n'est pas encore accordée)
     startLocationTracking().then((subscription) => {
       // Vérifier qu'on est toujours authentifié avant d'assigner la subscription
       if (isAuthenticated && user) {
@@ -160,6 +344,8 @@ export default function Dashboard() {
         // Si on n'est plus authentifié, arrêter immédiatement
         subscription.remove();
       }
+    }).catch(() => {
+      // Ignorer les erreurs de localisation, ne pas bloquer l'authentification
     });
 
     return () => {
@@ -171,24 +357,128 @@ export default function Dashboard() {
     };
   }, [isAuthenticated, user]);
 
+  // Réessayer la demande de localisation quand l'app revient au premier plan (après retour des paramètres)
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'active' && isAuthenticated && user && locationPermissionRequestedRef.current) {
+        // Réessayer de demander la permission si l'utilisateur revient des paramètres
+        // Mais seulement après un court délai pour éviter les boucles
+        setTimeout(() => {
+          if (isAuthenticated && user) {
+            requestLocationPermission().catch(() => {});
+          }
+        }, 500);
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [isAuthenticated, user]);
+
   const requestLocationPermission = async () => {
     try {
+      // Vérifier d'abord si les services de localisation sont activés
+      const isLocationEnabled = await Location.hasServicesEnabledAsync();
+      if (!isLocationEnabled) {
+        // Demander à l'utilisateur s'il veut activer la localisation (non bloquant)
+        // Ne pas bloquer l'authentification, juste informer
+        Alert.alert(
+          'Localisation désactivée',
+          'Pour afficher les utilisateurs à proximité, veuillez activer la localisation dans les paramètres de votre appareil.',
+          [
+            {
+              text: 'Plus tard',
+              style: 'cancel',
+              onPress: () => {
+                // L'utilisateur peut continuer sans localisation
+                console.log('Utilisateur a choisi de ne pas activer la localisation maintenant');
+              },
+            },
+            {
+              text: 'Ouvrir les paramètres',
+              onPress: () => {
+                if (Platform.OS === 'ios') {
+                  Linking.openURL('app-settings:');
+                } else {
+                  Linking.openSettings();
+                }
+              },
+            },
+          ],
+          { cancelable: true }
+        );
+        return;
+      }
+
+      // Demander la permission de localisation
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
         console.warn('Permission de localisation refusée');
+        // Ne pas bloquer, l'utilisateur peut continuer sans localisation
         return;
       }
     } catch (error) {
       console.error('Error requesting location permission:', error);
+      // Ne pas bloquer en cas d'erreur
     }
   };
 
   const startLocationTracking = async (): Promise<Location.LocationSubscription | null> => {
     try {
-      // Obtenir la position actuelle
-      const location = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
+      // Essayer d'abord de récupérer la position depuis le cache
+      try {
+        const cachedLocationStr = await AsyncStorage.getItem('user_location');
+        if (cachedLocationStr) {
+          const cachedLocation = JSON.parse(cachedLocationStr);
+          // Utiliser la position en cache immédiatement pour un chargement instantané
+          if (cachedLocation.lat && cachedLocation.lng) {
+            setUserLocation(cachedLocation);
+            // Charger les utilisateurs avec la position en cache
+            loadAvailableUsers(cachedLocation);
+          }
+        }
+      } catch (e) {
+        // Ignorer les erreurs de cache
+      }
+
+      // Obtenir la position actuelle avec la précision la plus basse pour une réponse rapide
+      const locationPromise = Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Lowest, // Plus rapide que Balanced
       });
+
+      // Timeout de 3 secondes pour ne pas bloquer
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Location timeout')), 3000)
+      );
+
+      let location;
+      try {
+        location = await Promise.race([locationPromise, timeoutPromise]) as Location.LocationObject;
+      } catch (error) {
+        // Si timeout ou erreur, utiliser la position du profil utilisateur si disponible
+        if (user?.lat && user?.lng) {
+          const profileLocation = { lat: user.lat, lng: user.lng };
+          setUserLocation(profileLocation);
+          await AsyncStorage.setItem('user_location', JSON.stringify(profileLocation));
+          // Mettre à jour en arrière-plan avec une meilleure précision
+          Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.Balanced,
+          }).then((betterLocation) => {
+            const newLocation = {
+              lat: betterLocation.coords.latitude,
+              lng: betterLocation.coords.longitude,
+            };
+            setUserLocation(newLocation);
+            AsyncStorage.setItem('user_location', JSON.stringify(newLocation));
+            if (user && isAuthenticated) {
+              updateLocation(newLocation.lat, newLocation.lng).catch(() => {});
+            }
+          }).catch(() => {});
+          return null;
+        }
+        throw error;
+      }
 
       const newLocation = {
         lat: location.coords.latitude,
@@ -196,23 +486,22 @@ export default function Dashboard() {
       };
 
       setUserLocation(newLocation);
+      // Sauvegarder dans le cache
+      await AsyncStorage.setItem('user_location', JSON.stringify(newLocation));
 
-      // Mettre à jour la position dans le profil Supabase
+      // Mettre à jour la position dans le profil Supabase en arrière-plan (non bloquant)
       if (user) {
-        await updateUser({
-          lat: newLocation.lat,
-          lng: newLocation.lng,
+        updateLocation(newLocation.lat, newLocation.lng).catch(() => {
+          // Ignorer les erreurs silencieusement
         });
-        // Recharger les utilisateurs disponibles avec la nouvelle position
-        loadAvailableUsers();
       }
 
       // Suivre les changements de position
       const subscription = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.Balanced,
-          timeInterval: 5000, // Mettre à jour toutes les 5 secondes
-          distanceInterval: 10, // Ou tous les 10 mètres
+          timeInterval: 10000, // Mettre à jour toutes les 10 secondes (réduit la charge)
+          distanceInterval: 50, // Ou tous les 50 mètres (réduit les mises à jour)
         },
         (location) => {
           const updatedLocation = {
@@ -221,20 +510,13 @@ export default function Dashboard() {
           };
 
           setUserLocation(updatedLocation);
+          // Sauvegarder dans le cache
+          AsyncStorage.setItem('user_location', JSON.stringify(updatedLocation)).catch(() => {});
 
-          // Mettre à jour la position dans le profil Supabase
-          // Vérifier qu'on est toujours authentifié avant de mettre à jour
+          // Mettre à jour la position dans le profil Supabase en arrière-plan (avec last_seen)
           if (user && isAuthenticated) {
-            updateUser({
-              lat: updatedLocation.lat,
-              lng: updatedLocation.lng,
-            }).catch((error) => {
-              // Ignorer les erreurs si on n'est plus authentifié
-              if (!isAuthenticated) {
-                console.log('⚠️ Mise à jour de position ignorée (non authentifié)');
-              } else {
-                console.error('Error updating location:', error);
-              }
+            updateLocation(updatedLocation.lat, updatedLocation.lng).catch(() => {
+              // Ignorer les erreurs silencieusement
             });
           }
         }
@@ -243,11 +525,18 @@ export default function Dashboard() {
       return subscription;
     } catch (error: any) {
       // Gérer l'erreur de localisation de manière gracieuse
-      if (error.message?.includes('location is unavailable')) {
-        console.log('⚠️ Localisation non disponible (émulateur ou permissions refusées)');
-        // Optionnel : définir une position par défaut pour le développement
-        const defaultLocation = { lat: -4.3276, lng: 15.3136 }; // Kinshasa par défaut
-        setUserLocation(defaultLocation);
+      if (error.message?.includes('location is unavailable') || error.message?.includes('timeout')) {
+        console.log('⚠️ Localisation non disponible ou timeout');
+        // Utiliser la position du profil utilisateur si disponible
+        if (user?.lat && user?.lng) {
+          const profileLocation = { lat: user.lat, lng: user.lng };
+          setUserLocation(profileLocation);
+          await AsyncStorage.setItem('user_location', JSON.stringify(profileLocation)).catch(() => {});
+        } else {
+          // Optionnel : définir une position par défaut pour le développement
+          const defaultLocation = { lat: -4.3276, lng: 15.3136 }; // Kinshasa par défaut
+          setUserLocation(defaultLocation);
+        }
       } else {
         console.error('Error starting location tracking:', error);
       }
@@ -255,35 +544,95 @@ export default function Dashboard() {
     }
   };
 
-  const loadAvailableUsers = async () => {
+  const loadAvailableUsers = useCallback(async (locationOverride?: { lat: number; lng: number }) => {
     try {
+      // Utiliser la position fournie ou la position actuelle
+      const currentLocation = locationOverride || userLocation;
+      
+      // Charger les utilisateurs en parallèle avec d'autres opérations
       const users = await getAvailableUsers();
+      
+      // Log pour déboguer la récupération des photos
+      console.log('📸 DEBUG: Utilisateurs récupérés:', users.length);
+      const jhonUser = users.find((u: any) => u.pseudo === 'Jhon' || u.pseudo === 'jhon');
+      if (jhonUser) {
+        console.log('🔍 DEBUG Jhon - Données brutes depuis DB:', {
+          id: jhonUser.id,
+          pseudo: jhonUser.pseudo,
+          photo: jhonUser.photo,
+          p_photo: jhonUser.p_photo,
+          allKeys: Object.keys(jhonUser),
+        });
+      }
+      // Fonction pour calculer si un utilisateur est en ligne
+      const calculateOnlineStatus = (lastSeenValue: string | null | undefined): boolean => {
+        if (!lastSeenValue) {
+          return false; // Pas de last_seen = pas en ligne
+        }
+        if (lastSeenValue === 'En ligne' || lastSeenValue.toLowerCase() === 'en ligne') {
+          return true;
+        }
+        // Vérifier si c'est une date récente (moins de 5 minutes)
+        try {
+          const lastSeenDate = new Date(lastSeenValue);
+          if (isNaN(lastSeenDate.getTime())) {
+            return false; // Date invalide = pas en ligne
+          }
+          const now = new Date();
+          const diffMs = now.getTime() - lastSeenDate.getTime();
+          const diffMinutes = diffMs / (1000 * 60);
+          return diffMinutes < 5; // En ligne si vu il y a moins de 5 minutes
+        } catch {
+          return false; // Erreur de parsing = pas en ligne
+        }
+      };
+
       // Convertir les données de la DB en format User
-      const formattedUsers: User[] = users.map((u: any) => ({
-        id: u.id,
-        pseudo: u.pseudo || 'Utilisateur',
-        age: u.age || 25,
-        phone: u.phone,
-        photo: u.photo || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400',
-        description: u.description || '',
-        rating: parseFloat(u.rating) || 0,
-        reviewCount: u.review_count || 0,
-        isSubscribed: u.is_subscribed || false,
-        subscriptionStatus: u.subscription_status || 'pending',
-        lastSeen: u.last_seen || 'En ligne',
-        gender: u.gender || 'female',
-        lat: u.lat ? parseFloat(u.lat) : undefined,
-        lng: u.lng ? parseFloat(u.lng) : undefined,
-        isAvailable: u.is_available,
-      }));
+      const formattedUsers: User[] = users.map((u: any) => {
+        const userGender = (u.gender === 'male' || u.gender === 'female') ? u.gender : 'female';
+        // Récupérer la photo depuis la DB
+        const rawPhoto = u.photo || null;
+        
+        // Log pour déboguer les photos
+        if (u.pseudo === 'Jhon' || u.pseudo === 'jhon') {
+          console.log(`🔍 DEBUG Photo pour ${u.pseudo}:`, {
+            id: u.id,
+            photo: u.photo,
+            rawPhoto: rawPhoto,
+            hasPhoto: !!rawPhoto,
+            photoType: typeof rawPhoto,
+            photoLength: rawPhoto ? rawPhoto.length : 0,
+            photoPreview: rawPhoto ? rawPhoto.substring(0, 100) : 'null',
+          });
+        }
+        
+        return {
+          id: u.id,
+          pseudo: u.pseudo || 'Utilisateur',
+          age: u.age || 25,
+          phone: u.phone,
+          photo: rawPhoto || getDefaultProfileImage(userGender), // URL de la photo ou image par défaut (pour compatibilité)
+          rawPhoto: rawPhoto, // Conserver la photo brute pour déterminer la source d'image
+          description: u.description || '',
+          rating: parseFloat(u.rating) || 0,
+          reviewCount: u.review_count || 0,
+          isSubscribed: u.is_subscribed || false,
+          subscriptionStatus: u.subscription_status || 'pending',
+          lastSeen: u.last_seen || 'Hors ligne', // Ne pas mettre 'En ligne' par défaut
+          gender: userGender,
+          lat: u.lat ? parseFloat(u.lat) : undefined,
+          lng: u.lng ? parseFloat(u.lng) : undefined,
+          isAvailable: u.is_available,
+        };
+      });
 
       // Calculer les distances si on a la position de l'utilisateur
-      if (userLocation) {
+      if (currentLocation) {
         formattedUsers.forEach((u) => {
           if (u.lat && u.lng) {
             u.distance = calculateDistance(
-              userLocation.lat,
-              userLocation.lng,
+              currentLocation.lat,
+              currentLocation.lng,
               u.lat,
               u.lng
             );
@@ -305,29 +654,37 @@ export default function Dashboard() {
 
         setAvailableUsers(filteredUsers);
 
-        // Charger les avis réels pour chaque utilisateur
+        // Charger les avis réels pour chaque utilisateur en arrière-plan (non bloquant)
+        // Ne pas attendre pour afficher les utilisateurs
         const ratingsMap = new Map<string, { average: number; count: number }>();
-        await Promise.all(
+        // Initialiser avec les valeurs par défaut d'abord
+        filteredUsers.forEach((u) => {
+          ratingsMap.set(u.id, { average: u.rating || 0, count: u.reviewCount || 0 });
+        });
+        setUserRatings(ratingsMap);
+
+        // Charger les vrais avis en arrière-plan
+        Promise.all(
           filteredUsers.map(async (u) => {
             try {
               const avgRating = await getUserAverageRating(u.id);
               ratingsMap.set(u.id, avgRating);
-              console.log('⭐ Avis chargés pour', u.pseudo, ':', avgRating);
+              // Mettre à jour les ratings une fois chargés
+              setUserRatings(new Map(ratingsMap));
             } catch (error) {
-              console.error(`Error loading ratings for ${u.id}:`, error);
-              // En cas d'erreur, utiliser les valeurs par défaut
-              ratingsMap.set(u.id, { average: u.rating || 0, count: u.reviewCount || 0 });
+              // Ignorer les erreurs silencieusement
             }
           })
-        );
-        setUserRatings(ratingsMap);
+        ).catch(() => {
+          // Ignorer les erreurs
+        });
       } else {
         // Si pas de position, ne pas afficher d'utilisateurs
         setAvailableUsers([]);
       }
       
       // Log pour déboguer
-      const finalUsers = userLocation ? formattedUsers.filter((u) => {
+      const finalUsers = currentLocation ? formattedUsers.filter((u) => {
         return u.distance !== undefined && u.distance >= 0 && u.distance <= 10;
       }) : [];
       console.log('📊 Utilisateurs disponibles:', {
@@ -335,12 +692,12 @@ export default function Dashboard() {
         avecCoordonnees: formattedUsers.filter(u => u.lat && u.lng).length,
         sansCoordonnees: formattedUsers.filter(u => !u.lat || !u.lng).length,
         dansRayon10km: finalUsers.length,
-        userLocation: userLocation ? `${userLocation.lat}, ${userLocation.lng}` : 'non disponible',
+        userLocation: currentLocation ? `${currentLocation.lat}, ${currentLocation.lng}` : 'non disponible',
       });
     } catch (error) {
       console.error('Error loading available users:', error);
     }
-  };
+  }, [userLocation, getAvailableUsers, getUserAverageRating]);
 
   // Calculer la distance entre deux points (formule de Haversine)
   const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
@@ -355,15 +712,37 @@ export default function Dashboard() {
     return R * c;
   };
 
-  const handleViewProfile = (user: User) => {
+  const handleViewProfile = useCallback((user: User) => {
     setSelectedUser(user);
     router.push('/(screens)/user-profile');
-  };
+  }, [setSelectedUser, router]);
+
+  // Handler optimisé pour la sélection des marqueurs
+  const handleMarkerSelect = useCallback((markerId: string, user?: User) => {
+    if (markerId === 'current-user') {
+      setSelectedMarkerId(prev => prev === markerId ? null : markerId);
+      setSelectedUserForCallout(null);
+    } else if (user) {
+      // Afficher immédiatement le modal pour l'utilisateur sélectionné
+      setSelectedMarkerId(markerId);
+      setSelectedUserForCallout(user);
+    } else {
+      setSelectedMarkerId(prev => prev === markerId ? null : markerId);
+      setSelectedUserForCallout(null);
+    }
+  }, []);
+
+  // Handler pour fermer le callout
+  const handleCloseCallout = useCallback(() => {
+    setSelectedMarkerId(null);
+    setSelectedUserForCallout(null);
+  }, []);
 
   const handleTabClick = (tab: Tab) => {
     setActiveTab(tab);
     if (tab === 'search') router.push('/(screens)/search');
     if (tab === 'messages') router.push('/(screens)/chat');
+    if (tab === 'notifications') router.push('/(screens)/notifications');
     if (tab === 'profile') router.push('/(screens)/profile');
   };
 
@@ -371,6 +750,7 @@ export default function Dashboard() {
     { id: 'home' as Tab, icon: 'home', label: 'Accueil' },
     { id: 'search' as Tab, icon: 'search', label: 'Recherche' },
     { id: 'messages' as Tab, icon: 'chatbubbles', label: 'Messages' },
+    { id: 'notifications' as Tab, icon: 'notifications-outline', label: 'Notifications' },
     { id: 'profile' as Tab, icon: 'person', label: 'Profil' },
   ];
 
@@ -405,12 +785,17 @@ export default function Dashboard() {
               Exécutez: eas build --profile development
             </Text>
           </View>
-        ) : userLocation ? (
+        ) : userLocation && userLocation.lng !== undefined && userLocation.lat !== undefined && Mapbox && Mapbox.StyleURL && MapView && Camera ? (
           <MapView
             styleURL={Mapbox.StyleURL.Street}
             style={styles.map}
             logoEnabled={false}
             attributionEnabled={false}
+            onPress={handleCloseCallout}
+            onDidFinishLoadingMap={() => {
+              // Attendre que la carte soit complètement chargée avant de rendre les marqueurs
+              setTimeout(() => setMapReady(true), 100);
+            }}
           >
             <Camera
               centerCoordinate={[userLocation.lng, userLocation.lat]}
@@ -420,18 +805,23 @@ export default function Dashboard() {
             />
             
             {/* Marker pour l'utilisateur actuel - zIndex élevé pour être au-dessus */}
-            <PointAnnotation
-              id="current-user"
-              coordinate={[userLocation.lng, userLocation.lat]}
-              anchor={{ x: 0.5, y: 0.5 }}
-            >
-              <View style={styles.currentUserMarker}>
-                <Ionicons name="person" size={20} color="#ffffff" />
-              </View>
-            </PointAnnotation>
+            {mapReady && PointAnnotation && userLocation && 
+             userLocation.lng !== undefined && userLocation.lat !== undefined &&
+             isFinite(userLocation.lng) && isFinite(userLocation.lat) ? (
+              <PointAnnotation
+                id="current-user"
+                coordinate={[userLocation.lng, userLocation.lat]}
+                anchor={{ x: 0.5, y: 0.5 }}
+                onSelected={() => handleMarkerSelect('current-user')}
+              >
+                <View style={styles.currentUserMarker}>
+                  <Ionicons name="person" size={20} color="#ffffff" />
+                </View>
+              </PointAnnotation>
+            ) : null}
 
             {/* Markers pour les utilisateurs disponibles - zIndex plus bas pour être sous le marqueur utilisateur */}
-            {(() => {
+            {mapReady ? (() => {
               // Filtrer d'abord les utilisateurs valides
               const validUsers = availableUsers.filter((user) => {
                 const hasCoords = user.lat !== undefined && user.lat !== null && user.lng !== undefined && user.lng !== null;
@@ -462,14 +852,15 @@ export default function Dashboard() {
                 
                 if (user.distance === 0 || (user.distance !== undefined && user.distance < 0.001)) {
                   // Créer un cercle autour du marqueur utilisateur
-                  // Distance du centre : environ 0.0005 degrés (environ 55 mètres) - plus grand pour être visible
-                  const radius = 0.0005;
+                  // Distance du centre : environ 0.0015 degrés (environ 165 mètres) - assez grand pour être bien visible et séparé
+                  const radius = 0.0015;
                   // Angle en radians pour placer les marqueurs en cercle
                   // Utiliser le nombre total d'utilisateurs à 0.0 km pour répartir équitablement
-                  const angle = usersAtZeroCount > 1 ? (zeroIndex * 2 * Math.PI) / usersAtZeroCount : 0;
+                  // Commencer à 0 degrés (à droite) pour le premier marqueur
+                  const angle = usersAtZeroCount > 1 ? (zeroIndex * 2 * Math.PI) / usersAtZeroCount : Math.PI / 4; // Par défaut à 45 degrés si seul
                   // Calculer les offsets en latitude et longitude
                   // Note: la longitude doit être ajustée par le cosinus de la latitude pour un cercle correct
-                  const lat = user.lat || userLocation.lat;
+                  const lat = user.lat || (userLocation?.lat || 0);
                   const latRad = lat * Math.PI / 180;
                   latOffset = radius * Math.cos(angle);
                   lngOffset = radius * Math.sin(angle) / Math.cos(latRad); // Ajustement pour la projection Mercator
@@ -477,26 +868,70 @@ export default function Dashboard() {
                   zeroIndex++;
                 }
                 
+                // Vérifier que les coordonnées sont valides avant de rendre le PointAnnotation
+                const userLat = (user.lat || 0) + latOffset;
+                const userLng = (user.lng || 0) + lngOffset;
+                
+                // Vérifications strictes pour éviter les erreurs Mapbox
+                if (!PointAnnotation || !userLocation || 
+                    userLat === 0 || userLng === 0 ||
+                    isNaN(userLat) || isNaN(userLng) ||
+                    !isFinite(userLat) || !isFinite(userLng) ||
+                    user.lat === undefined || user.lat === null ||
+                    user.lng === undefined || user.lng === null) {
+                  return null;
+                }
+                
                 console.log(`📍 Affichage marqueur pour ${user.pseudo} à (${user.lat}, ${user.lng}), distance: ${user.distance?.toFixed(3)} km, offset: (${latOffset.toFixed(6)}, ${lngOffset.toFixed(6)})`);
                 return (
                   <PointAnnotation
                     key={user.id}
                     id={`user-${user.id}`}
-                    coordinate={[(user.lng || 0) + lngOffset, (user.lat || 0) + latOffset]}
+                    coordinate={[userLng, userLat]}
                     anchor={{ x: 0.5, y: 0.5 }}
-                    onSelected={() => handleViewProfile(user)}
+                    onSelected={() => handleMarkerSelect(`user-${user.id}`, user)}
                   >
                     <View style={styles.userMarker}>
-                      <ImageWithFallback
-                        source={{ uri: user.photo }}
+                      <Image
+                        source={getImageSource((user as any).rawPhoto || user.photo, user.gender)}
                         style={styles.markerImage}
+                        resizeMode="cover"
+                        defaultSource={user.gender === 'male' 
+                          ? require('../../assets/images/avatar_men.png')
+                          : require('../../assets/images/avatar_woman.png')}
+                        onError={(error) => {
+                          console.log(`❌ Erreur de chargement de l'image du marqueur pour ${user.pseudo}`);
+                        }}
+                        onLoad={() => {
+                          console.log(`✅ Image du marqueur chargée avec succès pour ${user.pseudo}`);
+                        }}
                       />
-                      <View style={styles.onlineIndicator} />
+                      {(() => {
+                        // Vérifier si l'utilisateur est vraiment en ligne avant d'afficher l'indicateur
+                        const isOnline = (() => {
+                          if (!user.lastSeen) return false;
+                          if (user.lastSeen === 'En ligne' || user.lastSeen.toLowerCase() === 'en ligne') {
+                            return true;
+                          }
+                          // Vérifier si c'est une date récente (moins de 5 minutes)
+                          try {
+                            const lastSeenDate = new Date(user.lastSeen);
+                            if (isNaN(lastSeenDate.getTime())) return false;
+                            const now = new Date();
+                            const diffMs = now.getTime() - lastSeenDate.getTime();
+                            const diffMinutes = diffMs / (1000 * 60);
+                            return diffMinutes < 5;
+                          } catch {
+                            return false;
+                          }
+                        })();
+                        return isOnline ? <View style={styles.onlineIndicator} /> : null;
+                      })()}
                     </View>
                   </PointAnnotation>
                 );
-              });
-            })()}
+              }).filter(Boolean); // Filtrer les valeurs null
+            })() : null}
           </MapView>
         ) : (
           <View style={styles.mapPlaceholder}>
@@ -505,6 +940,48 @@ export default function Dashboard() {
           </View>
         )}
       </View>
+
+      {/* Modal pour le callout utilisateur - s'affiche immédiatement */}
+      <Modal
+        visible={selectedUserForCallout !== null}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={handleCloseCallout}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={handleCloseCallout}
+        >
+          <View style={styles.modalContent} onStartShouldSetResponder={() => true}>
+            {selectedUserForCallout && (
+              <UserCallout 
+                user={selectedUserForCallout} 
+                onViewProfile={handleViewProfile}
+                onClose={handleCloseCallout}
+              />
+            )}
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Modal simple pour "Moi" */}
+      <Modal
+        visible={selectedMarkerId === 'current-user'}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={handleCloseCallout}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={handleCloseCallout}
+        >
+          <View style={styles.modalContentSimple} onStartShouldSetResponder={() => true}>
+            <Text style={styles.calloutText}>Moi</Text>
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Users List */}
       <ScrollView
@@ -539,11 +1016,35 @@ export default function Dashboard() {
             activeOpacity={0.7}
           >
             <View style={styles.userImageContainer}>
-              <ImageWithFallback
-                source={{ uri: user.photo }}
+              <Image
+                source={getImageSource((user as any).rawPhoto || user.photo, user.gender)}
                 style={styles.userImage}
+                resizeMode="cover"
+                defaultSource={user.gender === 'male' 
+                  ? require('../../assets/images/avatar_men.png')
+                  : require('../../assets/images/avatar_woman.png')}
               />
-              {user.lastSeen === 'En ligne' && <View style={styles.onlineBadge} />}
+              {(() => {
+                // Vérifier si l'utilisateur est vraiment en ligne
+                const isOnline = (() => {
+                  if (!user.lastSeen) return false;
+                  if (user.lastSeen === 'En ligne' || user.lastSeen.toLowerCase() === 'en ligne') {
+                    return true;
+                  }
+                  // Vérifier si c'est une date récente (moins de 5 minutes)
+                  try {
+                    const lastSeenDate = new Date(user.lastSeen);
+                    if (isNaN(lastSeenDate.getTime())) return false;
+                    const now = new Date();
+                    const diffMs = now.getTime() - lastSeenDate.getTime();
+                    const diffMinutes = diffMs / (1000 * 60);
+                    return diffMinutes < 5;
+                  } catch {
+                    return false;
+                  }
+                })();
+                return isOnline ? <View style={styles.onlineBadge} /> : null;
+              })()}
             </View>
             <View style={styles.userInfo}>
               <View style={styles.userHeader}>
@@ -592,19 +1093,29 @@ export default function Dashboard() {
             style={styles.tab}
             onPress={() => handleTabClick(tab.id)}
           >
-            <Ionicons
-              name={tab.icon as any}
-              size={24}
-              color={activeTab === tab.id ? colors.pink500 : colors.textTertiary}
-            />
-            <Text
-              style={[
-                styles.tabLabel,
-                { color: activeTab === tab.id ? colors.pink400 : colors.textTertiary },
-              ]}
-            >
-              {tab.label}
-            </Text>
+            <View style={styles.tabIconContainer}>
+              <Ionicons
+                name={tab.icon as any}
+                size={24}
+                color={activeTab === tab.id ? colors.pink500 : colors.textTertiary}
+              />
+              {/* Badge pour les messages non lus */}
+              {tab.id === 'messages' && totalUnreadMessages > 0 && (
+                <View style={styles.messageBadge}>
+                  <Text style={styles.messageBadgeText}>
+                    {totalUnreadMessages > 99 ? '99+' : totalUnreadMessages}
+                  </Text>
+                </View>
+              )}
+              {/* Badge pour les notifications non lues */}
+              {tab.id === 'notifications' && unreadNotificationsCount > 0 && (
+                <View style={styles.messageBadge}>
+                  <Text style={styles.messageBadgeText}>
+                    {unreadNotificationsCount > 99 ? '99+' : unreadNotificationsCount}
+                  </Text>
+                </View>
+              )}
+            </View>
           </TouchableOpacity>
         ))}
       </View>
@@ -698,10 +1209,18 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: colors.backgroundSecondary,
     position: 'relative',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3,
+    elevation: 5,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   markerImage: {
     width: '100%',
     height: '100%',
+    borderRadius: 18,
   },
   onlineIndicator: {
     position: 'absolute',
@@ -804,19 +1323,42 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-around',
     paddingVertical: 12,
-    paddingHorizontal: 24,
+    paddingHorizontal: 8,
     backgroundColor: `${colors.backgroundSecondary}80`,
     borderTopWidth: 1,
     borderTopColor: colors.borderSecondary,
   },
   tab: {
+    flex: 1,
     alignItems: 'center',
-    gap: 4,
+    justifyContent: 'center',
     paddingVertical: 8,
-    paddingHorizontal: 16,
+    paddingHorizontal: 4,
+  },
+  tabIconContainer: {
+    position: 'relative',
+  },
+  messageBadge: {
+    position: 'absolute',
+    top: -6,
+    right: -8,
+    backgroundColor: colors.pink500,
+    borderRadius: 10,
+    minWidth: 20,
+    height: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+    borderWidth: 2,
+    borderColor: colors.backgroundSecondary,
+  },
+  messageBadgeText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '700',
   },
   tabLabel: {
-    fontSize: 12,
+    fontSize: 9,
     fontWeight: '500',
   },
   // Note: currentUserMarker est défini plus haut dans les styles
@@ -831,6 +1373,116 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: colors.textSecondary,
     textAlign: 'center',
+  },
+  calloutContainer: {
+    backgroundColor: colors.background,
+    borderRadius: 12,
+    padding: 12,
+    width: 220,
+    borderWidth: 1,
+    borderColor: colors.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 5,
+    overflow: 'hidden',
+  },
+  calloutContainerSimple: {
+    backgroundColor: colors.background,
+    borderRadius: 8,
+    padding: 8,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  calloutHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 8,
+  },
+  calloutImage: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    borderWidth: 2,
+    borderColor: colors.pink500,
+    overflow: 'hidden',
+  },
+  calloutInfo: {
+    flex: 1,
+    gap: 4,
+  },
+  calloutName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  calloutDistance: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  calloutDistanceText: {
+    fontSize: 12,
+    color: colors.textSecondary,
+  },
+  calloutText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+    padding: 8,
+  },
+  calloutButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.pink500,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    gap: 6,
+    marginTop: 4,
+  },
+  calloutButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    backgroundColor: colors.background,
+    borderRadius: 16,
+    padding: 16,
+    width: '85%',
+    maxWidth: 320,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 10,
+  },
+  modalContentSimple: {
+    backgroundColor: colors.background,
+    borderRadius: 12,
+    padding: 16,
+    paddingHorizontal: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 10,
   },
 });
 
