@@ -1,8 +1,8 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { supabase } from '../lib/supabase';
-import { Message, Conversation, User } from '../types';
-import { useAuth } from './AuthContext';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { isNetworkError } from '../lib/errorUtils';
+import { supabase } from '../lib/supabase';
+import { Conversation, Message, User } from '../types';
+import { useAuth } from './AuthContext';
 
 interface MessageContextType {
   conversations: Conversation[];

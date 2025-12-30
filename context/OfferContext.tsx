@@ -1,9 +1,9 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
+import { isNetworkError } from '../lib/errorUtils';
+import { sendPushNotification } from '../lib/pushNotifications';
 import { supabase } from '../lib/supabase';
 import { Offer, OfferApplication, OfferType } from '../types';
 import { useAuth } from './AuthContext';
-import { isNetworkError } from '../lib/errorUtils';
-import { sendPushNotification } from '../lib/pushNotifications';
 
 // Vérifier si un ID est un UUID valide
 const isValidUUID = (id: string | undefined): boolean => {

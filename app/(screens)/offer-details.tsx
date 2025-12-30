@@ -1,22 +1,20 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Modal, ActivityIndicator } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useLocalSearchParams } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors } from '../../constants/colors';
+import { useFocusEffect } from '@react-navigation/native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, Image, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import Animated, { FadeIn } from 'react-native-reanimated';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { ImageWithFallback } from '../../components/ImageWithFallback';
+import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
-import { ImageWithFallback } from '../../components/ImageWithFallback';
-import { Image } from 'react-native';
-import { Badge } from '../../components/ui/Badge';
-import { useOffer } from '../../context/OfferContext';
+import { colors } from '../../constants/colors';
 import { useAuth } from '../../context/AuthContext';
+import { useOffer } from '../../context/OfferContext';
 import { useRating } from '../../context/RatingContext';
-import { Offer, OfferApplication, OfferType } from '../../types';
 import { supabase } from '../../lib/supabase';
-import { getProfileImage } from '../../lib/defaultImages';
-import Animated, { FadeIn } from 'react-native-reanimated';
+import { Offer, OfferApplication, OfferType } from '../../types';
 
 const OFFER_TYPE_LABELS: Record<OfferType, string> = {
   drink: 'À boire',

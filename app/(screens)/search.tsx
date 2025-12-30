@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
-import { Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
+import { Image, ImageSourcePropType, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 import { PanGestureHandler, PanGestureHandlerGestureEvent } from 'react-native-gesture-handler';
 import Animated, {
   Extrapolate,
@@ -22,7 +22,6 @@ import { useBooking } from '../../context/BookingContext';
 import { useLike } from '../../context/LikeContext';
 import { useUser } from '../../context/UserContext';
 import { User } from '../../types';
-import { Image, ImageSourcePropType } from 'react-native';
 
 type Filter = 'all' | 'male' | 'female';
 

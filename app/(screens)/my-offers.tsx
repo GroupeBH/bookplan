@@ -1,18 +1,18 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl, Alert, Modal, ActivityIndicator } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors } from '../../constants/colors';
+import { useFocusEffect } from '@react-navigation/native';
+import { useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Alert, Modal, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import Animated, { FadeIn } from 'react-native-reanimated';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { ImageWithFallback } from '../../components/ImageWithFallback';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
-import { ImageWithFallback } from '../../components/ImageWithFallback';
-import { useOffer } from '../../context/OfferContext';
+import { colors } from '../../constants/colors';
 import { useAuth } from '../../context/AuthContext';
+import { useOffer } from '../../context/OfferContext';
 import { Offer, OfferApplication, OfferType } from '../../types';
-import Animated, { FadeIn } from 'react-native-reanimated';
 
 const OFFER_TYPE_LABELS: Record<OfferType, string> = {
   drink: 'À boire',

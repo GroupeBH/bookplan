@@ -1,10 +1,18 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Modal, ActivityIndicator, KeyboardAvoidingView, Platform, Keyboard } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, Keyboard, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import Animated, { FadeIn } from 'react-native-reanimated';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { CalendarPicker } from '../../components/CalendarPicker';
+import { Button } from '../../components/ui/Button';
+import { Input } from '../../components/ui/Input';
+import { colors } from '../../constants/colors';
+import { useAuth } from '../../context/AuthContext';
+import { useOffer } from '../../context/OfferContext';
 import { isMapboxAvailable } from '../../lib/mapbox';
+import { OfferType } from '../../types';
 
 // Import conditionnel de Mapbox
 let Mapbox: any = null;
@@ -23,14 +31,6 @@ if (isMapboxAvailable) {
     console.warn('Failed to load Mapbox components');
   }
 }
-import { colors } from '../../constants/colors';
-import { Button } from '../../components/ui/Button';
-import { Input } from '../../components/ui/Input';
-import { CalendarPicker } from '../../components/CalendarPicker';
-import { useOffer } from '../../context/OfferContext';
-import { useAuth } from '../../context/AuthContext';
-import { OfferType } from '../../types';
-import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 
 const OFFER_TYPES: { value: OfferType; label: string; icon: string }[] = [
   { value: 'drink', label: 'À boire', icon: 'wine-outline' },

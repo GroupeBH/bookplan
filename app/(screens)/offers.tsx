@@ -1,15 +1,14 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl, ActivityIndicator } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
+import { useRouter } from 'expo-router';
+import React, { useState } from 'react';
+import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import Animated, { FadeIn } from 'react-native-reanimated';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Badge } from '../../components/ui/Badge';
 import { colors } from '../../constants/colors';
-import { ImageWithFallback } from '../../components/ImageWithFallback';
 import { useOffer } from '../../context/OfferContext';
 import { Offer, OfferType } from '../../types';
-import { Badge } from '../../components/ui/Badge';
-import Animated, { FadeIn } from 'react-native-reanimated';
 
 const OFFER_TYPE_LABELS: Record<OfferType, string> = {
   drink: 'À boire',

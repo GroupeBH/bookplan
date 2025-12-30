@@ -1,14 +1,14 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, KeyboardAvoidingView, Platform, Keyboard } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { colors } from '../../constants/colors';
+import * as ImagePicker from 'expo-image-picker';
+import { useRouter } from 'expo-router';
+import React, { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Keyboard, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { ImageWithFallback } from '../../components/ImageWithFallback';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
-import { ImageWithFallback } from '../../components/ImageWithFallback';
+import { colors } from '../../constants/colors';
 import { useAuth } from '../../context/AuthContext';
-import * as ImagePicker from 'expo-image-picker';
 import { User } from '../../types';
 
 export default function EditProfileScreen() {

@@ -3,7 +3,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Image, ImageSourcePropType, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
@@ -16,7 +16,6 @@ import { useRating } from '../../context/RatingContext';
 import { useUser } from '../../context/UserContext';
 import { uploadImageToStorage } from '../../lib/imageUpload';
 import { supabase } from '../../lib/supabase';
-import { Image, ImageSourcePropType } from 'react-native';
 
 /**
  * Fonction utilitaire pour obtenir la source d'image correcte pour React Native Image
