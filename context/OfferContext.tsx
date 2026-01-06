@@ -71,12 +71,53 @@ export function OfferProvider({ children }: { children: ReactNode }) {
 
     setIsLoading(true);
     try {
+      // La politique RLS permet maintenant à tous les utilisateurs authentifiés
+      // de voir les offres actives (pas seulement ceux qui sont disponibles)
+      console.log('👤 Chargement des offres pour l\'utilisateur:', { 
+        userId: user.id
+      });
+
+      const nowISO = new Date().toISOString();
+      console.log('🔍 Chargement des offres disponibles...', { 
+        now: nowISO,
+        userId: user.id 
+      });
+      
+      // Test: Vérifier d'abord si on peut voir toutes les offres actives (sans filtre d'auteur)
+      // pour diagnostiquer si le problème vient de la politique RLS
+      const { data: testData, error: testError } = await supabase
+        .from('offers')
+        .select('id, title, status, expires_at, author_id')
+        .eq('status', 'active')
+        .gt('expires_at', nowISO);
+      
+      console.log('🧪 Test - Toutes les offres actives (sans filtre auteur):', {
+        count: testData?.length || 0,
+        offers: testData?.map(o => ({ id: o.id, title: o.title, authorId: o.author_id })),
+        error: testError?.message
+      });
+      
+      // La politique RLS "Authenticated users can view active offers" filtre automatiquement:
+      // - status = 'active'
+      // - expires_at > NOW()
+      // - L'utilisateur doit être authentifié (auth.uid() IS NOT NULL)
+      // On ajoute aussi des filtres explicites pour être sûr et exclure nos propres offres
+      console.log('🔍 Requête Supabase pour récupérer les offres (excluant mes propres offres)...');
       const { data, error } = await supabase
         .from('offers')
         .select('*')
         .eq('status', 'active')
-        .gt('expires_at', new Date().toISOString())
+        .gt('expires_at', nowISO)
+        .neq('author_id', user.id) // Exclure les offres de l'utilisateur actuel
         .order('created_at', { ascending: false });
+      
+      console.log('📊 Résultat de la requête:', {
+        hasData: !!data,
+        dataLength: data?.length || 0,
+        hasError: !!error,
+        errorMessage: error?.message,
+        errorCode: error?.code
+      });
 
       if (error) {
         if (error.code === 'PGRST116' || error.code === '42P01') {
@@ -86,15 +127,53 @@ export function OfferProvider({ children }: { children: ReactNode }) {
           console.log('⚠️ Erreur réseau lors du chargement des offres');
           setOffers([]);
         } else {
-          console.error('Error fetching offers:', error);
+          console.error('❌ Error fetching offers:', error);
         }
+        setIsLoading(false);
         return;
       }
 
-      if (data) {
+      console.log('📋 Offres récupérées (avant filtrage):', data?.length || 0);
+      
+      if (data && data.length > 0) {
+        console.log('📋 Détails des offres récupérées:', data.map(o => ({
+          id: o.id,
+          title: o.title,
+          status: o.status,
+          expiresAt: o.expires_at,
+          authorId: o.author_id,
+          offerDate: o.offer_date,
+          durationHours: o.duration_hours
+        })));
+      } else {
+        console.log('⚠️ Aucune offre récupérée de la base de données');
+      }
+      
+      // Filtrer manuellement les offres actives et non expirées
+      // (la politique RLS devrait déjà le faire, mais on double-vérifie)
+      const now = new Date();
+      const activeOffers = (data || []).filter(offer => {
+        const expiresAt = new Date(offer.expires_at);
+        const isActive = offer.status === 'active' && expiresAt > now;
+        if (!isActive) {
+          console.log('⚠️ Offre filtrée:', {
+            id: offer.id,
+            title: offer.title,
+            status: offer.status,
+            expiresAt: offer.expires_at,
+            isExpired: expiresAt <= now,
+            now: now.toISOString()
+          });
+        }
+        return isActive;
+      });
+
+      console.log('✅ Offres actives après filtrage:', activeOffers.length);
+
+      if (activeOffers.length > 0) {
         // Charger les profils des auteurs, les types et compter les candidatures
         const offersWithCounts = await Promise.all(
-          data.map(async (offer) => {
+          activeOffers.map(async (offer) => {
             // Charger le profil de l'auteur
             let authorProfile = null;
             try {
@@ -367,6 +446,15 @@ export function OfferProvider({ children }: { children: ReactNode }) {
 
     try {
       // Créer l'offre (utiliser le premier type pour rétrocompatibilité)
+      // Le trigger calculera automatiquement expires_at = offer_date + duration_hours
+      console.log('📝 Création d\'une offre:', {
+        authorId: user.id,
+        title,
+        offerDate,
+        durationHours,
+        status: 'active'
+      });
+
       const { data, error } = await supabase
         .from('offers')
         .insert({
@@ -380,14 +468,23 @@ export function OfferProvider({ children }: { children: ReactNode }) {
           location,
           lat,
           lng,
+          status: 'active', // S'assurer que le statut est 'active'
         })
         .select('*')
         .single();
 
       if (error) {
-        console.error('Error creating offer:', error);
+        console.error('❌ Error creating offer:', error);
         return { error, offer: null };
       }
+
+      console.log('✅ Offre créée:', {
+        id: data.id,
+        status: data.status,
+        expiresAt: data.expires_at,
+        offerDate: data.offer_date,
+        durationHours: data.duration_hours
+      });
 
       // Insérer tous les types dans la table de relation
       const typeInserts = offerTypes.map(type => ({
@@ -684,6 +781,26 @@ export function OfferProvider({ children }: { children: ReactNode }) {
       try {
         const offer = await getOfferById(offerId);
         if (offer?.authorId) {
+          // Créer une notification dans la table notifications
+          const { error: notificationError } = await supabase
+            .from('notifications')
+            .insert({
+              user_id: offer.authorId,
+              type: 'offer_application_received',
+              title: 'Nouvelle candidature',
+              message: `${user.pseudo} a candidaté à votre offre "${offer.title}"`,
+              data: {
+                offerId: offerId,
+                applicationId: application.id,
+                applicantId: user.id,
+              },
+            });
+
+          if (notificationError && !isNetworkError(notificationError)) {
+            console.error('Error creating notification:', notificationError);
+          }
+
+          // Envoyer aussi une notification push
           await sendPushNotification({
             userId: offer.authorId,
             title: 'Nouvelle candidature',
@@ -692,7 +809,7 @@ export function OfferProvider({ children }: { children: ReactNode }) {
           });
         }
       } catch (notifError) {
-        console.error('Error sending push notification:', notifError);
+        console.error('Error sending notification:', notifError);
       }
 
       await refreshOffers();

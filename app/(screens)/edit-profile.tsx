@@ -9,6 +9,7 @@ import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
 import { colors } from '../../constants/colors';
 import { useAuth } from '../../context/AuthContext';
+import { uploadImageToStorage } from '../../lib/imageUpload';
 import { User } from '../../types';
 
 export default function EditProfileScreen() {
@@ -25,8 +26,9 @@ export default function EditProfileScreen() {
   const [isInitialized, setIsInitialized] = useState(false);
   const prevAuthUserRef = React.useRef<User | null>(null);
   const scrollViewRef = useRef<ScrollView>(null);
-  const descriptionFieldRef = useRef<View>(null);
-  const specialtyFieldRef = useRef<View>(null);
+  const descriptionFieldY = useRef<number>(0);
+  const specialtyFieldY = useRef<number>(0);
+  const isScrollingRef = useRef(false); // Pour éviter les appels multiples de scroll
 
   // Charger les données de l'utilisateur depuis authUser (qui vient de Supabase)
   // Ne charger qu'une seule fois au montage ou si les données importantes ont vraiment changé
@@ -168,28 +170,77 @@ export default function EditProfileScreen() {
 
     setIsSaving(true);
     
-    const updateData = {
-      pseudo: pseudo.trim(),
-      age: Number(age),
-      description: description.trim(),
-      specialty: specialty.trim() || null,
-      photo: photo || authUser.photo,
-      gender: gender,
-    };
-
     try {
-      // Mettre à jour le profil et attendre la confirmation
+      let photoUrl = photo || authUser.photo;
+      
+      // Si la photo est une URI locale (file://), l'uploader vers Supabase Storage
+      if (photo && photo.startsWith('file://') && authUser?.id) {
+        try {
+          console.log('📤 Upload de la photo vers Supabase Storage...');
+          const { url, error: uploadError } = await uploadImageToStorage(
+            photo,
+            authUser.id,
+            'profiles'
+          );
+          
+          if (uploadError || !url) {
+            console.error('❌ Error uploading photo:', uploadError);
+            Alert.alert('Erreur', 'Impossible d\'uploader la photo. Veuillez réessayer.');
+            setIsSaving(false);
+            return;
+          }
+          
+          // Vérifier que l'URL est bien une URL publique (pas une URI locale)
+          if (url.startsWith('file://')) {
+            console.error('❌ L\'upload a retourné une URI locale au lieu d\'une URL publique');
+            Alert.alert('Erreur', 'L\'upload a échoué. La photo n\'a pas été sauvegardée correctement.');
+            setIsSaving(false);
+            return;
+          }
+          
+          console.log('✅ Photo uploadée, URL:', url);
+          photoUrl = url;
+        } catch (uploadError: any) {
+          console.error('Error uploading photo:', uploadError);
+          Alert.alert('Erreur', 'Impossible d\'uploader la photo. Veuillez réessayer.');
+          setIsSaving(false);
+          return;
+        }
+      }
+      
+      const updateData = {
+        pseudo: pseudo.trim(),
+        age: Number(age),
+        description: description.trim(),
+        specialty: specialty.trim() || null,
+        photo: photoUrl,
+        gender: gender,
+      };
+
+      console.log('💾 Début de la mise à jour du profil:', updateData);
+
+      // Mettre à jour le profil (mise à jour optimiste + synchronisation avec DB)
       await updateUser(updateData);
       
-      // Attendre un court instant pour que la mise à jour soit propagée
-      await new Promise(resolve => setTimeout(resolve, 100));
+      console.log('✅ Mise à jour du profil terminée');
       
-      // Naviguer en arrière après la mise à jour réussie
-      router.back();
+      // Attendre un court instant pour que la mise à jour optimiste soit propagée
+      await new Promise(resolve => setTimeout(resolve, 200));
+      
+      // Afficher un message de succès
+      Alert.alert('Succès', 'Votre profil a été mis à jour avec succès', [
+        {
+          text: 'OK',
+          onPress: () => {
+            // Naviguer après la confirmation
+            setIsSaving(false);
+            router.back();
+          }
+        }
+      ]);
     } catch (error) {
       console.error('Erreur lors de la sauvegarde:', error);
       Alert.alert('Erreur', 'Une erreur est survenue lors de la sauvegarde. Veuillez réessayer.');
-    } finally {
       setIsSaving(false);
     }
   };
@@ -221,6 +272,7 @@ export default function EditProfileScreen() {
         style={styles.keyboardAvoidingView}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+        enabled={Platform.OS === 'ios'} // Désactiver sur Android pour éviter les problèmes
       >
         <ScrollView
           ref={scrollViewRef}
@@ -319,8 +371,11 @@ export default function EditProfileScreen() {
           </View>
 
           <View 
-            ref={descriptionFieldRef}
             style={styles.field}
+            onLayout={(event) => {
+              // Capturer la position Y du champ
+              descriptionFieldY.current = event.nativeEvent.layout.y;
+            }}
           >
             <Text style={styles.label}>Description</Text>
             <Input
@@ -332,26 +387,35 @@ export default function EditProfileScreen() {
               style={styles.textArea}
               containerStyle={styles.inputContainer}
               onFocus={() => {
+                // Éviter les appels multiples
+                if (isScrollingRef.current) {
+                  return;
+                }
+                
                 // Scroller vers le champ quand il reçoit le focus
                 setTimeout(() => {
-                  descriptionFieldRef.current?.measureLayout(
-                    scrollViewRef.current?.getInnerViewNode?.() || scrollViewRef.current as any,
-                    (x, y, width, height) => {
-                      scrollViewRef.current?.scrollTo({
-                        y: Math.max(0, y - 150), // Scroll avec marge
-                        animated: true,
-                      });
-                    },
-                    () => {}
-                  );
+                  if (scrollViewRef.current && descriptionFieldY.current > 0 && !isScrollingRef.current) {
+                    isScrollingRef.current = true;
+                    scrollViewRef.current.scrollTo({
+                      y: Math.max(0, descriptionFieldY.current - 150), // Scroll avec marge
+                      animated: true,
+                    });
+                    // Réinitialiser le flag après le scroll
+                    setTimeout(() => {
+                      isScrollingRef.current = false;
+                    }, 500);
+                  }
                 }, Platform.OS === 'ios' ? 300 : 100);
               }}
             />
           </View>
 
           <View 
-            ref={specialtyFieldRef}
             style={styles.field}
+            onLayout={(event) => {
+              // Capturer la position Y du champ
+              specialtyFieldY.current = event.nativeEvent.layout.y;
+            }}
           >
             <Text style={styles.label}>Savoir-faire particulier</Text>
             <Input
@@ -361,18 +425,24 @@ export default function EditProfileScreen() {
               containerStyle={styles.inputContainer}
               leftIcon={<Ionicons name="briefcase-outline" size={20} color={colors.textTertiary} />}
               onFocus={() => {
+                // Éviter les appels multiples
+                if (isScrollingRef.current) {
+                  return;
+                }
+                
                 // Scroller vers le champ quand il reçoit le focus
                 setTimeout(() => {
-                  specialtyFieldRef.current?.measureLayout(
-                    scrollViewRef.current?.getInnerViewNode?.() || scrollViewRef.current as any,
-                    (x, y, width, height) => {
-                      scrollViewRef.current?.scrollTo({
-                        y: Math.max(0, y - 150), // Scroll avec marge
-                        animated: true,
-                      });
-                    },
-                    () => {}
-                  );
+                  if (scrollViewRef.current && specialtyFieldY.current > 0 && !isScrollingRef.current) {
+                    isScrollingRef.current = true;
+                    scrollViewRef.current.scrollTo({
+                      y: Math.max(0, specialtyFieldY.current - 150), // Scroll avec marge
+                      animated: true,
+                    });
+                    // Réinitialiser le flag après le scroll
+                    setTimeout(() => {
+                      isScrollingRef.current = false;
+                    }, 500);
+                  }
                 }, Platform.OS === 'ios' ? 300 : 100);
               }}
             />

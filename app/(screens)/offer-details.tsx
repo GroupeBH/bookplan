@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Image, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
@@ -876,7 +876,11 @@ export default function OfferDetailsScreen() {
         animationType="slide"
         onRequestClose={() => setShowApplicationModal(false)}
       >
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+        >
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Candidater à l'offre</Text>
@@ -885,18 +889,25 @@ export default function OfferDetailsScreen() {
               </TouchableOpacity>
             </View>
 
-            <Text style={styles.modalSubtitle}>
-              Écrivez un message pour expliquer pourquoi vous êtes intéressé(e) par cette offre
-            </Text>
+            <ScrollView
+              style={styles.modalScrollView}
+              contentContainerStyle={styles.modalScrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <Text style={styles.modalSubtitle}>
+                Écrivez un message pour expliquer pourquoi vous êtes intéressé(e) par cette offre
+              </Text>
 
-            <Input
-              value={applicationMessage}
-              onChangeText={setApplicationMessage}
-              placeholder="Votre message..."
-              multiline
-              numberOfLines={5}
-              containerStyle={styles.modalInput}
-            />
+              <Input
+                value={applicationMessage}
+                onChangeText={setApplicationMessage}
+                placeholder="Votre message..."
+                multiline
+                numberOfLines={5}
+                containerStyle={styles.modalInput}
+              />
+            </ScrollView>
 
             <View style={styles.modalActions}>
               <Button
@@ -914,7 +925,7 @@ export default function OfferDetailsScreen() {
               />
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -1120,7 +1131,14 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 16,
-    maxHeight: '80%',
+    paddingBottom: 24,
+    maxHeight: '85%',
+  },
+  modalScrollView: {
+    maxHeight: 300,
+  },
+  modalScrollContent: {
+    paddingBottom: 8,
   },
   modalHeader: {
     flexDirection: 'row',
@@ -1140,11 +1158,15 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   modalInput: {
-    marginBottom: 16,
+    marginBottom: 4,
   },
   modalActions: {
     flexDirection: 'row',
     gap: 12,
+    paddingTop: 8,
+    marginTop: 4,
+    borderTopWidth: 1,
+    borderTopColor: colors.borderSecondary,
   },
   modalButton: {
     flex: 1,

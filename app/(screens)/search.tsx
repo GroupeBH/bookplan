@@ -1,8 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useState } from 'react';
-import { Image, ImageSourcePropType, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { Image, ImageSourcePropType, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, TouchableWithoutFeedback, View, useWindowDimensions } from 'react-native';
 import { PanGestureHandler, PanGestureHandlerGestureEvent } from 'react-native-gesture-handler';
 import Animated, {
   Extrapolate,
@@ -85,6 +85,7 @@ export default function SearchScreen() {
   const isLoadingRef = React.useRef(false);
   const lastLoadTimeRef = React.useRef<number>(0);
   const hasLoadedRef = React.useRef(false);
+  const hasLoadedOnceRef = React.useRef(false); // Pour charger une seule fois à l'arrivée
   
   // Obtenir les dimensions de la fenêtre
   const { width: screenWidth } = useWindowDimensions();
@@ -135,7 +136,17 @@ export default function SearchScreen() {
 
   // Charger les utilisateurs disponibles
   const loadUsers = useCallback(async (force = false) => {
-    if (!currentAuthUser) return;
+    if (!currentAuthUser) {
+      setIsLoading(false);
+      isLoadingRef.current = false;
+      return;
+    }
+
+    // Ne pas charger si le modal de filtres est ouvert pour éviter les re-renders qui ferment le clavier
+    if (showFilters) {
+      console.log('⏭️ Modal de filtres ouvert, skip chargement');
+      return;
+    }
 
     // Éviter les appels multiples simultanés
     if (isLoadingRef.current) {
@@ -154,8 +165,42 @@ export default function SearchScreen() {
     setIsLoading(true);
     lastLoadTimeRef.current = now;
 
+    // Ajouter un timeout pour éviter que le chargement reste bloqué
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    timeoutId = setTimeout(() => {
+      if (isLoadingRef.current) {
+        console.log('⏱️ Timeout lors du chargement des utilisateurs');
+        setIsLoading(false);
+        isLoadingRef.current = false;
+        // Initialiser avec un tableau vide pour éviter un état bloqué
+        setUsers([]);
+      }
+    }, 15000); // 15 secondes de timeout
+
     try {
+      if (!getAllUsers) {
+        console.error('getAllUsers is not available');
+        if (timeoutId) clearTimeout(timeoutId);
+        setIsLoading(false);
+        isLoadingRef.current = false;
+        setUsers([]);
+        return;
+      }
+
       const availableUsers = await getAllUsers();
+      
+      // Annuler le timeout si le chargement réussit
+      if (timeoutId) clearTimeout(timeoutId);
+      
+      // Vérifier que availableUsers est un tableau valide
+      if (!Array.isArray(availableUsers)) {
+        console.error('getAllUsers returned invalid data:', availableUsers);
+        setUsers([]);
+        setIsLoading(false);
+        isLoadingRef.current = false;
+        hasLoadedRef.current = true;
+        return;
+      }
       
       // Convertir les données de la DB en format User
       const formattedUsers: User[] = availableUsers.map((u: any) => ({
@@ -166,7 +211,7 @@ export default function SearchScreen() {
         photo: u.photo || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400',
         description: u.description || '',
         rating: parseFloat(u.rating) || 0,
-        reviewCount: u.review_count || 0,
+        reviewCount: typeof u.review_count === 'number' ? u.review_count : (typeof u.review_count === 'string' ? parseInt(u.review_count, 10) || 0 : 0),
         isSubscribed: u.is_subscribed || false,
         subscriptionStatus: u.subscription_status || 'pending',
         lastSeen: u.last_seen || 'Hors ligne', // Ne pas mettre 'En ligne' par défaut
@@ -199,90 +244,154 @@ export default function SearchScreen() {
       setUsers(formattedUsers);
       setCurrentIndex(0); // Réinitialiser l'index
       hasLoadedRef.current = true;
-    } catch (error) {
+    } catch (error: any) {
+      if (timeoutId) clearTimeout(timeoutId);
       console.error('Error loading users:', error);
+      // En cas d'erreur, initialiser avec un tableau vide pour éviter un état bloqué
+      setUsers([]);
     } finally {
+      if (timeoutId) clearTimeout(timeoutId);
       setIsLoading(false);
       isLoadingRef.current = false;
     }
-  }, [currentAuthUser?.id]); // Utiliser seulement currentAuthUser.id comme dépendance
+  }, [currentAuthUser?.id, getAllUsers, showFilters]); // Ajouter showFilters comme dépendance
 
-  // Charger les utilisateurs au montage
-  React.useEffect(() => {
-    if (currentAuthUser?.id) {
-      loadUsers(true); // Force le chargement initial
-    }
-  }, [currentAuthUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Recharger quand on revient sur la page (mais pas trop souvent)
+  // Charger les utilisateurs UNE SEULE FOIS à l'arrivée sur l'onglet Recherche
   useFocusEffect(
     useCallback(() => {
-      // Utiliser un petit délai pour éviter les appels multiples
-      const timer = setTimeout(() => {
-        if (currentAuthUser?.id) {
-          console.log('🔄 Rechargement des utilisateurs sur la page de recherche');
-          loadUsers(true); // Forcer le rechargement pour avoir les dernières photos de profil
-        }
-      }, 300);
+      // Ne pas charger si le modal de filtres est ouvert
+      if (showFilters) {
+        return;
+      }
 
+      // Charger une seule fois à l'arrivée sur l'onglet
+      if (!hasLoadedOnceRef.current && currentAuthUser?.id) {
+        hasLoadedOnceRef.current = true;
+        console.log('🔄 Chargement initial des utilisateurs sur la page de recherche');
+        loadUsers(true);
+      } else if (!currentAuthUser?.id) {
+        // Si pas d'utilisateur authentifié, arrêter le chargement
+        setIsLoading(false);
+        isLoadingRef.current = false;
+      }
+
+      // Cleanup: ne rien faire quand on quitte l'onglet (on garde les données chargées)
       return () => {
-        clearTimeout(timer);
+        // On ne recharge pas quand on quitte l'onglet
       };
-    }, [currentAuthUser?.id, loadUsers]) // eslint-disable-line react-hooks/exhaustive-deps
+    }, [currentAuthUser?.id, loadUsers, showFilters])
   );
 
-  // Filtrer les utilisateurs
-  const filteredUsers = users.filter((user) => {
-    // Filtre par genre - comparer strictement avec le genre de l'utilisateur
-    if (filter !== 'all') {
-      // Normaliser le genre pour la comparaison (en minuscules et supprimer les espaces)
-      const userGender = user.gender?.toLowerCase().trim();
-      const filterGender = filter.toLowerCase().trim();
-      // Debug: afficher les valeurs pour comprendre le problème
-      if (userGender !== filterGender) {
-        console.log(`🔍 Filtre genre: ${filterGender}, Genre utilisateur: ${userGender}, Match: ${userGender === filterGender}`);
-        return false;
-      }
+  // Filtrer les utilisateurs - mémoriser pour éviter les recalculs inutiles
+  // Ne pas recalculer quand le modal de filtres est ouvert pour éviter les re-renders
+  const filteredUsers = useMemo(() => {
+    // Si le modal est ouvert, retourner la liste actuelle sans recalculer
+    // Cela évite les re-renders qui ferment le clavier
+    if (showFilters) {
+      return users.filter((user) => {
+        // Filtre par genre - comparer strictement avec le genre de l'utilisateur
+        if (filter !== 'all') {
+          // Normaliser le genre pour la comparaison (en minuscules et supprimer les espaces)
+          const userGender = user.gender?.toLowerCase().trim();
+          const filterGender = filter.toLowerCase().trim();
+          if (userGender !== filterGender) {
+            return false;
+          }
+        }
+        
+        // Filtre par recherche textuelle
+        if (searchQuery.trim()) {
+          const query = searchQuery.toLowerCase();
+          if (!user.pseudo.toLowerCase().includes(query) && 
+              !user.description.toLowerCase().includes(query)) {
+            return false;
+          }
+        }
+        
+        // Filtre par âge
+        if (user.age < ageRange.min || user.age > ageRange.max) return false;
+        
+        // Filtre par distance maximale
+        if (maxDistance !== null) {
+          // Si l'utilisateur n'a pas de distance calculée (pas de position), l'exclure
+          if (user.distance === undefined || user.distance === null) {
+            return false;
+          }
+          // Si la distance dépasse le maximum, exclure
+          if (user.distance > maxDistance) {
+            return false;
+          }
+        }
+        
+        // Filtre par note minimale
+        if (minRating > 0) {
+          // Si l'utilisateur n'a pas d'avis (reviewCount === 0), l'exclure si on demande une note minimale > 0
+          if (!user.reviewCount || user.reviewCount === 0) {
+            return false;
+          }
+          // Vérifier que la note est >= à la note minimale demandée
+          if (user.rating < minRating) {
+            return false;
+          }
+        }
+        
+        return true;
+      });
     }
     
-    // Filtre par recherche textuelle
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
-      if (!user.pseudo.toLowerCase().includes(query) && 
-          !user.description.toLowerCase().includes(query)) {
-        return false;
+    // Sinon, filtrer normalement
+    return users.filter((user) => {
+      // Filtre par genre - comparer strictement avec le genre de l'utilisateur
+      if (filter !== 'all') {
+        // Normaliser le genre pour la comparaison (en minuscules et supprimer les espaces)
+        const userGender = user.gender?.toLowerCase().trim();
+        const filterGender = filter.toLowerCase().trim();
+        // Debug: afficher les valeurs pour comprendre le problème
+        if (userGender !== filterGender) {
+          console.log(`🔍 Filtre genre: ${filterGender}, Genre utilisateur: ${userGender}, Match: ${userGender === filterGender}`);
+          return false;
+        }
       }
-    }
-    
-    // Filtre par âge
-    if (user.age < ageRange.min || user.age > ageRange.max) return false;
-    
-    // Filtre par distance maximale
-    if (maxDistance !== null) {
-      // Si l'utilisateur n'a pas de distance calculée (pas de position), l'exclure
-      if (user.distance === undefined || user.distance === null) {
-        return false;
+      
+      // Filtre par recherche textuelle
+      if (searchQuery.trim()) {
+        const query = searchQuery.toLowerCase();
+        if (!user.pseudo.toLowerCase().includes(query) && 
+            !user.description.toLowerCase().includes(query)) {
+          return false;
+        }
       }
-      // Si la distance dépasse le maximum, exclure
-      if (user.distance > maxDistance) {
-        return false;
+      
+      // Filtre par âge
+      if (user.age < ageRange.min || user.age > ageRange.max) return false;
+      
+      // Filtre par distance maximale
+      if (maxDistance !== null) {
+        // Si l'utilisateur n'a pas de distance calculée (pas de position), l'exclure
+        if (user.distance === undefined || user.distance === null) {
+          return false;
+        }
+        // Si la distance dépasse le maximum, exclure
+        if (user.distance > maxDistance) {
+          return false;
+        }
       }
-    }
-    
-    // Filtre par note minimale
-    if (minRating > 0) {
-      // Si l'utilisateur n'a pas d'avis (reviewCount === 0), l'exclure si on demande une note minimale > 0
-      if (!user.reviewCount || user.reviewCount === 0) {
-        return false;
+      
+      // Filtre par note minimale
+      if (minRating > 0) {
+        // Si l'utilisateur n'a pas d'avis (reviewCount === 0), l'exclure si on demande une note minimale > 0
+        if (!user.reviewCount || user.reviewCount === 0) {
+          return false;
+        }
+        // Vérifier que la note est >= à la note minimale demandée
+        if (user.rating < minRating) {
+          return false;
+        }
       }
-      // Vérifier que la note est >= à la note minimale demandée
-      if (user.rating < minRating) {
-        return false;
-      }
-    }
-    
-    return true;
-  });
+      
+      return true;
+    });
+  }, [users, filter, searchQuery, ageRange, maxDistance, minRating, showFilters]);
 
   // S'assurer que currentIndex est dans les limites du tableau
   const safeIndex = filteredUsers.length > 0 
@@ -290,23 +399,35 @@ export default function SearchScreen() {
     : 0;
   
   // Si l'index a changé, le mettre à jour
+  // Ne pas mettre à jour si le modal de filtres est ouvert pour éviter les re-renders
   React.useEffect(() => {
+    // Ne pas mettre à jour si le modal est ouvert
+    if (showFilters) {
+      return;
+    }
+    
     if (filteredUsers.length > 0 && currentIndex >= filteredUsers.length) {
       setCurrentIndex(0);
     } else if (filteredUsers.length === 0) {
       setCurrentIndex(0);
     }
-  }, [filteredUsers.length, currentIndex]);
+  }, [filteredUsers.length, currentIndex, showFilters]);
 
   const currentUser = filteredUsers.length > 0 ? filteredUsers[safeIndex] : null;
 
   // Réinitialiser les animations quand l'utilisateur change
+  // Ne pas réinitialiser si le modal de filtres est ouvert pour éviter les re-renders
   React.useEffect(() => {
+    // Ne pas réinitialiser si le modal est ouvert
+    if (showFilters) {
+      return;
+    }
+    
     translateX.value = 0;
     translateY.value = 0;
     opacity.value = 1;
     scale.value = 1;
-  }, [currentIndex, currentUser?.id]);
+  }, [currentIndex, currentUser?.id, showFilters]);
 
   const handleViewProfile = (user: User) => {
     setSelectedUser(user);
@@ -474,8 +595,9 @@ export default function SearchScreen() {
   };
 
   // Appliquer les filtres temporaires
-  const handleApplyFilters = () => {
+  const handleApplyFilters = useCallback(() => {
     // Valider et normaliser les valeurs d'âge avant d'appliquer
+    // Lire directement depuis les états temporaires actuels
     const minAge = parseInt(tempAgeMinText) || 18;
     const maxAge = parseInt(tempAgeMaxText) || 100;
     const normalizedMin = Math.max(18, Math.min(100, minAge));
@@ -485,17 +607,31 @@ export default function SearchScreen() {
     const finalMin = Math.min(normalizedMin, normalizedMax);
     const finalMax = Math.max(normalizedMin, normalizedMax);
     
-    setFilter(tempFilter);
+    // Utiliser les valeurs temporaires actuelles (celles modifiées dans le modal)
+    console.log('🔍 Application des filtres:', {
+      tempFilter,
+      tempMaxDistance,
+      tempMinRating,
+      tempAgeMinText,
+      tempAgeMaxText,
+      finalMin,
+      finalMax,
+    });
+    
+    // Appliquer les filtres avec les valeurs temporaires actuelles
     setFilter(tempFilter);
     setAgeRange({ min: finalMin, max: finalMax });
+    setMaxDistance(tempMaxDistance);
+    setMinRating(tempMinRating);
+    
+    // Mettre à jour les valeurs temporaires pour qu'elles correspondent aux valeurs appliquées
     setTempAgeRange({ min: finalMin, max: finalMax });
     setTempAgeMinText(finalMin.toString());
     setTempAgeMaxText(finalMax.toString());
-    setMaxDistance(tempMaxDistance);
-    setMinRating(tempMinRating);
+    
     setShowFilters(false);
     setCurrentIndex(0);
-  };
+  }, [tempFilter, tempMaxDistance, tempMinRating, tempAgeMinText, tempAgeMaxText]); // Dépendances pour garantir que la fonction utilise les valeurs actuelles
 
   if (isLoading) {
     return (
@@ -539,7 +675,10 @@ export default function SearchScreen() {
             onChangeText={setSearchQuery}
           />
           {searchQuery.length > 0 && (
-            <TouchableOpacity onPress={() => setSearchQuery('')}>
+            <TouchableOpacity onPress={() => {
+              Keyboard.dismiss();
+              setSearchQuery('');
+            }}>
               <Ionicons name="close-circle" size={20} color={colors.textTertiary} />
             </TouchableOpacity>
           )}
@@ -833,7 +972,10 @@ export default function SearchScreen() {
             onChangeText={setSearchQuery}
           />
           {searchQuery.length > 0 && (
-            <TouchableOpacity onPress={() => setSearchQuery('')}>
+            <TouchableOpacity onPress={() => {
+              Keyboard.dismiss();
+              setSearchQuery('');
+            }}>
               <Ionicons name="close-circle" size={20} color={colors.textTertiary} />
             </TouchableOpacity>
           )}
@@ -1104,33 +1246,39 @@ export default function SearchScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
-          <Ionicons name="arrow-back" size={24} color={colors.textSecondary} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Recherche</Text>
-        <TouchableOpacity onPress={() => setShowFilters(true)}>
-          <Ionicons name="options-outline" size={24} color={colors.textSecondary} />
-        </TouchableOpacity>
-      </View>
-
-      {/* Search Bar */}
-      <View style={styles.searchContainer}>
-        <Ionicons name="search" size={20} color={colors.textTertiary} />
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Rechercher par nom ou description..."
-          placeholderTextColor={colors.textTertiary}
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-        />
-        {searchQuery.length > 0 && (
-          <TouchableOpacity onPress={() => setSearchQuery('')}>
-            <Ionicons name="close-circle" size={20} color={colors.textTertiary} />
+      <Pressable style={{ flex: 1 }} onPress={Keyboard.dismiss}>
+        {/* Header */}
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => router.back()}>
+            <Ionicons name="arrow-back" size={24} color={colors.textSecondary} />
           </TouchableOpacity>
-        )}
-      </View>
+          <Text style={styles.headerTitle}>Recherche</Text>
+          <TouchableOpacity onPress={() => setShowFilters(true)}>
+            <Ionicons name="options-outline" size={24} color={colors.textSecondary} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Search Bar */}
+        <Pressable onPress={(e) => e.stopPropagation()}>
+          <View style={styles.searchContainer}>
+            <Ionicons name="search" size={20} color={colors.textTertiary} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Rechercher par nom ou description..."
+              placeholderTextColor={colors.textTertiary}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
+            {searchQuery.length > 0 && (
+              <TouchableOpacity onPress={() => {
+                Keyboard.dismiss();
+                setSearchQuery('');
+              }}>
+                <Ionicons name="close-circle" size={20} color={colors.textTertiary} />
+              </TouchableOpacity>
+            )}
+          </View>
+        </Pressable>
 
       {/* Filters */}
       <View style={styles.filters}>
@@ -1202,10 +1350,11 @@ export default function SearchScreen() {
                 <View style={styles.cardOverlay} />
                 <View style={styles.cardInfo}>
                   <View style={styles.cardHeader}>
-                    <Text style={styles.cardName}>{currentUser.pseudo}</Text>
-                    <Text style={styles.cardSeparator}>·</Text>
-                    <Text style={styles.cardAge}>{currentUser.age} ans</Text>
-                    <Text style={styles.cardSeparator}>·</Text>
+                    <View style={styles.cardNameRow}>
+                      <Text style={styles.cardName}>{currentUser.pseudo}</Text>
+                      <Text style={styles.cardSeparator}>·</Text>
+                      <Text style={styles.cardAge}>{currentUser.age} ans</Text>
+                    </View>
                     <Text style={styles.cardGender}>
                       {currentUser.gender === 'male' ? 'Homme' : currentUser.gender === 'female' ? 'Femme' : ''}
                     </Text>
@@ -1221,7 +1370,20 @@ export default function SearchScreen() {
                     <View style={styles.cardMetaItem}>
                       <Ionicons name="star" size={16} color={colors.yellow500} />
                       <Text style={styles.cardMetaText}>{currentUser.rating.toFixed(1)}</Text>
-                      <Text style={styles.cardMetaTextSecondary}>({currentUser.reviewCount || 0})</Text>
+                      {(() => {
+                        const reviewCount = typeof currentUser.reviewCount === 'number' 
+                          ? currentUser.reviewCount 
+                          : (typeof currentUser.reviewCount === 'string' ? parseInt(currentUser.reviewCount, 10) || 0 : 0);
+                        return reviewCount > 0 ? (
+                          <Text style={styles.cardMetaText}>
+                            ({reviewCount} avis)
+                          </Text>
+                        ) : (
+                          <Text style={styles.cardMetaTextSecondary}>
+                            (Aucun avis)
+                          </Text>
+                        );
+                      })()}
                     </View>
                   </View>
                   <View style={styles.cardCounter}>
@@ -1242,24 +1404,25 @@ export default function SearchScreen() {
         </PanGestureHandler>
       </View>
 
-      {/* Action buttons */}
-      <View style={styles.actions}>
-        <TouchableOpacity style={styles.actionButton} onPress={handlePrevious}>
-          <Ionicons name="arrow-back" size={24} color={colors.textSecondary} />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.actionButton} onPress={handleNext}>
-          <Ionicons name="close" size={32} color={colors.red500} />
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.actionButtonPrimary}
-          onPress={() => handleViewProfile(currentUser)}
-        >
-          <Ionicons name="heart" size={40} color="#ffffff" />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.actionButton} onPress={handleNext}>
-          <Ionicons name="arrow-forward" size={24} color={colors.textSecondary} />
-        </TouchableOpacity>
-      </View>
+        {/* Action buttons */}
+        <View style={styles.actions}>
+          <TouchableOpacity style={styles.actionButton} onPress={handlePrevious}>
+            <Ionicons name="arrow-back" size={24} color={colors.textSecondary} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.actionButton} onPress={handleNext}>
+            <Ionicons name="close" size={32} color={colors.red500} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.actionButtonPrimary}
+            onPress={() => handleViewProfile(currentUser)}
+          >
+            <Ionicons name="heart" size={40} color="#ffffff" />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.actionButton} onPress={handleNext}>
+            <Ionicons name="arrow-forward" size={24} color={colors.textSecondary} />
+          </TouchableOpacity>
+        </View>
+      </Pressable>
 
       {/* Filters Modal */}
       <Modal
@@ -1267,16 +1430,45 @@ export default function SearchScreen() {
         transparent
         animationType="slide"
         onRequestClose={() => setShowFilters(false)}
+        onDismiss={() => Keyboard.dismiss()}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Filtres avancés</Text>
-              <TouchableOpacity onPress={() => setShowFilters(false)}>
-                <Ionicons name="close" size={24} color={colors.text} />
-              </TouchableOpacity>
-            </View>
-            <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
+        <TouchableWithoutFeedback 
+          onPress={() => {
+            Keyboard.dismiss();
+            setShowFilters(false);
+          }}
+        >
+          <View style={styles.modalOverlay}>
+            <Pressable 
+              style={styles.modalContent}
+              onPress={(e) => {
+                // Empêcher la propagation pour que le modal ne se ferme pas
+                e.stopPropagation();
+              }}
+            >
+            <KeyboardAvoidingView
+              style={styles.modalContentInner}
+              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+              keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+              enabled={Platform.OS === 'ios'}
+            >
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Filtres avancés</Text>
+                <TouchableOpacity onPress={() => {
+                  Keyboard.dismiss();
+                  setShowFilters(false);
+                }}>
+                  <Ionicons name="close" size={24} color={colors.text} />
+                </TouchableOpacity>
+              </View>
+              <ScrollView
+                style={styles.modalScroll}
+                contentContainerStyle={styles.modalScrollContent}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode="none"
+                nestedScrollEnabled={true}
+              >
               {/* Age Range */}
               <View style={styles.filterSection}>
                 <Text style={styles.filterSectionTitle}>Âge</Text>
@@ -1414,8 +1606,10 @@ export default function SearchScreen() {
                 style={styles.modalButton}
               />
             </View>
+            </KeyboardAvoidingView>
+            </Pressable>
           </View>
-        </View>
+        </TouchableWithoutFeedback>
       </Modal>
     </SafeAreaView>
   );
@@ -1528,6 +1722,10 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   cardHeader: {
+    flexDirection: 'column',
+    gap: 4,
+  },
+  cardNameRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
@@ -1546,8 +1744,8 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
   cardGender: {
-    fontSize: 24,
-    color: colors.text,
+    fontSize: 18,
+    color: colors.textSecondary,
     textTransform: 'capitalize',
   },
   cardDescription: {
@@ -1678,8 +1876,13 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    maxHeight: '80%',
-    paddingBottom: 24,
+    maxHeight: '85%', // Augmenter légèrement la hauteur maximale
+    paddingBottom: 0, // Le padding sera géré par modalActions
+    width: '100%',
+    minHeight: 200, // Hauteur minimale pour s'assurer que le modal est visible
+  },
+  modalContentInner: {
+    width: '100%',
   },
   modalHeader: {
     flexDirection: 'row',
@@ -1698,6 +1901,9 @@ const styles = StyleSheet.create({
   modalScroll: {
     paddingHorizontal: 24,
     paddingVertical: 16,
+  },
+  modalScrollContent: {
+    paddingBottom: 100, // Espace supplémentaire pour permettre le scroll jusqu'au champ de distance quand le clavier est ouvert
   },
   filterSection: {
     marginBottom: 24,
@@ -1801,8 +2007,10 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingHorizontal: 24,
     paddingTop: 16,
+    paddingBottom: 80, // Espace supplémentaire pour éviter que les boutons soient cachés par la barre de navigation et les icônes du téléphone
     borderTopWidth: 1,
     borderTopColor: colors.borderSecondary,
+    marginBottom: 0,
   },
   modalButton: {
     flex: 1,

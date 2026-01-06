@@ -111,9 +111,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           await supabase.auth.signOut();
         } else {
           await loadUserProfile(session.user.id);
-          // Démarrer le suivi de localisation en arrière-plan
-          const { LocationService } = await import('../lib/locationService');
-          LocationService.startBackgroundTracking(session.user.id).catch(() => {});
+          // Ne pas démarrer automatiquement le LocationService ici
+          // Il sera démarré uniquement sur le dashboard via useFocusEffect
+          // Cela évite que les icônes de direction s'actualisent en boucle sur tous les onglets
         }
       } else {
         // Arrêter le suivi de localisation lors de la déconnexion
@@ -1210,6 +1210,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Logs réduits pour améliorer les performances
 
       // Utiliser la fonction RPC upsert_profile qui bypass RLS
+      console.log('💾 Appel RPC upsert_profile avec:', {
+        p_id: userId,
+        p_pseudo: rpcParams.p_pseudo,
+        p_age: rpcParams.p_age,
+        p_description: rpcParams.p_description?.substring(0, 30),
+        p_specialty: rpcParams.p_specialty,
+        p_gender: rpcParams.p_gender,
+      });
+      
       const { data, error } = await supabase.rpc('upsert_profile', rpcParams);
 
       if (error) {
@@ -1245,6 +1254,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
         
         // Le rechargement du profil se fera en arrière-plan via updateUser
+        console.log('✅ Profil mis à jour via fallback (update direct)');
         return;
       }
 
@@ -1252,6 +1262,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       AsyncStorage.removeItem(`user_profile_${userId}`).catch(() => {
         // Ignorer les erreurs silencieusement
       });
+      
+      console.log('✅ Profil mis à jour dans Supabase via RPC upsert_profile');
       
       // Le rechargement du profil se fera en arrière-plan via updateUser
     } catch (error: any) {
@@ -1266,7 +1278,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Flag pour éviter les mises à jour en boucle
   const isUpdatingRef = React.useRef(false);
 
-  // Mettre à jour l'utilisateur
+  // Mettre à jour l'utilisateur avec mise à jour optimiste pour une meilleure réactivité
   const updateUser = async (userData: Partial<User>) => {
     // Vérifier qu'on est toujours authentifié
     if (!isAuthenticated) {
@@ -1297,43 +1309,75 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new Error('No user ID available for profile update');
       }
 
-      // Mettre à jour dans Supabase (updateUserProfile gère maintenant le cas où la session n'est pas disponible)
-      await updateUserProfile(userData);
-      
-      // Invalider le cache pour forcer le rechargement avec les nouvelles données
+      // MISE À JOUR OPTIMISTE : Mettre à jour l'état local IMMÉDIATEMENT pour une réactivité instantanée
+      // Utiliser une fonction de mise à jour pour garantir que l'état est bien mis à jour
+      setUser((prevUser) => {
+        if (!prevUser) {
+          console.warn('⚠️ Tentative de mise à jour optimiste sans utilisateur précédent');
+          return prevUser;
+        }
+        
+        // Créer un nouvel objet pour forcer la mise à jour de React
+        const updatedUser: User = {
+          ...prevUser,
+          ...userData,
+        };
+        
+        // Sauvegarder aussi dans le cache pour une cohérence immédiate (non-bloquant)
+        AsyncStorage.setItem(`user_profile_${userId}`, JSON.stringify(updatedUser)).catch(() => {
+          // Ignorer les erreurs de cache silencieusement
+        });
+        
+        console.log('✅ Mise à jour optimiste du profil:', {
+          pseudo: updatedUser.pseudo,
+          age: updatedUser.age,
+          description: updatedUser.description?.substring(0, 20),
+          specialty: updatedUser.specialty,
+          photo: updatedUser.photo?.substring(0, 30),
+          gender: updatedUser.gender,
+          prevPseudo: prevUser.pseudo,
+          prevAge: prevUser.age,
+        });
+        
+        // Forcer un nouveau rendu en créant un nouvel objet avec toutes les propriétés
+        return { ...updatedUser };
+      });
+
+      // Mettre à jour dans Supabase (attendre la confirmation pour garantir la cohérence)
+      // Mais ne pas bloquer trop longtemps pour l'UI
       try {
-        await AsyncStorage.removeItem(`user_profile_${userId}`);
-      } catch (cacheError) {
-        // Ignorer les erreurs de cache silencieusement
+        await updateUserProfile(userData);
+        console.log('✅ Profil mis à jour dans Supabase');
+        
+        // Invalider le cache
+        AsyncStorage.removeItem(`user_profile_${userId}`).catch(() => {});
+        
+        // Recharger le profil depuis la DB après un court délai pour synchroniser
+        // Cela garantit que les données affichées correspondent à la DB
+        // Le délai permet à la DB de se mettre à jour
+        setTimeout(async () => {
+          if (isAuthenticated && userId) {
+            try {
+              console.log('🔄 Rechargement du profil depuis la DB après mise à jour');
+              await loadUserProfile(userId, false); // false = ne pas utiliser le cache
+              console.log('✅ Profil rechargé depuis la DB');
+            } catch (reloadError) {
+              if (!isNetworkError(reloadError)) {
+                console.error('Error reloading profile after update:', reloadError);
+              }
+              // En cas d'erreur, on garde la mise à jour optimiste
+            }
+          }
+        }, 1000); // Délai de 1 seconde pour laisser le temps à la DB
+      } catch (error: any) {
+        // En cas d'erreur, on garde la mise à jour optimiste mais on log l'erreur
+        if (!isNetworkError(error)) {
+          console.error('Error updating user profile:', error);
+        }
+        // Relancer l'erreur pour que l'UI puisse la gérer
+        throw error;
       }
       
-      // Recharger le profil pour s'assurer que toutes les données sont synchronisées
-      // On attend le rechargement pour garantir la cohérence des données
-      // Ne pas utiliser le cache pour avoir les données fraîches
-      if (isAuthenticated) {
-        try {
-          await loadUserProfile(userId, false); // false = ne pas utiliser le cache
-        } catch (error) {
-          // Si le rechargement échoue, faire une mise à jour optimiste
-          if (user) {
-            setUser({
-              ...user,
-              ...userData,
-            });
-          }
-          if (!isNetworkError(error)) {
-            console.error('Error reloading profile:', error);
-          }
-        }
-      } else {
-        // Si pas authentifié, faire une mise à jour optimiste
-        if (user) {
-          setUser({
-            ...user,
-            ...userData,
-          });
-        }
-      }
     } catch (error: any) {
       if (!isNetworkError(error)) {
         console.error('Error updating user:', error);

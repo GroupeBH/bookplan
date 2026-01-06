@@ -107,8 +107,10 @@ export default function NotificationsScreen() {
       case 'booking_request_rejected':
       case 'booking_reminder':
         if (data?.bookingId) {
-          // TODO: Créer une page booking-details si elle n'existe pas
-          // router.push(`/(screens)/booking-details?bookingId=${data.bookingId}`);
+          // Rediriger vers la page de détails de la demande de compagnie
+          router.push(`/(screens)/booking-details?bookingId=${data.bookingId}`);
+        } else {
+          // Si pas de bookingId, rediriger vers la page des demandes
           router.push('/(screens)/requests');
         }
         break;

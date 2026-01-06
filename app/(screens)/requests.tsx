@@ -22,7 +22,7 @@ export default function RequestsScreen() {
   const { bookings, updateBookingStatus, refreshBookings } = useBooking();
   const { pendingRequests, accessRequests, updateAccessRequest, refreshRequests } = useAccessRequest();
   const [activeTab, setActiveTab] = useState<RequestTab>('bookings');
-  const [statusFilter, setStatusFilter] = useState<'pending' | 'accepted' | 'all'>('all');
+  const [statusFilter, setStatusFilter] = useState<'pending' | 'accepted' | 'rejected' | 'all'>('all');
   const [isLoading, setIsLoading] = useState(false);
   const [enrichedAccessRequests, setEnrichedAccessRequests] = useState<any[]>([]);
   const isEnrichingRef = useRef(false);
@@ -69,12 +69,20 @@ export default function RequestsScreen() {
     bookings.filter(b => b.providerId === user?.id),
     [bookings, user?.id]
   );
-  const receivedBookings = useMemo(() => 
-    statusFilter === 'all' 
-      ? allReceivedBookings 
-      : allReceivedBookings.filter(b => b.status === statusFilter),
-    [allReceivedBookings, statusFilter]
-  );
+  const receivedBookings = useMemo(() => {
+    if (statusFilter === 'all') {
+      return allReceivedBookings;
+    } else if (statusFilter === 'accepted') {
+      // Inclure les demandes acceptées ET terminées (car terminées = étaient acceptées)
+      return allReceivedBookings.filter(b => b.status === 'accepted' || b.status === 'completed');
+    } else if (statusFilter === 'rejected') {
+      // Inclure les demandes refusées
+      return allReceivedBookings.filter(b => b.status === 'rejected');
+    } else {
+      // Filtre "pending" : seulement les demandes en attente
+      return allReceivedBookings.filter(b => b.status === statusFilter);
+    }
+  }, [allReceivedBookings, statusFilter]);
 
   // Filtrer les demandes d'accès reçues
   const allReceivedAccessRequests = useMemo(() => 
@@ -319,14 +327,17 @@ export default function RequestsScreen() {
       {/* Status Filter */}
       <View style={styles.statusFilters}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.statusFiltersContent}>
-          {(['pending', 'accepted', 'all'] as const).map((filter) => (
+          {(['all', 'pending', 'accepted', 'rejected'] as const).map((filter) => (
             <TouchableOpacity
               key={filter}
               style={[styles.statusFilterButton, statusFilter === filter && styles.statusFilterButtonActive]}
               onPress={() => setStatusFilter(filter)}
             >
               <Text style={[styles.statusFilterText, statusFilter === filter && styles.statusFilterTextActive]}>
-                {filter === 'pending' ? 'En attente' : filter === 'accepted' ? 'Acceptées' : 'Toutes'}
+                {filter === 'pending' ? 'En attente' : 
+                 filter === 'accepted' ? 'Acceptées' : 
+                 filter === 'rejected' ? 'Refusées' : 
+                 'Toutes'}
               </Text>
             </TouchableOpacity>
           ))}
@@ -342,7 +353,8 @@ export default function RequestsScreen() {
                 <Ionicons name="calendar-outline" size={48} color={colors.textTertiary} />
                 <Text style={styles.emptyStateText}>
                   {statusFilter === 'pending' ? 'Aucune demande de compagnie en attente' :
-                   statusFilter === 'accepted' ? 'Aucune demande de compagnie acceptée' :
+                   statusFilter === 'accepted' ? 'Aucune demande de compagnie acceptée ou terminée' :
+                   statusFilter === 'rejected' ? 'Aucune demande de compagnie refusée' :
                    'Aucune demande de compagnie reçue'}
                 </Text>
               </View>

@@ -659,30 +659,54 @@ export default function BookingScreen() {
   }
 
   const handleDateSelect = (date: Date) => {
-    setSelectedDate(date);
-    setDateInput(date.toISOString().split('T')[0]); // Format YYYY-MM-DD
+    // Normaliser la date à minuit dans le fuseau horaire local pour éviter les problèmes de conversion
+    const normalizedDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    setSelectedDate(normalizedDate);
+    
+    // Formater la date en YYYY-MM-DD en utilisant le fuseau horaire local
+    const year = normalizedDate.getFullYear();
+    const month = String(normalizedDate.getMonth() + 1).padStart(2, '0');
+    const day = String(normalizedDate.getDate()).padStart(2, '0');
+    const dateStr = `${year}-${month}-${day}`;
+    
+    setDateInput(dateStr);
+    console.log('📅 Date sélectionnée dans le calendrier:', dateStr, 'Date originale:', normalizedDate);
   };
 
   const handleDateConfirm = () => {
-    // Vérifier que la date est valide
-    if (!dateInput) {
+    // Utiliser selectedDate au lieu de dateInput pour garantir qu'on utilise la date sélectionnée
+    if (!selectedDate) {
       Alert.alert('Erreur', 'Veuillez sélectionner une date');
       return;
     }
 
-    const selectedDate = new Date(`${dateInput}T00:00:00`);
+    // Normaliser la date à minuit dans le fuseau horaire local
+    const normalizedDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
+    
+    // Formater la date en YYYY-MM-DD en utilisant le fuseau horaire local
+    const year = normalizedDate.getFullYear();
+    const month = String(normalizedDate.getMonth() + 1).padStart(2, '0');
+    const day = String(normalizedDate.getDate()).padStart(2, '0');
+    const dateStr = `${year}-${month}-${day}`;
+    
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    selectedDate.setHours(0, 0, 0, 0);
+    normalizedDate.setHours(0, 0, 0, 0);
 
-    if (selectedDate < today) {
+    if (normalizedDate < today) {
       Alert.alert('Erreur', 'Vous ne pouvez sélectionner que la date actuelle ou une date à venir');
       return;
     }
 
+    // Mettre à jour dateInput avec la date sélectionnée
+    setDateInput(dateStr);
+    console.log('✅ Date confirmée:', dateStr, 'Date normalisée:', normalizedDate);
+
     // Combiner avec l'heure actuelle pour setBookingDate (sera mis à jour avec l'heure saisie)
     const timeStr = timeInput || '00:00';
-    const combinedDateTime = new Date(`${dateInput}T${timeStr}:00`);
+    const combinedDateTime = new Date(normalizedDate);
+    const [hours, minutes] = timeStr.split(':').map(Number);
+    combinedDateTime.setHours(hours || 0, minutes || 0, 0, 0);
     setBookingDate(combinedDateTime);
     setShowDatePicker(false);
   };

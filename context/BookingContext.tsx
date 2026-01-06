@@ -475,8 +475,6 @@ export function BookingProvider({ children }: { children: ReactNode }) {
         .from('profiles')
         .select('id, pseudo, age, phone, photo, description, rating, review_count, is_subscribed, subscription_status, last_seen, gender, lat, lng, is_available, current_booking_id')
         .eq('is_available', true)
-        // Filtrer uniquement les utilisateurs en ligne (last_seen dans les 5 dernières minutes)
-        .gte('last_seen', fiveMinutesAgo)
         // S'assurer qu'ils ont une position (lat et lng)
         .not('lat', 'is', null)
         .not('lng', 'is', null);
@@ -496,7 +494,34 @@ export function BookingProvider({ children }: { children: ReactNode }) {
         return [];
       }
 
-      return data || [];
+      if (!data) return [];
+
+      // Filtrer côté client pour vérifier que last_seen est récent
+      // Cela évite les problèmes de comparaison avec le type TEXT
+      const now = new Date();
+      const filteredData = data.filter((profile: any) => {
+        if (!profile.last_seen) return false;
+        
+        // Si last_seen est "En ligne", considérer comme en ligne
+        if (profile.last_seen === 'En ligne' || profile.last_seen.toLowerCase() === 'en ligne') {
+          return true;
+        }
+        
+        // Sinon, essayer de parser comme timestamp ISO
+        try {
+          const lastSeenDate = new Date(profile.last_seen);
+          if (isNaN(lastSeenDate.getTime())) {
+            return false; // Date invalide
+          }
+          const diffMs = now.getTime() - lastSeenDate.getTime();
+          const diffMinutes = diffMs / (1000 * 60);
+          return diffMinutes < 5; // En ligne si vu il y a moins de 5 minutes
+        } catch {
+          return false; // Erreur de parsing
+        }
+      });
+
+      return filteredData;
     } catch (error: any) {
       // Ne pas logger les erreurs réseau répétées
       if (!isNetworkError(error)) {
@@ -517,7 +542,7 @@ export function BookingProvider({ children }: { children: ReactNode }) {
 
       let query = supabase
         .from('profiles')
-        .select('id, pseudo, age, phone, photo, description, rating, review_count, is_subscribed, subscription_status, last_seen, gender, lat, lng, is_available, current_booking_id, created_at')
+        .select('id, pseudo, age, phone, photo, description, is_subscribed, subscription_status, last_seen, gender, lat, lng, is_available, current_booking_id, created_at')
         .eq('is_available', true)
         // Trier par date de création (nouveaux en premier)
         .order('created_at', { ascending: false });
@@ -537,7 +562,52 @@ export function BookingProvider({ children }: { children: ReactNode }) {
         return [];
       }
 
-      return data || [];
+      if (!data || data.length === 0) {
+        return [];
+      }
+
+      // Calculer les avis pour chaque utilisateur depuis la table ratings
+      const usersWithRatings = await Promise.all(
+        data.map(async (profile: any) => {
+          try {
+            // Récupérer la moyenne et le nombre d'avis depuis la table ratings
+            const { data: ratingsData, error: ratingsError } = await supabase
+              .from('ratings')
+              .select('rating')
+              .eq('rated_id', profile.id);
+
+            if (ratingsError && !isNetworkError(ratingsError)) {
+              console.error(`Error fetching ratings for user ${profile.id}:`, ratingsError);
+            }
+
+            let rating = 0;
+            let reviewCount = 0;
+
+            if (ratingsData && ratingsData.length > 0) {
+              reviewCount = ratingsData.length;
+              const sum = ratingsData.reduce((acc: number, r: any) => acc + parseFloat(r.rating || 0), 0);
+              rating = reviewCount > 0 ? sum / reviewCount : 0;
+            }
+
+            return {
+              ...profile,
+              rating: rating,
+              review_count: reviewCount,
+            };
+          } catch (err: any) {
+            if (!isNetworkError(err)) {
+              console.error(`Error calculating ratings for user ${profile.id}:`, err);
+            }
+            return {
+              ...profile,
+              rating: 0,
+              review_count: 0,
+            };
+          }
+        })
+      );
+
+      return usersWithRatings;
     } catch (error: any) {
       // Ne pas logger les erreurs réseau répétées
       if (!isNetworkError(error)) {
@@ -672,12 +742,110 @@ export function BookingProvider({ children }: { children: ReactNode }) {
     });
   };
 
+  // Vérifier et envoyer les notifications de rappel 3h avant le rendez-vous
+  const checkBookingReminders = async () => {
+    if (!user) return;
+
+    const now = new Date();
+    const activeBookings = bookings.filter(b => 
+      b.status === 'accepted' && 
+      (b.requesterId === user.id || b.providerId === user.id)
+    );
+
+    for (const booking of activeBookings) {
+      const bookingDate = new Date(booking.bookingDate);
+      const reminderTime = new Date(bookingDate.getTime() - 3 * 60 * 60 * 1000); // 3 heures avant
+      
+      // Vérifier si on est dans la fenêtre de rappel (entre 3h avant et 2h59 avant)
+      const timeDiff = now.getTime() - reminderTime.getTime();
+      const oneMinute = 60 * 1000;
+      
+      if (timeDiff >= 0 && timeDiff < oneMinute && now < bookingDate) {
+        // Vérifier si une notification de rappel a déjà été envoyée pour ce booking
+        const reminderKeyRequester = `reminder_${booking.id}_requester`;
+        const reminderKeyProvider = `reminder_${booking.id}_provider`;
+        const reminderSentRequester = (global as any).bookingReminders?.[reminderKeyRequester];
+        const reminderSentProvider = (global as any).bookingReminders?.[reminderKeyProvider];
+        
+        try {
+          // Récupérer les informations des deux utilisateurs
+          const { data: requesterProfile } = await supabase
+            .from('profiles')
+            .select('pseudo')
+            .eq('id', booking.requesterId)
+            .single();
+          
+          const { data: providerProfile } = await supabase
+            .from('profiles')
+            .select('pseudo')
+            .eq('id', booking.providerId)
+            .single();
+
+          const requesterName = requesterProfile?.pseudo || 'l\'utilisateur';
+          const providerName = providerProfile?.pseudo || 'l\'utilisateur';
+          
+          const formattedDate = bookingDate.toLocaleDateString('fr-FR', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+          });
+          const formattedTime = bookingDate.toLocaleTimeString('fr-FR', {
+            hour: '2-digit',
+            minute: '2-digit',
+          });
+
+          // Envoyer la notification au requester s'il ne l'a pas encore reçue
+          if (!reminderSentRequester) {
+            await createNotification(
+              booking.requesterId,
+              'booking_reminder',
+              'Rappel de rendez-vous',
+              `Votre rendez-vous avec ${providerName} est prévu pour le ${formattedDate} à ${formattedTime}`,
+              { bookingId: booking.id, userId: booking.providerId }
+            );
+            
+            // Marquer comme envoyé
+            if (!(global as any).bookingReminders) {
+              (global as any).bookingReminders = {};
+            }
+            (global as any).bookingReminders[reminderKeyRequester] = true;
+            console.log('✅ Notification de rappel envoyée au requester pour le booking:', booking.id);
+          }
+
+          // Envoyer la notification au provider s'il ne l'a pas encore reçue
+          if (!reminderSentProvider) {
+            await createNotification(
+              booking.providerId,
+              'booking_reminder',
+              'Rappel de rendez-vous',
+              `Votre rendez-vous avec ${requesterName} est prévu pour le ${formattedDate} à ${formattedTime}`,
+              { bookingId: booking.id, userId: booking.requesterId }
+            );
+            
+            // Marquer comme envoyé
+            if (!(global as any).bookingReminders) {
+              (global as any).bookingReminders = {};
+            }
+            (global as any).bookingReminders[reminderKeyProvider] = true;
+            console.log('✅ Notification de rappel envoyée au provider pour le booking:', booking.id);
+          }
+        } catch (error: any) {
+          if (!isNetworkError(error)) {
+            console.error('Error sending booking reminder:', error);
+          }
+        }
+      }
+    }
+  };
+
   // Démarrer la vérification périodique des bookings
   useEffect(() => {
     if (user && bookings.length > 0) {
       // Vérifier toutes les minutes
       bookingCheckIntervalRef.current = setInterval(() => {
         checkBookingEndTime();
+        checkBookingReminders(); // Vérifier aussi les rappels
       }, 60000); // 1 minute
 
       return () => {

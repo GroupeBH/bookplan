@@ -82,7 +82,11 @@ export default function CreateOfferScreen() {
         // Mode création : initialiser avec la date/heure actuelle
         const now = new Date();
         setSelectedDate(now);
-        setDateInput(now.toISOString().split('T')[0]);
+        // Formater la date en YYYY-MM-DD en utilisant le fuseau horaire local
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        setDateInput(`${year}-${month}-${day}`);
         setTimeInput(now.toTimeString().slice(0, 5));
         return;
       }
@@ -108,7 +112,11 @@ export default function CreateOfferScreen() {
           // Pré-remplir la date et l'heure
           const offerDate = new Date(offer.offerDate);
           setSelectedDate(offerDate);
-          setDateInput(offerDate.toISOString().split('T')[0]);
+          // Formater la date en YYYY-MM-DD en utilisant le fuseau horaire local
+          const year = offerDate.getFullYear();
+          const month = String(offerDate.getMonth() + 1).padStart(2, '0');
+          const day = String(offerDate.getDate()).padStart(2, '0');
+          setDateInput(`${year}-${month}-${day}`);
           const hours = offerDate.getHours().toString().padStart(2, '0');
           const minutes = offerDate.getMinutes().toString().padStart(2, '0');
           setTimeInput(`${hours}:${minutes}`);
@@ -654,8 +662,49 @@ export default function CreateOfferScreen() {
   };
 
   const handleDateSelect = (date: Date) => {
-    setSelectedDate(date);
-    setDateInput(date.toISOString().split('T')[0]); // Format YYYY-MM-DD
+    // Normaliser la date à minuit dans le fuseau horaire local pour éviter les problèmes de conversion
+    const normalizedDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    setSelectedDate(normalizedDate);
+    
+    // Formater la date en YYYY-MM-DD en utilisant le fuseau horaire local
+    const year = normalizedDate.getFullYear();
+    const month = String(normalizedDate.getMonth() + 1).padStart(2, '0');
+    const day = String(normalizedDate.getDate()).padStart(2, '0');
+    const dateStr = `${year}-${month}-${day}`;
+    
+    setDateInput(dateStr);
+    console.log('📅 Date sélectionnée dans le calendrier (offre):', dateStr, 'Date originale:', normalizedDate);
+  };
+
+  const handleDateConfirm = () => {
+    // Utiliser selectedDate pour garantir qu'on utilise la date sélectionnée
+    if (!selectedDate) {
+      Alert.alert('Erreur', 'Veuillez sélectionner une date');
+      return;
+    }
+
+    // Normaliser la date à minuit dans le fuseau horaire local
+    const normalizedDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
+    
+    // Formater la date en YYYY-MM-DD en utilisant le fuseau horaire local
+    const year = normalizedDate.getFullYear();
+    const month = String(normalizedDate.getMonth() + 1).padStart(2, '0');
+    const day = String(normalizedDate.getDate()).padStart(2, '0');
+    const dateStr = `${year}-${month}-${day}`;
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    normalizedDate.setHours(0, 0, 0, 0);
+
+    if (normalizedDate < today) {
+      Alert.alert('Erreur', 'Vous ne pouvez sélectionner que la date actuelle ou une date à venir');
+      return;
+    }
+
+    // Mettre à jour dateInput avec la date sélectionnée
+    setDateInput(dateStr);
+    console.log('✅ Date confirmée (offre):', dateStr, 'Date normalisée:', normalizedDate);
+    setShowDatePicker(false);
   };
 
   const handleCreateOffer = async () => {
@@ -1118,7 +1167,7 @@ export default function CreateOfferScreen() {
               />
               <Button
                 title="Confirmer"
-                onPress={() => setShowDatePicker(false)}
+                onPress={handleDateConfirm}
                 style={styles.modalButton}
               />
             </View>

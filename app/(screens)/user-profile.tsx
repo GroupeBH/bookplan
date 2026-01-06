@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Keyboard, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
@@ -95,7 +95,7 @@ export default function UserProfileScreen() {
   };
   const { requestAccess, hasAccess, canViewFullProfile, accessRequests, refreshRequests } = useAccessRequest();
   const { createRating, getUserRatings, updateRating, getUserAverageRating } = useRating();
-  const { getActiveBookingWithUser, cancelBooking } = useBooking();
+  const { getActiveBookingWithUser, cancelBooking, updateBookingStatus } = useBooking();
   const { blockUser, unblockUser, isUserBlocked, blockedUsers } = useBlock();
   const { getUserAlbumPhotos } = useAlbum();
   const { likeUser, unlikeUser, isUserLiked } = useLike();
@@ -198,11 +198,13 @@ export default function UserProfileScreen() {
     const MIN_LOAD_INTERVAL = 2000; // 2 secondes minimum entre les chargements
     const sameUser = lastRatingsUserIdRef.current === selectedUser.id;
 
+    // Si les avis sont déjà chargés pour cet utilisateur et qu'on ne force pas, ne pas recharger
     if (!force && (
       isLoadingRatingsRef.current ||
-      (timeSinceLastLoad < MIN_LOAD_INTERVAL && sameUser)
+      (timeSinceLastLoad < MIN_LOAD_INTERVAL && sameUser) ||
+      (ratingsLoadedForUserRef.current === selectedUser.id && userRatings.length > 0)
     )) {
-      console.log('⏭️ Rechargement des avis ignoré (déjà en cours ou trop récent)');
+      console.log('⏭️ Rechargement des avis ignoré (déjà en cours, trop récent ou déjà chargé)');
       return;
     }
 
@@ -334,6 +336,9 @@ export default function UserProfileScreen() {
       
       console.log('⭐ Valeurs finales:', { average: finalAverage, count: finalCount, ratingsLength: ratings.length });
       setAverageRating({ average: finalAverage, count: finalCount });
+      
+      // Marquer comme chargé
+      ratingsLoadedForUserRef.current = selectedUser.id;
     } catch (error: any) {
       if (timeoutId) clearTimeout(timeoutId);
       // Ne logger comme erreur que si ce n'est pas un timeout réseau
@@ -349,7 +354,7 @@ export default function UserProfileScreen() {
       setIsLoadingRatings(false);
       isLoadingRatingsRef.current = false;
     }
-  }, [selectedUser?.id, currentUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedUser?.id, currentUser?.id, userRatings.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Calculer la distance entre l'utilisateur actuel et le profil sélectionné
   React.useEffect(() => {
@@ -473,9 +478,23 @@ export default function UserProfileScreen() {
     }
   }, [selectedUser?.id]);
 
-  // Charger les avis au montage
+  // État pour mémoriser si les avis ont déjà été chargés pour cet utilisateur
+  const ratingsLoadedForUserRef = React.useRef<string | null>(null);
+
+  // Réinitialiser le ref quand l'utilisateur change
   React.useEffect(() => {
-    if (selectedUser?.id) {
+    if (selectedUser?.id && ratingsLoadedForUserRef.current !== selectedUser.id) {
+      // Réinitialiser les avis et le ref quand on change d'utilisateur
+      setUserRatings([]);
+      setAverageRating({ average: 0, count: 0 });
+      ratingsLoadedForUserRef.current = null;
+    }
+  }, [selectedUser?.id]);
+
+  // Charger les avis au montage (une seule fois par utilisateur)
+  React.useEffect(() => {
+    if (selectedUser?.id && ratingsLoadedForUserRef.current !== selectedUser.id) {
+      ratingsLoadedForUserRef.current = selectedUser.id;
       loadUserRatings(true); // Forcer le chargement initial
     }
   }, [selectedUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -539,6 +558,7 @@ export default function UserProfileScreen() {
   }, [params.userId, selectedUser, setSelectedUser, router, loadUserAlbumPhotos]);
 
   // Recharger quand on revient sur la page (après avoir créé une demande par exemple)
+  // MAIS ne pas recharger les avis automatiquement pour éviter les boucles
   useFocusEffect(
     React.useCallback(() => {
       const now = Date.now();
@@ -551,15 +571,12 @@ export default function UserProfileScreen() {
         // Utiliser un petit délai pour éviter les appels multiples et laisser le temps à la DB de se mettre à jour
         const timer = setTimeout(() => {
           if (selectedUser?.id && currentUser?.id) {
-            console.log('🔄 Rechargement du profil - refreshRequests, loadActiveBooking, loadUserRatings, reloadUserProfile et loadUserAlbumPhotos');
+            console.log('🔄 Rechargement du profil - refreshRequests, loadActiveBooking, reloadUserProfile et loadUserAlbumPhotos');
             refreshRequests(); // Rafraîchir les demandes d'accès
             // Recharger la demande active quand on revient sur la page
             loadActiveBooking(true); // Force le rechargement quand on revient
-            // Recharger les avis pour mettre à jour le nombre d'avis (sans forcer pour éviter les boucles)
-            // Ne recharger que si on n'est pas déjà en train de charger
-            if (!isLoadingRatingsRef.current) {
-              loadUserRatings(false);
-            }
+            // NE PAS recharger les avis automatiquement ici pour éviter les boucles
+            // Les avis seront rechargés uniquement après une action (ajout/modification d'avis)
             // Recharger le profil depuis la DB pour avoir les dernières données (photo, etc.)
             reloadUserProfile(selectedUser.id);
             // Recharger les photos d'album pour avoir les dernières photos
@@ -571,9 +588,9 @@ export default function UserProfileScreen() {
           clearTimeout(timer);
         };
       } else {
-        console.log('⏭️ Focus trop récent, pas de rafraîchissement des avis');
+        console.log('⏭️ Focus trop récent, pas de rafraîchissement');
       }
-    }, [selectedUser?.id, currentUser?.id, refreshRequests, loadActiveBooking, loadUserRatings, reloadUserProfile, loadUserAlbumPhotos]) // eslint-disable-line react-hooks/exhaustive-deps
+    }, [selectedUser?.id, currentUser?.id, refreshRequests, loadActiveBooking, reloadUserProfile, loadUserAlbumPhotos]) // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   // Vérifier si on a déjà demandé l'accès (doit être avant le return conditionnel)
@@ -749,6 +766,45 @@ export default function UserProfileScreen() {
     );
   };
 
+  const handleAcceptBooking = async () => {
+    if (!activeBooking || !currentUser) return;
+
+    Alert.alert(
+      'Accepter la demande',
+      'Êtes-vous sûr de vouloir accepter cette demande de compagnie ?',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Accepter',
+          onPress: async () => {
+            setIsLoading(true);
+            try {
+              const { error } = await updateBookingStatus(activeBooking.id, 'accepted');
+              if (error) {
+                Alert.alert('Erreur', error.message || 'Impossible d\'accepter la demande');
+              } else {
+                // Mettre à jour immédiatement le state local
+                setActiveBooking({ ...activeBooking, status: 'accepted' });
+                Alert.alert('Succès', 'La demande a été acceptée');
+                // Recharger la demande active pour s'assurer que tout est à jour
+                await loadActiveBooking(true);
+              }
+            } catch (error: any) {
+              Alert.alert('Erreur', 'Une erreur est survenue');
+              console.error('Accept booking error:', error);
+            } finally {
+              setIsLoading(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Déterminer si l'utilisateur actuel est l'expéditeur (requester) ou le récepteur (provider)
+  const isRequester = activeBooking && currentUser?.id === activeBooking.requesterId;
+  const isProvider = activeBooking && currentUser?.id === activeBooking.providerId;
+
   const handleSubmitRating = async () => {
     if (rating === 0) {
       Alert.alert('Erreur', 'Veuillez sélectionner une note');
@@ -789,8 +845,14 @@ export default function UserProfileScreen() {
       console.log('🔄 Rechargement des avis après ajout/modification...');
       // Mettre à jour lastFocusTimeRef pour éviter que useFocusEffect ne recharge immédiatement après
       lastFocusTimeRef.current = Date.now();
+      // Réinitialiser le ref pour permettre le rechargement
+      ratingsLoadedForUserRef.current = null;
       // Recharger les avis pour mettre à jour l'affichage
       await loadUserRatings(true); // Forcer le rechargement après modification
+      // Mettre à jour le ref après le chargement
+      if (selectedUser?.id) {
+        ratingsLoadedForUserRef.current = selectedUser.id;
+      }
       
       console.log('✅ Avis rechargés après ajout/modification');
       
@@ -1056,16 +1118,27 @@ export default function UserProfileScreen() {
             </Animated.View>
           )}
 
-          {/* Active Booking Section */}
+          {/* Active Booking Section - Pending */}
           {activeBooking && activeBooking.status === 'pending' && (
             <Animated.View entering={FadeIn} style={styles.bookingCard}>
               <View style={styles.bookingHeader}>
                 <Ionicons name="time-outline" size={20} color={colors.yellow400} />
                 <View style={styles.bookingText}>
-                  <Text style={styles.bookingTitle}>Votre demande pour ce profil est en attente</Text>
-                  <Text style={styles.bookingSubtitle}>
-                    En attente de la réponse de {selectedUser.pseudo || 'l\'utilisateur'}
-                  </Text>
+                  {isRequester ? (
+                    <>
+                      <Text style={styles.bookingTitle}>Votre demande pour ce profil est en attente</Text>
+                      <Text style={styles.bookingSubtitle}>
+                        En attente de la réponse de {selectedUser.pseudo || 'l\'utilisateur'}
+                      </Text>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={styles.bookingTitle}>Ce profil vous a envoyé une demande de compagnie</Text>
+                      <Text style={styles.bookingSubtitle}>
+                        Cette demande est en attente de votre réponse
+                      </Text>
+                    </>
+                  )}
                 </View>
               </View>
               <View style={styles.bookingDetails}>
@@ -1107,28 +1180,80 @@ export default function UserProfileScreen() {
                   icon={<Ionicons name="information-circle-outline" size={20} color={colors.text} />}
                   style={[styles.bookingActionButton, { flex: 1 }]}
                 />
-                <Button
-                  title="Annuler la demande"
-                  onPress={handleCancelBooking}
-                  variant="outline"
-                  icon={<Ionicons name="close-circle-outline" size={20} color={colors.red500} />}
-                  style={[styles.bookingActionButton, { flex: 1 }]}
-                  loading={isLoading}
-                  disabled={isLoading}
-                />
+                {isRequester ? (
+                  <Button
+                    title="Annuler la demande"
+                    onPress={handleCancelBooking}
+                    variant="outline"
+                    icon={<Ionicons name="close-circle-outline" size={20} color={colors.red500} />}
+                    style={[styles.bookingActionButton, { flex: 1 }]}
+                    loading={isLoading}
+                    disabled={isLoading}
+                  />
+                ) : (
+                  <>
+                    <Button
+                      title="Accepter"
+                      onPress={handleAcceptBooking}
+                      icon={<Ionicons name="checkmark-circle-outline" size={20} color="#ffffff" />}
+                      style={[styles.bookingActionButton, { flex: 1 }]}
+                      loading={isLoading}
+                      disabled={isLoading}
+                    />
+                    <Button
+                      title="Annuler"
+                      onPress={handleCancelBooking}
+                      variant="outline"
+                      icon={<Ionicons name="close-circle-outline" size={20} color={colors.red500} />}
+                      style={[styles.bookingActionButton, { flex: 1 }]}
+                      loading={isLoading}
+                      disabled={isLoading}
+                    />
+                  </>
+                )}
               </View>
             </Animated.View>
           )}
 
+          {/* Active Booking Section - Accepted */}
           {activeBooking && activeBooking.status === 'accepted' && (
             <Animated.View entering={FadeIn} style={styles.bookingCardAccepted}>
               <View style={styles.bookingHeader}>
                 <Ionicons name="checkmark-circle" size={20} color={colors.green500} />
                 <View style={styles.bookingText}>
-                  <Text style={styles.bookingTitle}>Votre demande a été acceptée</Text>
-                  <Text style={styles.bookingSubtitle}>
-                    Le rendez-vous est prévu pour :
-                  </Text>
+                  {isRequester ? (
+                    <>
+                      <Text style={styles.bookingTitle}>
+                        Votre demande a été acceptée par {selectedUser.pseudo || 'l\'utilisateur'}
+                      </Text>
+                      <Text style={styles.bookingSubtitle}>
+                        Le rendez-vous est pris pour le {new Date(activeBooking.bookingDate).toLocaleDateString('fr-FR', {
+                          weekday: 'long',
+                          year: 'numeric',
+                          month: 'long',
+                          day: 'numeric',
+                        })} à {new Date(activeBooking.bookingDate).toLocaleTimeString('fr-FR', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </Text>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={styles.bookingTitle}>Vous avez accepté sa demande</Text>
+                      <Text style={styles.bookingSubtitle}>
+                        Votre rendez-vous est pris pour le {new Date(activeBooking.bookingDate).toLocaleDateString('fr-FR', {
+                          weekday: 'long',
+                          year: 'numeric',
+                          month: 'long',
+                          day: 'numeric',
+                        })} à {new Date(activeBooking.bookingDate).toLocaleTimeString('fr-FR', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </Text>
+                    </>
+                  )}
                 </View>
               </View>
               <View style={styles.bookingDetails}>
@@ -1311,19 +1436,10 @@ export default function UserProfileScreen() {
               <View style={styles.emptyRatings}>
                 <Ionicons name="star-outline" size={32} color={colors.textTertiary} />
                 <Text style={styles.emptyRatingsText}>Aucun avis pour le moment</Text>
-                {__DEV__ && (
-                  <Text style={[styles.emptyRatingsText, { fontSize: 10, marginTop: 4 }]}>
-                    Debug: isLoadingRatings={isLoadingRatings.toString()}, userRatings.length={userRatings.length}
-                  </Text>
-                )}
               </View>
             ) : (
               <View style={styles.ratingsList}>
-                {userRatings.map((ratingItem) => {
-                  if (__DEV__) {
-                    console.log('🎨 Rendu de l\'avis:', { id: ratingItem.id, rater: ratingItem.rater?.pseudo, rating: ratingItem.rating });
-                  }
-                  return (
+                {userRatings.map((ratingItem) => (
                     <Animated.View key={ratingItem.id} entering={FadeIn} style={styles.ratingCard}>
                     <View style={styles.ratingCardHeader}>
                       <View style={styles.ratingCardUser}>
@@ -1344,6 +1460,12 @@ export default function UserProfileScreen() {
                               year: 'numeric',
                             })}
                           </Text>
+                          {ratingItem.bookingId && (
+                            <View style={styles.bookingBadge}>
+                              <Ionicons name="heart" size={12} color={colors.pink500} />
+                              <Text style={styles.bookingBadgeText}>Avis lié à une demande de compagnie</Text>
+                            </View>
+                          )}
                         </View>
                       </View>
                       <View style={styles.ratingCardStars}>
@@ -1361,8 +1483,7 @@ export default function UserProfileScreen() {
                       <Text style={styles.ratingCardComment}>{ratingItem.comment}</Text>
                     )}
                   </Animated.View>
-                  );
-                })}
+                ))}
               </View>
             )}
           </View>
@@ -1415,52 +1536,68 @@ export default function UserProfileScreen() {
         animationType="fade"
         onRequestClose={() => setShowRatingDialog(false)}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>
-              {existingRating ? 'Modifier votre avis' : `Noter ${selectedUser.pseudo || 'l\'utilisateur'}`}
-            </Text>
-            <Text style={styles.modalDescription}>
-              {existingRating 
-                ? 'Modifiez votre note et votre commentaire'
-                : 'Partagez votre expérience avec ce profil'}
-            </Text>
-            <View style={styles.starsContainer}>
-              {Array.from({ length: 5 }).map((_, i) => (
-                <TouchableOpacity key={i} onPress={() => setRating(i + 1)}>
-                  <Ionicons
-                    name={i < rating ? 'star' : 'star-outline'}
-                    size={40}
-                    color={i < rating ? colors.yellow500 : colors.textTertiary}
-                  />
-                </TouchableOpacity>
-              ))}
-            </View>
-            <Input
-              placeholder="Commentaire (optionnel)"
-              value={comment}
-              onChangeText={setComment}
-              multiline
-              numberOfLines={4}
-              style={styles.commentInput}
-            />
-            <View style={styles.modalActions}>
-              <Button
-                title="Annuler"
-                onPress={() => setShowRatingDialog(false)}
-                variant="outline"
-                style={styles.modalButton}
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+        >
+          <ScrollView
+            contentContainerStyle={styles.modalScrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>
+                {existingRating ? 'Modifier votre avis' : `Noter ${selectedUser.pseudo || 'l\'utilisateur'}`}
+              </Text>
+              <Text style={styles.modalDescription}>
+                {existingRating 
+                  ? 'Modifiez votre note et votre commentaire'
+                  : 'Partagez votre expérience avec ce profil'}
+              </Text>
+              <View style={styles.starsContainer}>
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <TouchableOpacity key={i} onPress={() => setRating(i + 1)}>
+                    <Ionicons
+                      name={i < rating ? 'star' : 'star-outline'}
+                      size={40}
+                      color={i < rating ? colors.yellow500 : colors.textTertiary}
+                    />
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <Input
+                placeholder="Commentaire (optionnel)"
+                value={comment}
+                onChangeText={setComment}
+                multiline
+                numberOfLines={4}
+                style={styles.commentInput}
               />
-                  <Button
-                    title={existingRating ? 'Modifier' : 'Envoyer'}
-                    onPress={handleSubmitRating}
-                    disabled={rating === 0 || isLoading}
-                    loading={isLoading}
-                    style={styles.modalButton}
-                  />
+              <View style={styles.modalActions}>
+                <Button
+                  title="Annuler"
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    setShowRatingDialog(false);
+                  }}
+                  variant="outline"
+                  style={styles.modalButton}
+                />
+                <Button
+                  title={existingRating ? 'Modifier' : 'Envoyer'}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    handleSubmitRating();
+                  }}
+                  disabled={rating === 0 || isLoading}
+                  loading={isLoading}
+                  style={styles.modalButton}
+                />
+              </View>
             </View>
-          </View>
-        </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -1771,6 +1908,22 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: colors.textTertiary,
   },
+  bookingBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: `${colors.pink500}20`,
+    borderRadius: 8,
+    alignSelf: 'flex-start',
+  },
+  bookingBadgeText: {
+    fontSize: 11,
+    color: colors.pink500,
+    fontWeight: '500',
+  },
   ratingCardStars: {
     flexDirection: 'row',
     gap: 2,
@@ -1788,7 +1941,13 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  modalScrollContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
     padding: 24,
+    paddingBottom: 40, // Espace supplémentaire pour le clavier
   },
   modalContent: {
     backgroundColor: colors.backgroundSecondary,

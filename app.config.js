@@ -16,6 +16,8 @@ export default {
         ITSAppUsesNonExemptEncryption: false,
         NSLocationAlwaysAndWhenInUseUsageDescription: "Cette application utilise votre localisation même en arrière-plan pour améliorer l'expérience sur la carte.",
         NSUserTrackingUsageDescription: "Cette application utilise un identifiant pour offrir une meilleure expérience.",
+        NSCameraUsageDescription: "Cette application a besoin d'accéder à votre caméra pour prendre des photos de profil et des photos d'album.",
+        NSPhotoLibraryUsageDescription: "Cette application a besoin d'accéder à votre bibliothèque de photos pour sélectionner des images pour votre profil et vos albums.",
         UIBackgroundModes: ["location"]
       },
       bundleIdentifier: "com.biso.kutana"
@@ -88,6 +90,13 @@ export default {
         {
           icon: "./assets/images/kutana.png",
           color: "#ffffff"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          photosPermission: "Cette application a besoin d'accéder à votre bibliothèque de photos pour sélectionner des images pour votre profil et vos albums.",
+          cameraPermission: "Cette application a besoin d'accéder à votre caméra pour prendre des photos de profil et des photos d'album."
         }
       ]
     ],

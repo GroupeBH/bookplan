@@ -277,102 +277,182 @@ export default function Dashboard() {
     }, [pathname])
   );
 
-  // Charger les utilisateurs disponibles - optimisé pour charger immédiatement
+  // État pour savoir si le dashboard est actif (focus)
+  const isDashboardFocusedRef = useRef(false);
   const initialLoadDone = useRef(false);
-  
-  useEffect(() => {
-    if (isAuthenticated && user && !initialLoadDone.current) {
-      initialLoadDone.current = true;
-      // Utiliser la position du profil utilisateur en premier (si disponible) pour un chargement instantané
-      if (user.lat && user.lng) {
-        const profileLocation = { lat: user.lat, lng: user.lng };
-        setUserLocation(profileLocation);
-        // Charger les utilisateurs immédiatement avec la position du profil
-        loadAvailableUsers(profileLocation);
-      } else {
-        // Sinon, charger sans position (sera mis à jour quand la position arrive)
-        loadAvailableUsers();
-      }
-    }
-  }, [isAuthenticated, user?.id]); // Seulement au montage ou si l'utilisateur change
-
-  // Recharger les utilisateurs quand la position GPS est mise à jour (seulement si différente)
   const lastLocationRef = useRef<{ lat: number; lng: number } | null>(null);
-  useEffect(() => {
-    if (userLocation && isAuthenticated && user) {
-      // Vérifier si la position a vraiment changé
-      const hasChanged = !lastLocationRef.current || 
-        Math.abs(lastLocationRef.current.lat - userLocation.lat) > 0.0001 ||
-        Math.abs(lastLocationRef.current.lng - userLocation.lng) > 0.0001;
-      
-      if (hasChanged) {
-        lastLocationRef.current = userLocation;
-        loadAvailableUsers(userLocation);
-      }
-    }
-  }, [userLocation?.lat, userLocation?.lng]); // Seulement si la position change vraiment
-
-  // Demander la permission de géolocalisation et suivre la position (non bloquant)
   const locationPermissionRequestedRef = useRef(false);
-  useEffect(() => {
-    // Ne démarrer le suivi que si authentifié
-    if (!isAuthenticated || !user) {
-      // Arrêter le suivi si on n'est plus authentifié
-      if (locationSubscriptionRef.current) {
-        locationSubscriptionRef.current.remove();
-        locationSubscriptionRef.current = null;
+  const lastLocationUpdateTimeRef = useRef<number>(0); // Pour limiter les mises à jour de position dans Supabase
+  const isLoadingUsersRef = useRef(false); // Pour éviter les appels multiples simultanés
+  const lastLoadUsersTimeRef = useRef<number>(0); // Pour limiter les chargements d'utilisateurs
+  const pendingSubscriptionRef = useRef<Location.LocationSubscription | null>(null); // Pour tracker les subscriptions en cours de création
+  const activeTimersRef = useRef<Set<NodeJS.Timeout>>(new Set()); // Pour tracker tous les timers actifs
+
+  // Démarrer/arrêter le tracking uniquement quand le dashboard est focus
+  useFocusEffect(
+    useCallback(() => {
+      // Marquer que le dashboard est actif
+      isDashboardFocusedRef.current = true;
+
+      // Ne démarrer le suivi que si authentifié
+      if (!isAuthenticated || !user) {
+        return;
       }
-      locationPermissionRequestedRef.current = false;
+
+      // NE PAS démarrer le LocationService sur le dashboard
+      // Le dashboard utilise son propre système de tracking local qui est mieux optimisé
+      // Cela évite les conflits et les icônes qui clignotent
+
+      // Charger les utilisateurs disponibles au premier focus
+      if (!initialLoadDone.current) {
+        initialLoadDone.current = true;
+        // Utiliser la position du profil utilisateur en premier (si disponible) pour un chargement instantané
+        if (user.lat && user.lng) {
+          const profileLocation = { lat: user.lat, lng: user.lng };
+          setUserLocation(profileLocation);
+          // Charger les utilisateurs immédiatement avec la position du profil
+          loadAvailableUsers(profileLocation);
+        } else {
+          // Sinon, charger sans position (sera mis à jour quand la position arrive)
+          loadAvailableUsers();
+        }
+      }
+
+      // Demander la permission de localisation de manière non bloquante (une seule fois)
+      if (!locationPermissionRequestedRef.current) {
+        locationPermissionRequestedRef.current = true;
+        // Démarrer la demande de permission en arrière-plan (non bloquant)
+        requestLocationPermission().catch(() => {
+          // Ignorer les erreurs, ne pas bloquer l'authentification
+        });
+      }
+
+      // Démarrer le suivi de position (même si la permission n'est pas encore accordée)
+      startLocationTracking().then((subscription) => {
+        // Vérifier qu'on est toujours sur le dashboard et authentifié avant d'assigner la subscription
+        if (isDashboardFocusedRef.current && isAuthenticated && user) {
+          locationSubscriptionRef.current = subscription;
+          pendingSubscriptionRef.current = null; // Nettoyer la ref
+        } else if (subscription) {
+          // Si on n'est plus sur le dashboard, arrêter immédiatement
+          console.log('🛑 Dashboard non actif, arrêt immédiat du tracking GPS');
+          subscription.remove();
+          locationSubscriptionRef.current = null;
+          pendingSubscriptionRef.current = null;
+        }
+      }).catch(() => {
+        // Ignorer les erreurs de localisation, ne pas bloquer l'authentification
+        pendingSubscriptionRef.current = null;
+      });
+
+      // Cleanup quand on quitte le dashboard
+      return () => {
+        console.log('🛑 Cleanup dashboard - Arrêt de toutes les opérations');
+        // Marquer que le dashboard n'est plus actif IMMÉDIATEMENT
+        isDashboardFocusedRef.current = false;
+        
+        // Arrêter tous les timers actifs
+        activeTimersRef.current.forEach((timer) => {
+          clearTimeout(timer);
+        });
+        activeTimersRef.current.clear();
+        
+        // Arrêter le chargement des utilisateurs en cours
+        isLoadingUsersRef.current = false;
+        
+        // Arrêter le suivi de position local IMMÉDIATEMENT
+        // Arrêter d'abord la subscription en cours de création si elle existe
+        if (pendingSubscriptionRef.current) {
+          console.log('🛑 Arrêt de la subscription GPS en cours de création');
+          pendingSubscriptionRef.current.remove();
+          pendingSubscriptionRef.current = null;
+        }
+        
+        // Arrêter aussi la subscription stockée dans la ref
+        if (locationSubscriptionRef.current) {
+          console.log('🛑 Arrêt de la subscription GPS stockée');
+          locationSubscriptionRef.current.remove();
+          locationSubscriptionRef.current = null;
+        }
+
+        // Le LocationService n'est pas utilisé sur le dashboard, donc pas besoin de l'arrêter
+      };
+    }, [isAuthenticated, user, loadAvailableUsers])
+  );
+
+  // Recharger les utilisateurs quand la position GPS est mise à jour (seulement si différente et si on est sur le dashboard)
+  // Utiliser un debounce pour éviter les rechargements trop fréquents
+  useEffect(() => {
+    // Ne recharger que si le dashboard est actif
+    if (!isDashboardFocusedRef.current) {
       return;
     }
 
-    // Demander la permission de localisation de manière non bloquante (une seule fois)
-    if (!locationPermissionRequestedRef.current) {
-      locationPermissionRequestedRef.current = true;
-      // Démarrer la demande de permission en arrière-plan (non bloquant)
-      requestLocationPermission().catch(() => {
-        // Ignorer les erreurs, ne pas bloquer l'authentification
-      });
+    if (!userLocation || !isAuthenticated || !user) {
+      return;
     }
 
-    // Démarrer le suivi de position (même si la permission n'est pas encore accordée)
-    startLocationTracking().then((subscription) => {
-      // Vérifier qu'on est toujours authentifié avant d'assigner la subscription
-      if (isAuthenticated && user) {
-        locationSubscriptionRef.current = subscription;
-      } else if (subscription) {
-        // Si on n'est plus authentifié, arrêter immédiatement
-        subscription.remove();
-      }
-    }).catch(() => {
-      // Ignorer les erreurs de localisation, ne pas bloquer l'authentification
-    });
+    // Vérifier si la position a vraiment changé de manière significative (au moins 100 mètres)
+    // 0.001 degré ≈ 111 mètres à l'équateur, donc 0.001 est un bon seuil
+    const hasChanged = !lastLocationRef.current || 
+      Math.abs(lastLocationRef.current.lat - userLocation.lat) > 0.001 ||
+      Math.abs(lastLocationRef.current.lng - userLocation.lng) > 0.001;
+    
+    if (hasChanged) {
+      // Utiliser un debounce pour éviter les rechargements trop fréquents
+      const debounceTimer = setTimeout(() => {
+        // Vérifier à nouveau que le dashboard est toujours actif avant de charger
+        if (!isDashboardFocusedRef.current) {
+          return;
+        }
+        lastLocationRef.current = userLocation;
+        loadAvailableUsers(userLocation);
+      }, 2000); // Attendre 2 secondes avant de recharger pour éviter les appels trop fréquents
 
-    return () => {
-      // Nettoyer le suivi de position
-      if (locationSubscriptionRef.current) {
-        locationSubscriptionRef.current.remove();
-        locationSubscriptionRef.current = null;
-      }
-    };
-  }, [isAuthenticated, user]);
+      // Ajouter le timer à la liste des timers actifs
+      activeTimersRef.current.add(debounceTimer);
+
+      return () => {
+        clearTimeout(debounceTimer);
+        activeTimersRef.current.delete(debounceTimer);
+      };
+    }
+  }, [userLocation?.lat, userLocation?.lng, isAuthenticated, user, loadAvailableUsers]);
 
   // Réessayer la demande de localisation quand l'app revient au premier plan (après retour des paramètres)
+  // Seulement si le dashboard est actif
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextAppState) => {
+      // Ne faire quelque chose que si le dashboard est actif
+      if (!isDashboardFocusedRef.current) {
+        return;
+      }
+      
       if (nextAppState === 'active' && isAuthenticated && user && locationPermissionRequestedRef.current) {
         // Réessayer de demander la permission si l'utilisateur revient des paramètres
         // Mais seulement après un court délai pour éviter les boucles
-        setTimeout(() => {
+        const timer = setTimeout(() => {
+          // Vérifier à nouveau que le dashboard est toujours actif
+          if (!isDashboardFocusedRef.current) {
+            return;
+          }
           if (isAuthenticated && user) {
             requestLocationPermission().catch(() => {});
           }
         }, 500);
+        
+        // Ajouter le timer à la liste des timers actifs
+        activeTimersRef.current.add(timer);
       }
     });
 
     return () => {
       subscription.remove();
+      // Nettoyer tous les timers liés à AppState
+      activeTimersRef.current.forEach((timer) => {
+        clearTimeout(timer);
+      });
+      activeTimersRef.current.clear();
     };
   }, [isAuthenticated, user]);
 
@@ -432,10 +512,9 @@ export default function Dashboard() {
         if (cachedLocationStr) {
           const cachedLocation = JSON.parse(cachedLocationStr);
           // Utiliser la position en cache immédiatement pour un chargement instantané
+          // Ne pas charger les utilisateurs ici, cela sera géré par useFocusEffect
           if (cachedLocation.lat && cachedLocation.lng) {
             setUserLocation(cachedLocation);
-            // Charger les utilisateurs avec la position en cache
-            loadAvailableUsers(cachedLocation);
           }
         }
       } catch (e) {
@@ -496,28 +575,50 @@ export default function Dashboard() {
         });
       }
 
-      // Suivre les changements de position
+      // Suivre les changements de position avec des intervalles plus longs pour éviter les mises à jour trop fréquentes
       const subscription = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.Balanced,
-          timeInterval: 10000, // Mettre à jour toutes les 10 secondes (réduit la charge)
-          distanceInterval: 50, // Ou tous les 50 mètres (réduit les mises à jour)
+          timeInterval: 30000, // Mettre à jour toutes les 30 secondes (réduit la charge et les icônes qui clignotent)
+          distanceInterval: 100, // Ou tous les 100 mètres (réduit les mises à jour)
         },
         (location) => {
+          // Ne mettre à jour la position que si le dashboard est actif
+          // Vérifier IMMÉDIATEMENT au début du callback
+          if (!isDashboardFocusedRef.current) {
+            // Ignorer complètement les mises à jour si on n'est plus sur le dashboard
+            // Le cleanup dans useFocusEffect s'occupera d'arrêter la subscription
+            return;
+          }
+
           const updatedLocation = {
             lat: location.coords.latitude,
             lng: location.coords.longitude,
           };
 
-          setUserLocation(updatedLocation);
-          // Sauvegarder dans le cache
-          AsyncStorage.setItem('user_location', JSON.stringify(updatedLocation)).catch(() => {});
+          // Vérifier si la position a vraiment changé de manière significative avant de mettre à jour
+          // Cela évite les mises à jour inutiles qui causent les icônes qui clignotent
+          const hasChanged = !userLocation || 
+            Math.abs(userLocation.lat - updatedLocation.lat) > 0.001 ||
+            Math.abs(userLocation.lng - updatedLocation.lng) > 0.001;
 
-          // Mettre à jour la position dans le profil Supabase en arrière-plan (avec last_seen)
-          if (user && isAuthenticated) {
-            updateLocation(updatedLocation.lat, updatedLocation.lng).catch(() => {
-              // Ignorer les erreurs silencieusement
-            });
+          if (hasChanged) {
+            setUserLocation(updatedLocation);
+            // Sauvegarder dans le cache
+            AsyncStorage.setItem('user_location', JSON.stringify(updatedLocation)).catch(() => {});
+
+            // Mettre à jour la position dans le profil Supabase en arrière-plan (avec last_seen)
+            // Utiliser un debounce pour éviter les mises à jour trop fréquentes
+            if (user && isAuthenticated) {
+              // Ne mettre à jour que toutes les 30 secondes maximum
+              const now = Date.now();
+              if (!lastLocationUpdateTimeRef.current || now - lastLocationUpdateTimeRef.current > 30000) {
+                lastLocationUpdateTimeRef.current = now;
+                updateLocation(updatedLocation.lat, updatedLocation.lng).catch(() => {
+                  // Ignorer les erreurs silencieusement
+                });
+              }
+            }
           }
         }
       );
@@ -545,12 +646,49 @@ export default function Dashboard() {
   };
 
   const loadAvailableUsers = useCallback(async (locationOverride?: { lat: number; lng: number }) => {
+    // NE PAS charger si on n'est pas sur le dashboard
+    if (!isDashboardFocusedRef.current) {
+      console.log('⏭️ Dashboard non actif, skip chargement des utilisateurs');
+      isLoadingUsersRef.current = false; // Réinitialiser le flag
+      return;
+    }
+
+    // Éviter les appels multiples simultanés
+    if (isLoadingUsersRef.current) {
+      console.log('⏭️ Chargement des utilisateurs déjà en cours, skip');
+      return;
+    }
+
+    // Limiter les chargements à maximum toutes les 10 secondes
+    const now = Date.now();
+    if (lastLoadUsersTimeRef.current && now - lastLoadUsersTimeRef.current < 10000) {
+      console.log('⏭️ Chargement des utilisateurs trop récent, skip');
+      return;
+    }
+
     try {
+      isLoadingUsersRef.current = true;
+      lastLoadUsersTimeRef.current = now;
+
+      // Vérifier à nouveau que le dashboard est toujours actif avant de continuer
+      if (!isDashboardFocusedRef.current) {
+        console.log('⏭️ Dashboard non actif pendant le chargement, arrêt');
+        isLoadingUsersRef.current = false;
+        return;
+      }
+
       // Utiliser la position fournie ou la position actuelle
       const currentLocation = locationOverride || userLocation;
       
       // Charger les utilisateurs en parallèle avec d'autres opérations
       const users = await getAvailableUsers();
+      
+      // Vérifier à nouveau que le dashboard est toujours actif après le chargement
+      if (!isDashboardFocusedRef.current) {
+        console.log('⏭️ Dashboard non actif après le chargement, arrêt');
+        isLoadingUsersRef.current = false;
+        return;
+      }
       
       // Log pour déboguer la récupération des photos
       console.log('📸 DEBUG: Utilisateurs récupérés:', users.length);
@@ -606,6 +744,13 @@ export default function Dashboard() {
           });
         }
         
+        // Convertir les coordonnées de manière robuste
+        const parseCoord = (coord: any): number | undefined => {
+          if (coord == null || coord === '') return undefined;
+          const parsed = typeof coord === 'string' ? parseFloat(coord) : coord;
+          return !isNaN(parsed) && isFinite(parsed) ? parsed : undefined;
+        };
+
         return {
           id: u.id,
           pseudo: u.pseudo || 'Utilisateur',
@@ -620,8 +765,8 @@ export default function Dashboard() {
           subscriptionStatus: u.subscription_status || 'pending',
           lastSeen: u.last_seen || 'Hors ligne', // Ne pas mettre 'En ligne' par défaut
           gender: userGender,
-          lat: u.lat ? parseFloat(u.lat) : undefined,
-          lng: u.lng ? parseFloat(u.lng) : undefined,
+          lat: parseCoord(u.lat),
+          lng: parseCoord(u.lng),
           isAvailable: u.is_available,
         };
       });
@@ -629,23 +774,31 @@ export default function Dashboard() {
       // Calculer les distances si on a la position de l'utilisateur
       if (currentLocation) {
         formattedUsers.forEach((u) => {
-          if (u.lat && u.lng) {
+          // Vérifier que les coordonnées sont valides (non null, non undefined, et convertibles en nombre)
+          const lat = typeof u.lat === 'string' ? parseFloat(u.lat) : u.lat;
+          const lng = typeof u.lng === 'string' ? parseFloat(u.lng) : u.lng;
+          
+          if (lat != null && lng != null && !isNaN(lat) && !isNaN(lng)) {
             u.distance = calculateDistance(
               currentLocation.lat,
               currentLocation.lng,
-              u.lat,
-              u.lng
+              lat,
+              lng
             );
+          } else {
+            // Coordonnées invalides
+            u.distance = undefined;
           }
         });
 
         // Filtrer les utilisateurs à 0-10 km seulement
+        // Inclure les utilisateurs avec distance = 0 (même endroit)
         const filteredUsers = formattedUsers.filter((u) => {
           // Inclure les utilisateurs avec distance calculée entre 0 et 10 km
-          if (u.distance !== undefined) {
+          if (u.distance !== undefined && !isNaN(u.distance)) {
             return u.distance >= 0 && u.distance <= 10;
           }
-          // Exclure les utilisateurs sans distance (pas de coordonnées)
+          // Exclure les utilisateurs sans distance (pas de coordonnées valides)
           return false;
         });
 
@@ -687,15 +840,38 @@ export default function Dashboard() {
       const finalUsers = currentLocation ? formattedUsers.filter((u) => {
         return u.distance !== undefined && u.distance >= 0 && u.distance <= 10;
       }) : [];
+      
+      // Log détaillé pour déboguer les utilisateurs au même endroit
+      const usersAtSameLocation = formattedUsers.filter((u) => {
+        return u.distance !== undefined && u.distance < 0.01; // Moins de 10 mètres
+      });
+      
+      if (usersAtSameLocation.length > 0) {
+        console.log('📍 Utilisateurs au même endroit:', usersAtSameLocation.map(u => ({
+          id: u.id,
+          pseudo: u.pseudo,
+          distance: u.distance?.toFixed(4),
+          lat: u.lat,
+          lng: u.lng,
+          lastSeen: u.lastSeen,
+          isAvailable: u.isAvailable,
+        })));
+      }
+      
       console.log('📊 Utilisateurs disponibles:', {
         total: formattedUsers.length,
-        avecCoordonnees: formattedUsers.filter(u => u.lat && u.lng).length,
-        sansCoordonnees: formattedUsers.filter(u => !u.lat || !u.lng).length,
+        avecCoordonnees: formattedUsers.filter(u => u.lat != null && u.lng != null).length,
+        sansCoordonnees: formattedUsers.filter(u => u.lat == null || u.lng == null).length,
+        avecDistance: formattedUsers.filter(u => u.distance !== undefined).length,
         dansRayon10km: finalUsers.length,
+        auMemeEndroit: usersAtSameLocation.length,
         userLocation: currentLocation ? `${currentLocation.lat}, ${currentLocation.lng}` : 'non disponible',
       });
     } catch (error) {
       console.error('Error loading available users:', error);
+    } finally {
+      // Réinitialiser le flag de chargement
+      isLoadingUsersRef.current = false;
     }
   }, [userLocation, getAvailableUsers, getUserAverageRating]);
 

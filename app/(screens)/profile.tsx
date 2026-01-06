@@ -75,9 +75,11 @@ export default function ProfileScreen() {
     const timeSinceLastLoad = now - lastLoadTimeRef.current;
     const MIN_LOAD_INTERVAL = 2000; // 2 secondes minimum entre les chargements
 
+    // Si les avis sont déjà chargés pour cet utilisateur et qu'on ne force pas, ne pas recharger
     if (!force && (
       isLoadingRatingsRef.current ||
-      (timeSinceLastLoad < MIN_LOAD_INTERVAL && lastAuthUserIdRef.current === authUser.id)
+      (timeSinceLastLoad < MIN_LOAD_INTERVAL && lastAuthUserIdRef.current === authUser.id) ||
+      (ratingsLoadedRef.current === authUser.id && userRatings.length > 0)
     )) {
       return;
     }
@@ -121,13 +123,16 @@ export default function ProfileScreen() {
       const avgRating = await getUserAverageRating(authUser.id);
       console.log('⭐ Note moyenne calculée:', avgRating);
       setAverageRating(avgRating);
+      
+      // Marquer comme chargé
+      ratingsLoadedRef.current = authUser.id;
     } catch (error) {
       console.error('Error loading user ratings:', error);
     } finally {
       setIsLoadingRatings(false);
       isLoadingRatingsRef.current = false;
     }
-  }, [authUser?.id, getUserRatings, getUserAverageRating]);
+  }, [authUser?.id, getUserRatings, getUserAverageRating, userRatings.length]);
 
   // Charger les photos d'album au montage
   React.useEffect(() => {
@@ -136,24 +141,33 @@ export default function ProfileScreen() {
     }
   }, [authUser?.id, getUserAlbumPhotos]);
 
-  // Charger les avis au montage
+  // État pour mémoriser si les avis ont déjà été chargés
+  const ratingsLoadedRef = React.useRef<string | null>(null);
+
+  // Charger les avis au montage (une seule fois)
   React.useEffect(() => {
-    if (authUser?.id) {
+    if (authUser?.id && ratingsLoadedRef.current !== authUser.id) {
+      ratingsLoadedRef.current = authUser.id;
       loadUserRatings(true);
     }
   }, [authUser?.id]); // Ne pas inclure loadUserRatings dans les dépendances
 
-  // Charger les avis quand l'écran est focus (avec délai pour éviter les appels multiples)
-  useFocusEffect(
-    useCallback(() => {
-      if (authUser?.id) {
-        const timer = setTimeout(() => {
-          loadUserRatings(false);
-        }, 500);
-        return () => clearTimeout(timer);
-      }
-    }, [authUser?.id]) // Ne pas inclure loadUserRatings dans les dépendances
-  );
+  // Ne pas recharger automatiquement dans useFocusEffect pour éviter les boucles
+  // Les avis seront rechargés uniquement après une action (ajout/modification d'avis)
+
+  // Log pour déboguer les changements de currentUser
+  React.useEffect(() => {
+    if (currentUser) {
+      console.log('📱 ProfileScreen: currentUser mis à jour:', {
+        pseudo: currentUser.pseudo,
+        age: currentUser.age,
+        description: currentUser.description?.substring(0, 20),
+        specialty: currentUser.specialty,
+        photo: currentUser.photo?.substring(0, 30),
+        gender: currentUser.gender,
+      });
+    }
+  }, [currentUser?.pseudo, currentUser?.age, currentUser?.description, currentUser?.specialty, currentUser?.photo, currentUser?.gender]);
 
   // Rediriger si pas d'utilisateur (dans un useEffect pour éviter l'erreur React)
   React.useEffect(() => {
@@ -825,6 +839,12 @@ export default function ProfileScreen() {
                             year: 'numeric',
                           })}
                         </Text>
+                        {ratingItem.bookingId && (
+                          <View style={styles.bookingBadge}>
+                            <Ionicons name="heart" size={12} color={colors.pink500} />
+                            <Text style={styles.bookingBadgeText}>Avis lié à une demande de compagnie</Text>
+                          </View>
+                        )}
                       </View>
                     </View>
                     <View style={styles.stars}>
@@ -1056,6 +1076,22 @@ const styles = StyleSheet.create({
   reviewDate: {
     fontSize: 12,
     color: colors.textTertiary,
+  },
+  bookingBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: `${colors.pink500}20`,
+    borderRadius: 8,
+    alignSelf: 'flex-start',
+  },
+  bookingBadgeText: {
+    fontSize: 11,
+    color: colors.pink500,
+    fontWeight: '500',
   },
   ratingSummary: {
     flexDirection: 'row',

@@ -15,6 +15,8 @@
         "NSLocationAlwaysUsageDescription": "Cette application a besoin de votre localisation pour afficher les utilisateurs à proximité et mettre à jour votre position sur la carte.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Cette application utilise votre localisation même en arrière-plan pour améliorer l'expérience sur la carte.",
         "NSUserTrackingUsageDescription": "Cette application utilise un identifiant pour offrir une meilleure expérience.",
+        "NSCameraUsageDescription": "Cette application a besoin d'accéder à votre caméra pour prendre des photos de profil et des photos d'album.",
+        "NSPhotoLibraryUsageDescription": "Cette application a besoin d'accéder à votre bibliothèque de photos pour sélectionner des images pour votre profil et vos albums.",
         "UIBackgroundModes": ["location"]
       },
       "bundleIdentifier": "com.kutana.app"
@@ -34,7 +36,10 @@
         "ACCESS_COARSE_LOCATION",
         "ACCESS_BACKGROUND_LOCATION",
         "RECEIVE_BOOT_COMPLETED",
-        "VIBRATE"
+        "VIBRATE",
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE"
       ],
       "config": {
         "mapbox": {
@@ -75,6 +80,13 @@
         {
           "icon": "./assets/images/icon.png",
           "color": "#ffffff"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Cette application a besoin d'accéder à votre bibliothèque de photos pour sélectionner des images pour votre profil et vos albums.",
+          "cameraPermission": "Cette application a besoin d'accéder à votre caméra pour prendre des photos de profil et des photos d'album."
         }
       ]
     ],

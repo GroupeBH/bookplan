@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
@@ -706,7 +706,11 @@ export default function BookingDetailsScreen() {
         animationType="fade"
         onRequestClose={() => setShowRatingModal(false)}
       >
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+        >
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>
               {existingRating ? 'Modifier votre avis' : 'Noter cette compagnie'}
@@ -717,36 +721,43 @@ export default function BookingDetailsScreen() {
                 : 'Votre compagnie est terminée. Partagez votre expérience !'}
             </Text>
 
-            {/* Stars */}
-            <View style={styles.starsContainer}>
-              {[1, 2, 3, 4, 5].map((star) => (
-                <TouchableOpacity
-                  key={star}
-                  onPress={() => setRating(star)}
-                  style={styles.starButton}
-                >
-                  <Ionicons
-                    name={star <= rating ? 'star' : 'star-outline'}
-                    size={40}
-                    color={star <= rating ? colors.yellow500 : colors.textTertiary}
-                  />
-                </TouchableOpacity>
-              ))}
-            </View>
+            <ScrollView
+              style={styles.modalScrollView}
+              contentContainerStyle={styles.modalScrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              {/* Stars */}
+              <View style={styles.starsContainer}>
+                {[1, 2, 3, 4, 5].map((star) => (
+                  <TouchableOpacity
+                    key={star}
+                    onPress={() => setRating(star)}
+                    style={styles.starButton}
+                  >
+                    <Ionicons
+                      name={star <= rating ? 'star' : 'star-outline'}
+                      size={40}
+                      color={star <= rating ? colors.yellow500 : colors.textTertiary}
+                    />
+                  </TouchableOpacity>
+                ))}
+              </View>
 
-            {/* Comment */}
-            <View style={styles.commentContainer}>
-              <Text style={styles.commentLabel}>Commentaire (optionnel)</Text>
-              <TextInput
-                style={styles.commentInput}
-                value={comment}
-                onChangeText={setComment}
-                placeholder="Partagez votre expérience..."
-                placeholderTextColor={colors.textTertiary}
-                multiline
-                numberOfLines={4}
-              />
-            </View>
+              {/* Comment */}
+              <View style={styles.commentContainer}>
+                <Text style={styles.commentLabel}>Commentaire (optionnel)</Text>
+                <TextInput
+                  style={styles.commentInput}
+                  value={comment}
+                  onChangeText={setComment}
+                  placeholder="Partagez votre expérience..."
+                  placeholderTextColor={colors.textTertiary}
+                  multiline
+                  numberOfLines={4}
+                />
+              </View>
+            </ScrollView>
 
             {/* Actions */}
             <View style={styles.modalActions}>
@@ -765,7 +776,7 @@ export default function BookingDetailsScreen() {
               />
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Extension Request Modal (Requester) */}
@@ -1025,25 +1036,36 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
     borderRadius: 24,
     padding: 24,
+    paddingBottom: 20,
     width: '100%',
     maxWidth: 400,
-    gap: 24,
+    maxHeight: '85%',
+  },
+  modalScrollView: {
+    maxHeight: 300,
+  },
+  modalScrollContent: {
+    paddingBottom: 8,
+    gap: 16,
   },
   modalTitle: {
     fontSize: 20,
     fontWeight: '600',
     color: colors.text,
     textAlign: 'center',
+    marginBottom: 8,
   },
   modalDescription: {
     fontSize: 14,
     color: colors.textSecondary,
     textAlign: 'center',
+    marginBottom: 8,
   },
   starsContainer: {
     flexDirection: 'row',
     justifyContent: 'center',
     gap: 8,
+    marginBottom: 8,
   },
   starButton: {
     padding: 4,
@@ -1068,6 +1090,10 @@ const styles = StyleSheet.create({
   modalActions: {
     flexDirection: 'row',
     gap: 12,
+    paddingTop: 12,
+    marginTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: colors.borderSecondary,
   },
   modalButton: {
     flex: 1,

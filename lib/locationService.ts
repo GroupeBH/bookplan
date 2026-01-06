@@ -80,8 +80,8 @@ export class LocationService {
         this.subscription = await Location.watchPositionAsync(
           {
             accuracy: Location.Accuracy.Balanced,
-            timeInterval: 10000, // Vérifier toutes les 10 secondes
-            distanceInterval: 50, // Ou tous les 50 mètres
+            timeInterval: 60000, // Vérifier toutes les 60 secondes (1 minute) pour réduire la charge
+            distanceInterval: 200, // Ou tous les 200 mètres pour réduire les mises à jour
           },
           async (location) => {
             const now = Date.now();
