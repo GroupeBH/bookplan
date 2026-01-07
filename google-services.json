@@ -1,21 +1,21 @@
 {
   "project_info": {
-    "project_number": "949214741390",
-    "project_id": "kutana-d8b9a",
-    "storage_bucket": "kutana-d8b9a.firebasestorage.app"
+    "project_number": "575544741364",
+    "project_id": "kutana-460b6",
+    "storage_bucket": "kutana-460b6.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:949214741390:android:1820132014c05d3463dadf",
+        "mobilesdk_app_id": "1:575544741364:android:bb114dc3d2bfa080743da1",
         "android_client_info": {
-          "package_name": "com.kutana"
+          "package_name": "com.kutana.app"
         }
       },
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyBfPqVXRPrYewP14D6QZW94HWmo1zowIbc"
+          "current_key": "AIzaSyDENprdFwI1cO6fZlFRdw8dmBlIRObjqss"
         }
       ],
       "services": {

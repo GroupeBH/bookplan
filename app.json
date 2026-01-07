@@ -22,7 +22,8 @@
       "bundleIdentifier": "com.kutana.app"
     },
     "android": {
-      "package": "com.kutana",  // Doit correspondre à google-services.json et app.config.js
+      "package": "com.kutana.app",  // Doit correspondre à google-services.json et app.config.js
+      "privacy": "https://kutana.app/privacy-policy",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",

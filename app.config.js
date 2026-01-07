@@ -24,7 +24,7 @@ export default {
     },
     android: {
       googleServicesFile: './google-services.json',
-      package: "com.kutana",  // Doit correspondre à google-services.json
+      package: "com.kutana.app",  // Doit correspondre à google-services.json
 
       versionCode: 1,
       adaptiveIcon: {
@@ -43,7 +43,7 @@ export default {
         "VIBRATE",
         "CAMERA"
       ],
-      privacy: "https://your-privacy-policy-url.com",
+      privacy: "https://kutana.app/privacy-policy",
     },
     web: {
       output: "static",
