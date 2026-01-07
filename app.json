@@ -23,7 +23,7 @@
     },
     "android": {
       "package": "com.kutana.app",  // Doit correspondre à google-services.json et app.config.js
-      "privacy": "https://kutana.app/privacy-policy",
+      "privacy": "https://kutana-landing.onrender.com/privacy",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",

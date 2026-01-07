@@ -43,7 +43,7 @@ export default {
         "VIBRATE",
         "CAMERA"
       ],
-      privacy: "https://kutana.app/privacy-policy",
+      privacy: "https://kutana-landing.onrender.com/privacy",
     },
     web: {
       output: "static",
