@@ -7,7 +7,7 @@ export default {
     icon: "./assets/images/kutana.png",
     scheme: "kutana",
     userInterfaceStyle: "automatic",
-    // newArchEnabled: true,y
+    // newArchEnabled: true
     ios: {
       supportsTablet: true,
       infoPlist: {
@@ -25,8 +25,6 @@ export default {
     android: {
       googleServicesFile: './google-services.json',
       package: "com.kuntana",  // Doit correspondre à google-services.json
-
-      versionCode: 1,
       adaptiveIcon: {
         backgroundColor: "#E6F4FE",
         foregroundImage: "./assets/images/kutana.png",
