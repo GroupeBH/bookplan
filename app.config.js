@@ -24,7 +24,7 @@ export default {
     },
     android: {
       googleServicesFile: './google-services.json',
-      package: "com.kutana.app",  // Doit correspondre à google-services.json
+      package: "com.kuntana",  // Doit correspondre à google-services.json
 
       versionCode: 1,
       adaptiveIcon: {

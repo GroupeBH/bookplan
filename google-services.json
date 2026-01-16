@@ -7,9 +7,9 @@
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:575544741364:android:bb114dc3d2bfa080743da1",
+        "mobilesdk_app_id": "1:575544741364:android:32883709cc5dbd1c743da1",
         "android_client_info": {
-          "package_name": "com.kutana.app"
+          "package_name": "com.kuntana"
         }
       },
       "oauth_client": [],
