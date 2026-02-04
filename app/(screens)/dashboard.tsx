@@ -227,41 +227,41 @@ export default function Dashboard() {
   const [selectedUserForCallout, setSelectedUserForCallout] = useState<User | null>(null);
   const [mapReady, setMapReady] = useState(false);
 
-  // Protection de route - ne rediriger que si vraiment non authentifié (pas pendant le chargement initial ou retour des paramètres)
-  const hasCheckedAuthRef = useRef(false);
-  const authCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Protection de route - ne rediriger que si vraiment non authentifié
+  // Utiliser useRef pour éviter les re-renders inutiles et les problèmes de timing
+  const authCheckRef = useRef({ hasChecked: false, timeoutId: null as NodeJS.Timeout | null });
   
   useEffect(() => {
-    // Annuler tout timeout précédent
-    if (authCheckTimeoutRef.current) {
-      clearTimeout(authCheckTimeoutRef.current);
+    // Nettoyer le timeout précédent
+    if (authCheckRef.current.timeoutId) {
+      clearTimeout(authCheckRef.current.timeoutId);
+      authCheckRef.current.timeoutId = null;
     }
     
+    // Ne rien faire pendant le chargement initial
     if (isLoading) {
-      // Attendre que le chargement soit terminé avant de vérifier l'authentification
-      hasCheckedAuthRef.current = false;
+      authCheckRef.current.hasChecked = false;
       return;
     }
     
-    // Ne vérifier qu'une fois que le chargement est terminé
-    if (!hasCheckedAuthRef.current) {
-      hasCheckedAuthRef.current = true;
+    // Marquer qu'on a vérifié une fois le chargement terminé
+    if (!authCheckRef.current.hasChecked) {
+      authCheckRef.current.hasChecked = true;
     }
     
-    // Ajouter un délai pour éviter les redirections immédiates après retour des paramètres système
-    // Cela donne le temps à l'état d'authentification de se stabiliser
-    authCheckTimeoutRef.current = setTimeout(() => {
-      // Ne rediriger que si on est sûr que l'utilisateur n'est pas authentifié
-      // et qu'on a déjà vérifié au moins une fois
-      // ET que l'utilisateur n'est vraiment pas authentifié (pas juste en cours de chargement)
-      if (hasCheckedAuthRef.current && !isLoading && !isAuthenticated && user === null) {
+    // Vérifier l'authentification avec un délai pour éviter les problèmes de timing
+    // Ne rediriger que si on est sûr que l'utilisateur n'est pas authentifié
+    authCheckRef.current.timeoutId = setTimeout(() => {
+      // Double vérification : s'assurer que le chargement est terminé et qu'on n'est pas authentifié
+      if (authCheckRef.current.hasChecked && !isLoading && !isAuthenticated && !user) {
         router.replace('/(screens)/auth');
       }
-    }, 1000); // Délai de 1 seconde pour laisser le temps à l'état de se stabiliser
+    }, 500); // Délai réduit à 500ms pour une meilleure réactivité
     
     return () => {
-      if (authCheckTimeoutRef.current) {
-        clearTimeout(authCheckTimeoutRef.current);
+      if (authCheckRef.current.timeoutId) {
+        clearTimeout(authCheckRef.current.timeoutId);
+        authCheckRef.current.timeoutId = null;
       }
     };
   }, [isAuthenticated, isLoading, user, router]);
@@ -943,9 +943,9 @@ export default function Dashboard() {
           )}
           <TouchableOpacity
             style={styles.offersButton}
-            onPress={() => router.push('/(screens)/offers')}
+            onPress={() => router.push('/(screens)/settings')}
           >
-            <Ionicons name="gift-outline" size={24} color={colors.pink500} />
+            <Ionicons name="settings-outline" size={24} color={colors.pink500} />
           </TouchableOpacity>
         </View>
       </View>
@@ -1168,6 +1168,29 @@ export default function Dashboard() {
         bounces={true}
         scrollEventThrottle={16}
       >
+        {/* Offers Section */}
+        <View style={styles.offersTabsContainer}>
+          <TouchableOpacity
+            style={styles.offerTabContent}
+            onPress={() => router.push('/(screens)/create-offer')}
+          >
+            <Ionicons name="add-circle" size={24} color={colors.pink500} />
+            <Text style={styles.offerTabContentText}>Créer une nouvelle offre</Text>
+            <Ionicons name="chevron-forward" size={20} color={colors.textTertiary} />
+          </TouchableOpacity>
+          
+          <TouchableOpacity
+            style={[styles.offerTabContent, styles.offerTabContentPink]}
+            onPress={() => router.push('/(screens)/offers')}
+          >
+            <Ionicons name="gift" size={24} color="#ffffff" />
+            <Text style={[styles.offerTabContentText, styles.offerTabContentTextPink]}>
+              Voir les propositions
+            </Text>
+            <Ionicons name="chevron-forward" size={20} color="#ffffff" />
+          </TouchableOpacity>
+        </View>
+        
         <Text style={styles.sectionTitle}>À proximité</Text>
         {availableUsers.length === 0 ? (
           <View style={styles.emptyState}>
@@ -1329,6 +1352,39 @@ const styles = StyleSheet.create({
   },
   offersButton: {
     padding: 4,
+  },
+  offersTabsContainer: {
+    paddingHorizontal: 24,
+    paddingTop: 16,
+    paddingBottom: 12,
+    backgroundColor: colors.background,
+    marginTop: 16,
+    marginBottom: 16,
+    gap: 12,
+  },
+  offerTabContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    backgroundColor: colors.backgroundSecondary,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+  },
+  offerTabContentPink: {
+    backgroundColor: colors.pink500,
+    borderColor: colors.pink500,
+  },
+  offerTabContentText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '500',
+    color: colors.text,
+  },
+  offerTabContentTextPink: {
+    color: '#ffffff',
   },
   mapSection: {
     height: 256,

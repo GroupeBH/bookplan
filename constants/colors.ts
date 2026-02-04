@@ -26,6 +26,7 @@ export const colors = {
   // Status colors
   green500: '#22c55e',
   green600: '#16a34a',
+  success: '#22c55e', // Alias pour green500
   red500: '#ef4444',
   red600: '#dc2626',
   yellow400: '#facc15',

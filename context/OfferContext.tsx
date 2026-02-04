@@ -503,70 +503,69 @@ export function OfferProvider({ children }: { children: ReactNode }) {
         return { error: typesError, offer: null };
       }
 
-      // Charger le profil de l'auteur
-      let authorProfile = null;
-      try {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('id, pseudo, photo, age, rating, review_count, gender')
-          .eq('id', user.id)
-          .single();
-        
-        if (profile) {
-          authorProfile = {
-            id: profile.id,
-            pseudo: profile.pseudo || 'Utilisateur',
-            photo: profile.photo || '',
-            age: profile.age || 0,
-            rating: parseFloat(profile.rating) || 0,
-            reviewCount: profile.review_count || 0,
-            gender: profile.gender || 'female',
-          };
-        }
-      } catch (profileError) {
-        console.error('Error loading author profile:', profileError);
-      }
+      // Construire l'objet Offer de manière simplifiée pour retourner immédiatement
+      // Utiliser les données de l'utilisateur actuel au lieu de faire une requête supplémentaire
+      const authorProfile = {
+        id: user.id,
+        pseudo: user.pseudo || 'Utilisateur',
+        photo: user.photo || '',
+        age: user.age || 0,
+        rating: user.rating || 0,
+        reviewCount: user.reviewCount || 0,
+        gender: user.gender || 'female',
+      };
 
       const offer = mapOfferFromDB({ ...data, author: authorProfile, offerTypes });
       
-      // Envoyer des notifications push à tous les utilisateurs disponibles
-      try {
-        const { data: availableUsers } = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('is_available', true)
-          .neq('id', user.id);
+      // Opérations en arrière-plan (non bloquantes)
+      Promise.all([
+        // Rafraîchir les offres en arrière-plan
+        refreshOffers().catch(() => {}),
+        refreshMyOffers().catch(() => {}),
+        // Envoyer des notifications push en arrière-plan
+        (async () => {
+          try {
+            const { data: availableUsers } = await supabase
+              .from('profiles')
+              .select('id')
+              .eq('is_available', true)
+              .neq('id', user.id);
 
-        if (availableUsers) {
-          const offerTypeLabels: Record<OfferType, string> = {
-            drink: 'à boire',
-            food: 'à manger',
-            transport: 'remboursement transport',
-            gift: 'présent',
-          };
+            if (availableUsers && availableUsers.length > 0) {
+              const offerTypeLabels: Record<OfferType, string> = {
+                drink: 'à boire',
+                food: 'à manger',
+                transport: 'remboursement transport',
+                gift: 'présent',
+              };
 
-          // Construire le message avec tous les types
-          const typesText = offer.offerTypes && offer.offerTypes.length > 0
-            ? offer.offerTypes.map(t => offerTypeLabels[t]).join(', ')
-            : offerTypeLabels[offer.offerType];
+              // Construire le message avec tous les types
+              const typesText = offer.offerTypes && offer.offerTypes.length > 0
+                ? offer.offerTypes.map(t => offerTypeLabels[t]).join(', ')
+                : offerTypeLabels[offer.offerType];
 
-          for (const profile of availableUsers) {
-            await sendPushNotification({
-              userId: profile.id,
-              title: 'Nouvelle offre disponible',
-              body: `${user.pseudo} propose ${typesText}: ${title}`,
-              data: { type: 'new_offer', offerId: offer.id },
-            });
+              // Envoyer les notifications en parallèle (limité à 10 pour éviter la surcharge)
+              const notifications = availableUsers.slice(0, 10).map(profile =>
+                sendPushNotification({
+                  userId: profile.id,
+                  title: 'Nouvelle offre disponible',
+                  body: `${user.pseudo} propose ${typesText}: ${title}`,
+                  data: { type: 'new_offer', offerId: offer.id },
+                }).catch(() => {}) // Ignorer les erreurs individuelles
+              );
+
+              await Promise.all(notifications);
+            }
+          } catch (notifError) {
+            console.error('Error sending push notifications:', notifError);
+            // Ne pas bloquer la création de l'offre si les notifications échouent
           }
-        }
-      } catch (notifError) {
-        console.error('Error sending push notifications:', notifError);
-        // Ne pas bloquer la création de l'offre si les notifications échouent
-      }
+        })(),
+      ]).catch(() => {
+        // Ignorer toutes les erreurs en arrière-plan
+      });
 
-      await refreshOffers();
-      await refreshMyOffers();
-
+      // Retourner immédiatement avec l'offre créée
       return { error: null, offer };
     } catch (error: any) {
       console.error('Error creating offer:', error);

@@ -37,6 +37,7 @@ export default function BookingDetailsScreen() {
   const [existingRating, setExistingRating] = useState<any>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [otherUserRating, setOtherUserRating] = useState({ average: 0, count: 0 });
+  const [ratingModalDismissed, setRatingModalDismissed] = useState(false);
 
   // Charger les détails de la compagnie
   const loadBookingDetails = useCallback(async () => {
@@ -143,15 +144,15 @@ export default function BookingDetailsScreen() {
 
   // Vérifier si la compagnie est terminée
   useEffect(() => {
-    if (!booking || booking.status !== 'accepted') return;
+    if (!booking || booking.status !== 'accepted' || ratingModalDismissed) return;
 
     const checkEndTime = () => {
       const bookingDate = new Date(booking.booking_date);
       const endTime = new Date(bookingDate.getTime() + booking.duration_hours * 60 * 60 * 1000);
       const now = new Date();
 
-      if (now >= endTime && booking.status === 'accepted') {
-        // La compagnie est terminée, afficher le modal
+      if (now >= endTime && booking.status === 'accepted' && !ratingModalDismissed) {
+        // La compagnie est terminée, afficher le modal seulement si l'utilisateur ne l'a pas déjà fermé
         setShowRatingModal(true);
       }
     };
@@ -160,7 +161,7 @@ export default function BookingDetailsScreen() {
     checkEndTime(); // Vérifier immédiatement
 
     return () => clearInterval(interval);
-  }, [booking]);
+  }, [booking, ratingModalDismissed]);
 
   const isRequester = booking?.requester_id === currentUser?.id;
   const isProvider = booking?.provider_id === currentUser?.id;
@@ -223,6 +224,7 @@ export default function BookingDetailsScreen() {
       }
 
       setShowRatingModal(false);
+      setRatingModalDismissed(true);
       Alert.alert('Succès', 'Avis enregistré avec succès');
       loadBookingDetails();
     } catch (error) {
@@ -704,7 +706,10 @@ export default function BookingDetailsScreen() {
         visible={showRatingModal}
         transparent
         animationType="fade"
-        onRequestClose={() => setShowRatingModal(false)}
+        onRequestClose={() => {
+          setShowRatingModal(false);
+          setRatingModalDismissed(true);
+        }}
       >
         <KeyboardAvoidingView
           style={styles.modalOverlay}
@@ -764,7 +769,10 @@ export default function BookingDetailsScreen() {
               <Button
                 title="Annuler"
                 variant="outline"
-                onPress={() => setShowRatingModal(false)}
+                onPress={() => {
+                  setShowRatingModal(false);
+                  setRatingModalDismissed(true);
+                }}
                 style={styles.modalButton}
               />
               <Button

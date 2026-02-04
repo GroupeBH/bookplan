@@ -13,8 +13,9 @@ interface AuthContextType {
   user: User | null;
   // Authentification par téléphone avec OTP interne
   sendOTP: (phone: string) => Promise<{ error: any; otpCode?: string }>;
-  verifyOTP: (phone: string, token: string, pseudo?: string, lat?: number, lng?: number, password?: string, specialty?: string, gender?: 'male' | 'female') => Promise<{ error: any; user: User | null }>;
+  verifyOTP: (phone: string, token: string, pseudo?: string, lat?: number, lng?: number, password?: string, specialty?: string, gender?: 'male' | 'female', age?: number) => Promise<{ error: any; user: User | null }>;
   verifyOTPSimple: (phone: string, token: string) => Promise<{ error: any }>;
+  markOTPAsVerified: (phone: string) => void; // Marquer l'OTP comme vérifié (pour API externe)
   // Authentification par mot de passe
   signUpWithPassword: (phone: string, password: string, pseudo: string, age?: number, gender?: 'male' | 'female', lat?: number, lng?: number, specialty?: string) => Promise<{ error: any; user: User | null }>;
   loginWithPassword: (phone: string, password: string) => Promise<{ error: any; user: User | null }>;
@@ -539,6 +540,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Stockage temporaire des OTP vérifiés (pour créer le compte plus tard avec le mot de passe)
   const verifiedOTPStorage = new Map<string, { verifiedAt: number; expiresAt: number }>();
 
+  // Marquer l'OTP comme vérifié (pour API externe comme Keccel)
+  const markOTPAsVerified = (phone: string) => {
+    const formattedPhone = phone.startsWith('+') ? phone : `+${phone}`;
+    verifiedOTPStorage.set(formattedPhone, {
+      verifiedAt: Date.now(),
+      expiresAt: Date.now() + 30 * 60 * 1000, // 30 minutes
+    });
+    console.log('✅ OTP marqué comme vérifié pour:', formattedPhone);
+  };
+
   // Vérifier le code OTP (sans créer le compte - le compte sera créé avec le mot de passe)
   const verifyOTP = async (
     phone: string,
@@ -548,7 +559,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     lng?: number,
     password?: string, // Nouveau paramètre : mot de passe optionnel
     specialty?: string, // Savoir-faire particulier
-    gender?: 'male' | 'female' // Genre de l'utilisateur
+    gender?: 'male' | 'female', // Genre de l'utilisateur
+    age?: number // Âge de l'utilisateur
   ): Promise<{ error: any; user: User | null }> => {
     try {
       const formattedPhone = phone.startsWith('+') ? phone : `+${phone}`;
@@ -592,35 +604,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { error: null, user: null };
       }
 
-      // Vérifier si l'utilisateur existe déjà en parallèle avec la création du compte
-      const existingProfilePromise = supabase
+      // Vérifier si l'utilisateur existe déjà (opération rapide)
+      const { data: existingProfile } = await supabase
         .from('profiles')
         .select('id')
         .eq('phone', formattedPhone)
         .maybeSingle();
 
-      // Obtenir la position en parallèle (non bloquant, utilise les valeurs par défaut si échoue)
-      const locationPromise = (async () => {
-        if (lat && lng) return { lat, lng };
+      // Obtenir la position de manière optimisée (timeout rapide pour éviter les attentes)
+      let location = { lat: -4.3276, lng: 15.3136 }; // Valeurs par défaut (Kinshasa)
+      if (lat && lng) {
+        location = { lat, lng };
+      } else {
+        // Essayer d'obtenir la position avec un timeout court (non bloquant)
         try {
-          const { status } = await Location.requestForegroundPermissionsAsync();
+          const { status } = await Location.getForegroundPermissionsAsync();
           if (status === 'granted') {
-            const location = await Location.getCurrentPositionAsync({
-              accuracy: Location.Accuracy.Lowest, // Plus rapide
+            const locationPromise = Location.getCurrentPositionAsync({
+              accuracy: Location.Accuracy.Lowest,
+              maximumAge: 60000, // Accepter une position jusqu'à 1 minute
             });
-            return { lat: location.coords.latitude, lng: location.coords.longitude };
+            
+            // Timeout après 2 secondes maximum pour ne pas bloquer
+            const timeoutPromise = new Promise<{ lat: number; lng: number }>((resolve) => {
+              setTimeout(() => resolve({ lat: -4.3276, lng: 15.3136 }), 2000);
+            });
+
+            location = await Promise.race([
+              locationPromise.then(loc => ({
+                lat: loc.coords.latitude,
+                lng: loc.coords.longitude
+              })),
+              timeoutPromise
+            ]);
           }
         } catch (error) {
-          // Ignorer les erreurs de localisation
+          // Utiliser les valeurs par défaut en cas d'erreur
+          console.log('⚠️ Localisation non disponible, utilisation des valeurs par défaut');
         }
-        return { lat: -4.3276, lng: 15.3136 }; // Valeurs par défaut
-      })();
-
-      // Attendre les deux en parallèle
-      const [{ data: existingProfile }, location] = await Promise.all([
-        existingProfilePromise,
-        locationPromise,
-      ]);
+      }
 
       let authUser;
       let isNewUser = false;
@@ -737,23 +759,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { error: { message: 'Impossible de créer ou récupérer l\'utilisateur' }, user: null };
       }
 
-      // Utiliser la position obtenue en parallèle
-      const userLat = location.lat;
-      const userLng = location.lng;
-
-      // Marquer l'email comme vérifié en arrière-plan (non bloquant)
-      if (authUser.id) {
-        (async () => {
-          try {
-            await supabase.rpc('verify_user_email', { p_user_id: authUser.id });
-          } catch {
-            // Ignorer les erreurs, non critique
-          }
-        })();
-      }
-
-      // Créer ou mettre à jour le profil (opération principale)
-      const userGender: 'male' | 'female' = gender || 'female'; // Utiliser le genre fourni ou 'female' par défaut
+      // Créer ou mettre à jour le profil (opération principale - optimisée)
+      const userGender: 'male' | 'female' = gender || 'female';
+      const userAge = age || 25;
       
       // Utiliser la fonction RPC upsert_profile qui bypass RLS
       // Cette fonction est nécessaire car juste après signUp, la session
@@ -762,16 +770,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         p_id: authUser.id,
         p_phone: formattedPhone,
         p_pseudo: pseudo || authUser.user_metadata?.pseudo || 'Utilisateur',
-        p_age: 25,
-        p_photo: getDefaultProfileImage(userGender), // Photo par défaut selon le genre
+        p_age: userAge,
+        p_photo: getDefaultProfileImage(userGender),
         p_description: '',
         p_rating: 0,
         p_review_count: 0,
         p_is_subscribed: false,
         p_subscription_status: 'pending',
         p_gender: userGender,
-        p_lat: userLat,
-        p_lng: userLng,
+        p_lat: location.lat,
+        p_lng: location.lng,
         p_is_available: true,
         p_specialty: specialty || null,
       });
@@ -783,9 +791,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { error: profileError, user: null };
       }
 
-      // Charger le profil créé en arrière-plan (non bloquant pour la réponse)
-      loadUserProfile(authUser.id).catch(() => {
-        // Ignorer les erreurs de chargement, le profil sera chargé au prochain checkAuth
+      // Opérations en arrière-plan (non bloquantes)
+      Promise.all([
+        // Marquer l'email comme vérifié
+        authUser.id ? (async () => {
+          try {
+            const { error } = await supabase.rpc('verify_user_email', { p_user_id: authUser.id });
+            if (error) {
+              console.warn('⚠️ Erreur lors de la vérification de l\'email:', error);
+            }
+          } catch (error) {
+            console.warn('⚠️ Erreur lors de la vérification de l\'email:', error);
+          }
+        })() : Promise.resolve(),
+        // Charger le profil créé
+        loadUserProfile(authUser.id).catch(() => {}),
+      ]).catch(() => {
+        // Ignorer les erreurs, ces opérations ne sont pas critiques
       });
       
       // Retourner immédiatement avec l'utilisateur (le profil sera chargé en arrière-plan)
@@ -1564,6 +1586,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         sendOTP,
         verifyOTP,
         verifyOTPSimple,
+        markOTPAsVerified,
         signUpWithPassword,
         loginWithPassword,
         resetPassword,

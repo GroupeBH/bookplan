@@ -135,7 +135,8 @@ export default function ChatScreen() {
   useEffect(() => {
     if (selectedConversation) {
       loadConversationMessages(selectedConversation.id);
-      // Marquer comme lu en arrière-plan (non-bloquant)
+      // Marquer comme lu immédiatement quand on ouvre la conversation
+      // Cela déclenchera une mise à jour en temps réel pour l'expéditeur
       markAsRead(selectedConversation.id).catch(() => {
         // Ignorer les erreurs silencieusement
       });
@@ -143,7 +144,7 @@ export default function ChatScreen() {
       // Réinitialiser les messages si aucune conversation n'est sélectionnée
       setConversationMessages([]);
     }
-  }, [selectedConversation?.id]);
+  }, [selectedConversation?.id, markAsRead]);
 
   // Synchroniser avec les messages du contexte pour avoir une source de vérité unique
   // Cela permet d'avoir les messages mis à jour par le temps réel du contexte
@@ -182,6 +183,12 @@ export default function ChatScreen() {
   // S'abonner aux nouveaux messages en temps réel
   useEffect(() => {
     if (selectedConversation) {
+      // Marquer immédiatement comme lu quand on s'abonne à la conversation
+      // Cela garantit que les messages sont marqués dès l'ouverture
+      markAsRead(selectedConversation.id).catch(() => {
+        // Ignorer les erreurs silencieusement
+      });
+
       const unsubscribe = subscribeToConversation(selectedConversation.id, (message) => {
         // Le message est déjà ajouté au contexte par subscribeToConversation
         // La synchronisation avec messages[conversationId] se fera automatiquement

@@ -800,18 +800,16 @@ export default function CreateOfferScreen() {
           return;
         }
 
-        Alert.alert(
-          'Succès', 
-          `Votre offre avec ${selectedOfferTypes.length} type${selectedOfferTypes.length > 1 ? 's' : ''} a été créée et sera visible par tous les utilisateurs disponibles`, 
-          [
-            {
-              text: 'OK',
-              onPress: () => {
-                router.back();
-              },
-            },
-          ]
-        );
+        // Rediriger immédiatement sans attendre l'alerte
+        router.back();
+        
+        // Afficher l'alerte de succès en arrière-plan (non bloquant)
+        setTimeout(() => {
+          Alert.alert(
+            'Succès', 
+            `Votre offre avec ${selectedOfferTypes.length} type${selectedOfferTypes.length > 1 ? 's' : ''} a été créée et sera visible par tous les utilisateurs disponibles`
+          );
+        }, 300);
       }
     } catch (error: any) {
       Alert.alert('Erreur', 'Une erreur est survenue');

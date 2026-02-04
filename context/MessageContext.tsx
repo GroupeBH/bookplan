@@ -284,6 +284,35 @@ export function MessageProvider({ children }: { children: React.ReactNode }) {
         };
       });
 
+      // Envoyer une notification push au destinataire en arrière-plan (non-bloquant)
+      (async () => {
+        try {
+          // Récupérer le pseudo de l'expéditeur pour la notification
+          const { data: senderProfile } = await supabase
+            .from('profiles')
+            .select('pseudo')
+            .eq('id', user.id)
+            .single();
+
+          const senderName = senderProfile?.pseudo || 'Quelqu\'un';
+          const messagePreview = content.trim().length > 50 
+            ? content.trim().substring(0, 50) + '...' 
+            : content.trim();
+
+          // Importer et utiliser la fonction d'envoi de notification
+          const { sendMessageNotification } = await import('../lib/pushNotifications');
+          await sendMessageNotification(
+            recipientId,
+            conversationId,
+            senderName,
+            messagePreview
+          );
+        } catch (notifError) {
+          // Ignorer les erreurs de notification (ne pas bloquer l'envoi du message)
+          console.log('Error sending push notification:', notifError);
+        }
+      })();
+
       // Rafraîchir les conversations en arrière-plan (non-bloquant)
       getConversations().catch((error) => {
         if (!isNetworkError(error)) {
@@ -503,6 +532,46 @@ export function MessageProvider({ children }: { children: React.ReactNode }) {
           });
         }
       )
+      // Ajouter un listener pour les mises à jour (changements de statut de lecture)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'messages',
+          filter: `conversation_id=eq.${conversationId}`,
+        },
+        async (payload) => {
+          const updatedMessage = payload.new as any;
+          
+          // Mettre à jour le message dans le cache local
+          setMessages((prev) => {
+            const existingMessages = prev[conversationId] || [];
+            const updated = existingMessages.map((msg) => {
+              if (msg.id === updatedMessage.id) {
+                return {
+                  ...msg,
+                  isRead: updatedMessage.is_read,
+                  readAt: updatedMessage.read_at,
+                  updatedAt: updatedMessage.updated_at,
+                };
+              }
+              return msg;
+            });
+            return {
+              ...prev,
+              [conversationId]: updated,
+            };
+          });
+
+          // Rafraîchir les conversations en arrière-plan pour mettre à jour les compteurs
+          getConversations().catch((error) => {
+            if (!isNetworkError(error)) {
+              console.error('Error refreshing conversations:', error);
+            }
+          });
+        }
+      )
       .subscribe();
 
     subscriptionsRef.current[conversationId] = subscription;
@@ -515,6 +584,84 @@ export function MessageProvider({ children }: { children: React.ReactNode }) {
       }
     };
   }, [getConversations]);
+
+  // S'abonner aux mises à jour de conversations en temps réel (pour les badges)
+  useEffect(() => {
+    if (!user?.id) return;
+
+    // S'abonner aux mises à jour de conversations où l'utilisateur est impliqué
+    const conversationSubscription = supabase
+      .channel('user_conversations')
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'conversations',
+          filter: `user1_id=eq.${user.id},user2_id=eq.${user.id}`,
+        },
+        (payload) => {
+          const updatedConv = payload.new as any;
+          
+          // Mettre à jour la conversation dans la liste
+          setConversations((prev) => {
+            const existingIndex = prev.findIndex(c => c.id === updatedConv.id);
+            if (existingIndex === -1) {
+              // Si la conversation n'existe pas encore, la charger
+              getConversations();
+              return prev;
+            }
+            
+            // Mettre à jour la conversation existante
+            const updated = [...prev];
+            const existingConv = updated[existingIndex];
+            
+            // Calculer le nouveau unreadCount
+            const unreadCount = updatedConv.user1_id === user.id 
+              ? updatedConv.user1_unread_count 
+              : updatedConv.user2_unread_count;
+            
+            updated[existingIndex] = {
+              ...existingConv,
+              lastMessageId: updatedConv.last_message_id,
+              lastMessageAt: updatedConv.last_message_at,
+              user1UnreadCount: updatedConv.user1_unread_count,
+              user2UnreadCount: updatedConv.user2_unread_count,
+              unreadCount,
+              updatedAt: updatedConv.updated_at,
+            };
+            
+            // Réorganiser par date de dernier message (le plus récent en premier)
+            updated.sort((a, b) => {
+              const dateA = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+              const dateB = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+              return dateB - dateA;
+            });
+            
+            return updated;
+          });
+        }
+      )
+      // Écouter aussi les nouvelles conversations
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'conversations',
+          filter: `user1_id=eq.${user.id},user2_id=eq.${user.id}`,
+        },
+        () => {
+          // Recharger les conversations si une nouvelle est créée
+          getConversations();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(conversationSubscription);
+    };
+  }, [user?.id, getConversations]);
 
   // Charger les conversations au montage et quand l'utilisateur change
   useEffect(() => {
