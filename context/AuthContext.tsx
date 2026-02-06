@@ -379,63 +379,52 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       setIsLoading(true);
       
-      // Vérifier d'abord le cache pour une réponse immédiate
-      try {
-        const cachedSession = await AsyncStorage.getItem('auth_session');
-        if (cachedSession) {
-          const sessionData = JSON.parse(cachedSession);
-          if (sessionData?.user?.id) {
-            // Charger le profil depuis le cache immédiatement
-            await loadUserProfile(sessionData.user.id, true);
-            // Continuer pour vérifier la session réelle en arrière-plan
-          }
-        }
-      } catch (cacheError) {
-        console.log('⚠️ Erreur lors du chargement du cache de session:', cacheError);
-      }
+      // Supabase restaure automatiquement la session depuis AsyncStorage grâce à persistSession: true
+      // Récupérer la session restaurée (opération rapide, pas de requête réseau nécessaire)
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
 
-      // Timeout de 3 secondes pour les requêtes réseau au démarrage (réduit pour connexions lentes)
-      const sessionPromise = supabase.auth.getSession();
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Timeout')), 3000)
-      );
-
-      let sessionResult: any;
-      try {
-        sessionResult = await Promise.race([sessionPromise, timeoutPromise]);
-      } catch (timeoutError: any) {
-        // En cas de timeout, utiliser le cache si disponible
-        console.log('⏱️ Timeout lors de la vérification de session, utilisation du cache');
-        const cachedSession = await AsyncStorage.getItem('auth_session');
-        if (cachedSession) {
-          const sessionData = JSON.parse(cachedSession);
-          if (sessionData?.user?.id) {
-            // Utiliser le cache pour permettre la navigation
-            setIsLoading(false);
-            return;
+      // Si erreur de session, essayer le cache comme fallback
+      if (sessionError || !session?.user) {
+        console.log('⚠️ Pas de session Supabase, vérification du cache...');
+        try {
+          const cachedSession = await AsyncStorage.getItem('auth_session');
+          const cachedProfile = user?.id ? await AsyncStorage.getItem(`user_profile_${user.id}`) : null;
+          
+          if (cachedSession) {
+            const sessionData = JSON.parse(cachedSession);
+            if (sessionData?.user?.id) {
+              // Si on a un profil en cache, l'utiliser immédiatement
+              if (cachedProfile) {
+                const userProfile: User = JSON.parse(cachedProfile);
+                setUser(userProfile);
+                setIsAuthenticated(true);
+                setIsLoading(false);
+                // Vérifier la session réelle en arrière-plan
+                (async () => {
+                  try {
+                    const { data: { session: realSession } } = await supabase.auth.getSession();
+                    if (realSession?.user?.id === sessionData.user.id) {
+                      await loadUserProfile(sessionData.user.id, false);
+                    }
+                  } catch {}
+                })();
+                return;
+              } else {
+                // Charger le profil depuis la base
+                await loadUserProfile(sessionData.user.id, true);
+                setIsLoading(false);
+                return;
+              }
+            }
           }
+        } catch (cacheError) {
+          console.log('⚠️ Erreur lors du chargement du cache:', cacheError);
         }
+        
+        // Pas de session ni de cache, utilisateur non connecté
         setIsAuthenticated(false);
         setUser(null);
         setIsLoading(false);
-        return;
-      }
-
-      const { data: { session }, error } = sessionResult;
-
-      if (error) {
-        // Gérer spécifiquement les erreurs réseau
-        const isNetworkErr = isNetworkError(error) || 
-                            error?.message?.includes('Network request failed') || 
-                            error?.message?.includes('Failed to fetch');
-        
-        if (isNetworkErr) {
-          console.log('⚠️ Erreur réseau lors de la vérification de session. Vérifiez votre connexion internet.');
-        } else if (!isNetworkError(error)) {
-          console.error('Error getting session:', error);
-        }
-        setIsAuthenticated(false);
-        setUser(null);
         return;
       }
 
@@ -444,50 +433,74 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.log('🚪 Déconnexion en cours pendant checkAuth, annulation');
         setIsAuthenticated(false);
         setUser(null);
+        setIsLoading(false);
         return;
       }
 
-      if (session?.user) {
-        // Vérifier que l'utilisateur existe toujours dans auth.users
-        const { data: authUser, error: getUserError } = await supabase.auth.getUser();
+      // Session valide trouvée - sauvegarder dans le cache pour référence future
+      try {
+        await AsyncStorage.setItem('auth_session', JSON.stringify({ user: { id: session.user.id } }));
+      } catch (cacheError) {
+        console.log('⚠️ Erreur lors de la sauvegarde du cache de session:', cacheError);
+      }
+
+      // Vérifier que l'utilisateur existe toujours dans auth.users (avec timeout court)
+      try {
+        const getUserPromise = supabase.auth.getUser();
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout')), 2000)
+        );
         
-        if (getUserError || !authUser?.user) {
-          console.log('🚪 L\'utilisateur n\'existe plus, déconnexion automatique...');
-          // Nettoyer le cache
+        const authUserResult = await Promise.race([getUserPromise, timeoutPromise]) as any;
+        
+        if (authUserResult?.data?.user) {
+          // Utilisateur valide - charger le profil (utilise le cache si disponible)
+          await loadUserProfile(session.user.id, true);
+        } else {
+          // Utilisateur n'existe plus ou erreur
+          console.log('🚪 L\'utilisateur n\'existe plus ou erreur, déconnexion...');
+          await supabase.auth.signOut();
           try {
             await AsyncStorage.removeItem('auth_session');
             await AsyncStorage.removeItem(`user_profile_${session.user.id}`);
-          } catch (cacheError) {
-            console.log('⚠️ Erreur lors du nettoyage du cache:', cacheError);
-          }
-          // Déconnecter l'utilisateur
+          } catch {}
           setUser(null);
           setIsAuthenticated(false);
-          await supabase.auth.signOut();
-        } else {
-          // Sauvegarder la session dans le cache
-          try {
-            await AsyncStorage.setItem('auth_session', JSON.stringify({ user: { id: session.user.id } }));
-          } catch (cacheError) {
-            console.log('⚠️ Erreur lors de la sauvegarde du cache de session:', cacheError);
-          }
-          
-          // Charger le profil (utilise le cache si disponible, puis met à jour)
-          await loadUserProfile(session.user.id, true);
         }
-      } else {
-        // Nettoyer le cache si pas de session
+      } catch (getUserError: any) {
+        // En cas d'erreur réseau ou timeout, utiliser le cache si disponible
+        console.log('⚠️ Erreur lors de la vérification de l\'utilisateur, utilisation du cache si disponible');
         try {
-          await AsyncStorage.removeItem('auth_session');
-          await AsyncStorage.removeItem(`user_profile_${user?.id || ''}`);
+          const cachedProfile = await AsyncStorage.getItem(`user_profile_${session.user.id}`);
+          if (cachedProfile) {
+            const userProfile: User = JSON.parse(cachedProfile);
+            setUser(userProfile);
+            setIsAuthenticated(true);
+            // Vérifier en arrière-plan
+            (async () => {
+              try {
+                const { data: authUser } = await supabase.auth.getUser();
+                if (!authUser?.user) {
+                  await supabase.auth.signOut();
+                  setUser(null);
+                  setIsAuthenticated(false);
+                } else {
+                  await loadUserProfile(session.user.id, false);
+                }
+              } catch {}
+            })();
+          } else {
+            // Pas de cache, charger le profil (peut échouer si pas de réseau)
+            await loadUserProfile(session.user.id, false);
+          }
         } catch (cacheError) {
-          console.log('⚠️ Erreur lors du nettoyage du cache:', cacheError);
+          // Si même le cache échoue, déconnecter
+          setUser(null);
+          setIsAuthenticated(false);
         }
-        setIsAuthenticated(false);
-        setUser(null);
       }
     } catch (error: any) {
-      // Capturer toutes les erreurs réseau, y compris les TypeError et AuthRetryableFetchError
+      // Capturer toutes les erreurs réseau
       const isNetworkErr = isNetworkError(error) || 
                           error?.name === 'AuthRetryableFetchError' ||
                           error?.name === 'AuthPKCEGrantCodeExchangeError' ||
@@ -496,8 +509,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                           error?.name === 'TypeError';
       
       if (isNetworkErr) {
-        console.log('⚠️ Erreur réseau lors de la vérification de session. Vérifiez votre connexion internet.');
-        console.log('🔍 Type d\'erreur:', error?.name || 'Unknown');
+        console.log('⚠️ Erreur réseau lors de la vérification de session. Utilisation du cache si disponible.');
+        // Essayer d'utiliser le cache en cas d'erreur réseau
+        try {
+          const cachedSession = await AsyncStorage.getItem('auth_session');
+          const cachedProfile = user?.id ? await AsyncStorage.getItem(`user_profile_${user.id}`) : null;
+          
+          if (cachedSession && cachedProfile) {
+            const sessionData = JSON.parse(cachedSession);
+            const userProfile: User = JSON.parse(cachedProfile);
+            if (sessionData?.user?.id === userProfile.id) {
+              setUser(userProfile);
+              setIsAuthenticated(true);
+              setIsLoading(false);
+              return;
+            }
+          }
+        } catch (cacheError) {
+          // Ignorer les erreurs de cache
+        }
       } else if (!isNetworkError(error)) {
         console.error('Error checking auth:', error);
       }
@@ -604,48 +634,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { error: null, user: null };
       }
 
-      // Vérifier si l'utilisateur existe déjà (opération rapide)
-      const { data: existingProfile } = await supabase
+      // Utiliser les valeurs GPS par défaut immédiatement (pas d'attente)
+      // La position sera mise à jour en arrière-plan si disponible
+      let location = { lat: -4.3276, lng: 15.3136 }; // Valeurs par défaut (Kinshasa)
+      if (lat && lng) {
+        location = { lat, lng };
+      } else {
+        // Essayer d'obtenir la position en arrière-plan (non bloquant)
+        (async () => {
+          try {
+            const { status } = await Location.getForegroundPermissionsAsync();
+            if (status === 'granted') {
+              const loc = await Location.getCurrentPositionAsync({
+                accuracy: Location.Accuracy.Lowest,
+                maximumAge: 60000,
+              });
+              // Mettre à jour la position en arrière-plan si obtenue
+              if (loc?.coords) {
+                updateLocation(loc.coords.latitude, loc.coords.longitude).catch(() => {});
+              }
+            }
+          } catch (error) {
+            // Ignorer silencieusement
+          }
+        })();
+      }
+
+      // Vérifier si l'utilisateur existe déjà (opération rapide, en parallèle avec la création)
+      const existingProfilePromise = supabase
         .from('profiles')
         .select('id')
         .eq('phone', formattedPhone)
         .maybeSingle();
 
-      // Obtenir la position de manière optimisée (timeout rapide pour éviter les attentes)
-      let location = { lat: -4.3276, lng: 15.3136 }; // Valeurs par défaut (Kinshasa)
-      if (lat && lng) {
-        location = { lat, lng };
-      } else {
-        // Essayer d'obtenir la position avec un timeout court (non bloquant)
-        try {
-          const { status } = await Location.getForegroundPermissionsAsync();
-          if (status === 'granted') {
-            const locationPromise = Location.getCurrentPositionAsync({
-              accuracy: Location.Accuracy.Lowest,
-              maximumAge: 60000, // Accepter une position jusqu'à 1 minute
-            });
-            
-            // Timeout après 2 secondes maximum pour ne pas bloquer
-            const timeoutPromise = new Promise<{ lat: number; lng: number }>((resolve) => {
-              setTimeout(() => resolve({ lat: -4.3276, lng: 15.3136 }), 2000);
-            });
-
-            location = await Promise.race([
-              locationPromise.then(loc => ({
-                lat: loc.coords.latitude,
-                lng: loc.coords.longitude
-              })),
-              timeoutPromise
-            ]);
-          }
-        } catch (error) {
-          // Utiliser les valeurs par défaut en cas d'erreur
-          console.log('⚠️ Localisation non disponible, utilisation des valeurs par défaut');
-        }
-      }
-
       let authUser;
       let isNewUser = false;
+
+      // Attendre le résultat de la vérification du profil (rapide)
+      const { data: existingProfile } = await existingProfilePromise;
 
       if (existingProfile) {
         // Utilisateur existant - récupérer la session ou se connecter
@@ -791,27 +817,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { error: profileError, user: null };
       }
 
-      // Opérations en arrière-plan (non bloquantes)
-      Promise.all([
-        // Marquer l'email comme vérifié
-        authUser.id ? (async () => {
-          try {
-            const { error } = await supabase.rpc('verify_user_email', { p_user_id: authUser.id });
-            if (error) {
-              console.warn('⚠️ Erreur lors de la vérification de l\'email:', error);
-            }
-          } catch (error) {
-            console.warn('⚠️ Erreur lors de la vérification de l\'email:', error);
-          }
-        })() : Promise.resolve(),
-        // Charger le profil créé
-        loadUserProfile(authUser.id).catch(() => {}),
-      ]).catch(() => {
-        // Ignorer les erreurs, ces opérations ne sont pas critiques
-      });
+      // Construire l'objet utilisateur immédiatement (sans attendre loadUserProfile)
+      const userEmail = authUser.email || generateTempEmail(formattedPhone);
+      const newUser: User = {
+        id: authUser.id,
+        email: userEmail,
+        phone: formattedPhone,
+        pseudo: pseudo || authUser.user_metadata?.pseudo || 'Utilisateur',
+        age: userAge,
+        gender: userGender,
+        photo: getDefaultProfileImage(userGender),
+        description: '',
+        rating: 0,
+        reviewCount: 0,
+        isSubscribed: false,
+        subscriptionStatus: 'pending',
+        lat: location.lat,
+        lng: location.lng,
+        isAvailable: true,
+        specialty: specialty || undefined,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      // Mettre à jour l'état utilisateur immédiatement
+      setUser(newUser);
+      setIsAuthenticated(true);
+
+      // Sauvegarder dans le cache pour persistance (session + profil)
+      AsyncStorage.setItem(`user_profile_${newUser.id}`, JSON.stringify(newUser)).catch(() => {});
+      AsyncStorage.setItem('auth_session', JSON.stringify({ user: { id: newUser.id } })).catch(() => {});
+
+      // Opérations en arrière-plan (non bloquantes) - après le retour
+      (async () => {
+        try {
+          // Marquer l'email comme vérifié
+          await supabase.rpc('verify_user_email', { p_user_id: authUser.id }).catch(() => {});
+          // Charger le profil complet depuis la base (pour avoir les dernières données)
+          await loadUserProfile(authUser.id).catch(() => {});
+        } catch (error) {
+          // Ignorer les erreurs, ces opérations ne sont pas critiques
+        }
+      })();
       
-      // Retourner immédiatement avec l'utilisateur (le profil sera chargé en arrière-plan)
-      return { error: null, user: user };
+      // Retourner immédiatement avec l'utilisateur créé
+      return { error: null, user: newUser };
     } catch (error: any) {
       // Gérer spécifiquement les erreurs réseau Supabase
       const isNetworkErr = isNetworkError(error) || 
@@ -1100,7 +1150,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         password: password,
       });
 
-      // Si succès, charger le profil en arrière-plan et retourner immédiatement
+      // Si succès, charger le profil rapidement et retourner immédiatement
       if (!authError && authData?.user) {
         // Marquer l'email comme vérifié en arrière-plan (non bloquant)
         (async () => {
@@ -1109,10 +1159,105 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           } catch {}
         })();
         
-        // Charger le profil en arrière-plan (non bloquant pour la réponse)
+        // Charger le profil rapidement avec timeout court (1.5 secondes max)
+        try {
+          const profilePromise = supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', authData.user.id)
+            .single();
+          
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Timeout')), 1500)
+          );
+
+          const profileResult = await Promise.race([profilePromise, timeoutPromise]) as any;
+          
+          if (profileResult?.data && !profileResult.error) {
+            const profile = profileResult.data;
+            const loggedUser: User = {
+              id: profile.id,
+              email: authData.user.email || primaryEmail,
+              phone: profile.phone || formattedPhone,
+              pseudo: profile.pseudo || 'Utilisateur',
+              age: profile.age || 25,
+              gender: profile.gender || 'female',
+              photo: profile.photo || getDefaultProfileImage(profile.gender || 'female'),
+              description: profile.description || '',
+              rating: profile.rating || 0,
+              reviewCount: profile.review_count || 0,
+              isSubscribed: profile.is_subscribed || false,
+              subscriptionStatus: profile.subscription_status || 'pending',
+              lat: profile.lat || -4.3276,
+              lng: profile.lng || 15.3136,
+              isAvailable: profile.is_available ?? true,
+              specialty: profile.specialty || undefined,
+              createdAt: profile.created_at,
+              updatedAt: profile.updated_at,
+            };
+
+            // Mettre à jour l'état immédiatement
+            setUser(loggedUser);
+            setIsAuthenticated(true);
+
+            // Sauvegarder dans le cache pour persistance (session + profil)
+            AsyncStorage.setItem(`user_profile_${loggedUser.id}`, JSON.stringify(loggedUser)).catch(() => {});
+            AsyncStorage.setItem('auth_session', JSON.stringify({ user: { id: loggedUser.id } })).catch(() => {});
+            
+            return { error: null, user: loggedUser };
+          }
+        } catch (profileError) {
+          // En cas d'erreur ou timeout, essayer le cache
+          try {
+            const cachedUser = await AsyncStorage.getItem(`user_profile_${authData.user.id}`);
+            if (cachedUser) {
+              const userProfile: User = JSON.parse(cachedUser);
+              setUser(userProfile);
+              setIsAuthenticated(true);
+              // Sauvegarder la session pour persistance
+              AsyncStorage.setItem('auth_session', JSON.stringify({ user: { id: userProfile.id } })).catch(() => {});
+              // Charger le profil complet en arrière-plan
+              loadUserProfile(authData.user.id).catch(() => {});
+              return { error: null, user: userProfile };
+            }
+          } catch (cacheError) {
+            // Ignorer les erreurs de cache
+          }
+        }
+
+        // Si pas de profil ni cache, charger en arrière-plan et retourner un utilisateur basique
+        const basicUser: User = {
+          id: authData.user.id,
+          email: authData.user.email || primaryEmail,
+          phone: formattedPhone,
+          pseudo: authData.user.user_metadata?.pseudo || 'Utilisateur',
+          age: 25,
+          gender: 'female',
+          photo: getDefaultProfileImage('female'),
+          description: '',
+          rating: 0,
+          reviewCount: 0,
+          isSubscribed: false,
+          subscriptionStatus: 'pending',
+          lat: -4.3276,
+          lng: 15.3136,
+          isAvailable: true,
+          specialty: undefined,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+
+        setUser(basicUser);
+        setIsAuthenticated(true);
+        
+        // Sauvegarder dans le cache pour persistance
+        AsyncStorage.setItem(`user_profile_${basicUser.id}`, JSON.stringify(basicUser)).catch(() => {});
+        AsyncStorage.setItem('auth_session', JSON.stringify({ user: { id: basicUser.id } })).catch(() => {});
+        
+        // Charger le profil complet en arrière-plan
         loadUserProfile(authData.user.id).catch(() => {});
         
-        return { error: null, user: user };
+        return { error: null, user: basicUser };
       }
 
       // Si échec avec "email not confirmed", essayer de confirmer automatiquement
@@ -1134,8 +1279,93 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           });
 
           if (!retryAuthError && retryAuthData?.user) {
+            // Charger le profil rapidement (même logique que ci-dessus)
+            try {
+              const profilePromise = supabase
+                .from('profiles')
+                .select('*')
+                .eq('id', retryAuthData.user.id)
+                .single();
+              
+              const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Timeout')), 1500)
+              );
+
+              const profileResult = await Promise.race([profilePromise, timeoutPromise]) as any;
+              
+              if (profileResult?.data && !profileResult.error) {
+                const profile = profileResult.data;
+                const loggedUser: User = {
+                  id: profile.id,
+                  email: retryAuthData.user.email || primaryEmail,
+                  phone: profile.phone || formattedPhone,
+                  pseudo: profile.pseudo || 'Utilisateur',
+                  age: profile.age || 25,
+                  gender: profile.gender || 'female',
+                  photo: profile.photo || getDefaultProfileImage(profile.gender || 'female'),
+                  description: profile.description || '',
+                  rating: profile.rating || 0,
+                  reviewCount: profile.review_count || 0,
+                  isSubscribed: profile.is_subscribed || false,
+                  subscriptionStatus: profile.subscription_status || 'pending',
+                  lat: profile.lat || -4.3276,
+                  lng: profile.lng || 15.3136,
+                  isAvailable: profile.is_available ?? true,
+                  specialty: profile.specialty || undefined,
+                  createdAt: profile.created_at,
+                  updatedAt: profile.updated_at,
+                };
+
+                setUser(loggedUser);
+                setIsAuthenticated(true);
+                AsyncStorage.setItem(`user_profile_${loggedUser.id}`, JSON.stringify(loggedUser)).catch(() => {});
+                return { error: null, user: loggedUser };
+              }
+            } catch (profileError) {
+              // En cas d'erreur, utiliser le cache ou un utilisateur basique
+              try {
+                const cachedUser = await AsyncStorage.getItem(`user_profile_${retryAuthData.user.id}`);
+                if (cachedUser) {
+                  const userProfile: User = JSON.parse(cachedUser);
+                  setUser(userProfile);
+                  setIsAuthenticated(true);
+                  // Sauvegarder la session pour persistance
+                  AsyncStorage.setItem('auth_session', JSON.stringify({ user: { id: userProfile.id } })).catch(() => {});
+                  loadUserProfile(retryAuthData.user.id).catch(() => {});
+                  return { error: null, user: userProfile };
+                }
+              } catch {}
+            }
+
+            // Utilisateur basique en dernier recours
+            const basicUser: User = {
+              id: retryAuthData.user.id,
+              email: retryAuthData.user.email || primaryEmail,
+              phone: formattedPhone,
+              pseudo: retryAuthData.user.user_metadata?.pseudo || 'Utilisateur',
+              age: 25,
+              gender: 'female',
+              photo: getDefaultProfileImage('female'),
+              description: '',
+              rating: 0,
+              reviewCount: 0,
+              isSubscribed: false,
+              subscriptionStatus: 'pending',
+              lat: -4.3276,
+              lng: 15.3136,
+              isAvailable: true,
+              specialty: undefined,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            };
+
+            setUser(basicUser);
+            setIsAuthenticated(true);
+            // Sauvegarder dans le cache pour persistance
+            AsyncStorage.setItem(`user_profile_${basicUser.id}`, JSON.stringify(basicUser)).catch(() => {});
+            AsyncStorage.setItem('auth_session', JSON.stringify({ user: { id: basicUser.id } })).catch(() => {});
             loadUserProfile(retryAuthData.user.id).catch(() => {});
-            return { error: null, user: user };
+            return { error: null, user: basicUser };
           }
         }
       }
@@ -1160,10 +1390,93 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               } catch {}
             })();
             
-            // Charger le profil en arrière-plan (non bloquant)
+            // Charger le profil rapidement (même logique que ci-dessus)
+            try {
+              const profilePromise = supabase
+                .from('profiles')
+                .select('*')
+                .eq('id', retryAuthData.user.id)
+                .single();
+              
+              const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Timeout')), 1500)
+              );
+
+              const profileResult = await Promise.race([profilePromise, timeoutPromise]) as any;
+              
+              if (profileResult?.data && !profileResult.error) {
+                const profile = profileResult.data;
+                const loggedUser: User = {
+                  id: profile.id,
+                  email: retryAuthData.user.email || alternativeEmail,
+                  phone: profile.phone || formattedPhone,
+                  pseudo: profile.pseudo || 'Utilisateur',
+                  age: profile.age || 25,
+                  gender: profile.gender || 'female',
+                  photo: profile.photo || getDefaultProfileImage(profile.gender || 'female'),
+                  description: profile.description || '',
+                  rating: profile.rating || 0,
+                  reviewCount: profile.review_count || 0,
+                  isSubscribed: profile.is_subscribed || false,
+                  subscriptionStatus: profile.subscription_status || 'pending',
+                  lat: profile.lat || -4.3276,
+                  lng: profile.lng || 15.3136,
+                  isAvailable: profile.is_available ?? true,
+                  specialty: profile.specialty || undefined,
+                  createdAt: profile.created_at,
+                  updatedAt: profile.updated_at,
+                };
+
+                setUser(loggedUser);
+                setIsAuthenticated(true);
+                AsyncStorage.setItem(`user_profile_${loggedUser.id}`, JSON.stringify(loggedUser)).catch(() => {});
+                return { error: null, user: loggedUser };
+              }
+            } catch (profileError) {
+              // En cas d'erreur, utiliser le cache ou un utilisateur basique
+              try {
+                const cachedUser = await AsyncStorage.getItem(`user_profile_${retryAuthData.user.id}`);
+                if (cachedUser) {
+                  const userProfile: User = JSON.parse(cachedUser);
+                  setUser(userProfile);
+                  setIsAuthenticated(true);
+                  // Sauvegarder la session pour persistance
+                  AsyncStorage.setItem('auth_session', JSON.stringify({ user: { id: userProfile.id } })).catch(() => {});
+                  loadUserProfile(retryAuthData.user.id).catch(() => {});
+                  return { error: null, user: userProfile };
+                }
+              } catch {}
+            }
+
+            // Utilisateur basique en dernier recours
+            const basicUser: User = {
+              id: retryAuthData.user.id,
+              email: retryAuthData.user.email || alternativeEmail,
+              phone: formattedPhone,
+              pseudo: retryAuthData.user.user_metadata?.pseudo || 'Utilisateur',
+              age: 25,
+              gender: 'female',
+              photo: getDefaultProfileImage('female'),
+              description: '',
+              rating: 0,
+              reviewCount: 0,
+              isSubscribed: false,
+              subscriptionStatus: 'pending',
+              lat: -4.3276,
+              lng: 15.3136,
+              isAvailable: true,
+              specialty: undefined,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            };
+
+            setUser(basicUser);
+            setIsAuthenticated(true);
+            // Sauvegarder dans le cache pour persistance
+            AsyncStorage.setItem(`user_profile_${basicUser.id}`, JSON.stringify(basicUser)).catch(() => {});
+            AsyncStorage.setItem('auth_session', JSON.stringify({ user: { id: basicUser.id } })).catch(() => {});
             loadUserProfile(retryAuthData.user.id).catch(() => {});
-            
-            return { error: null, user: user };
+            return { error: null, user: basicUser };
           }
         }
       }
@@ -1500,6 +1813,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       console.log('🚪 Déconnexion en cours...');
       
+      // Sauvegarder l'ID utilisateur AVANT de le mettre à null (pour le nettoyage du cache)
+      const userId = user?.id;
+      
       // Marquer qu'on est en train de se déconnecter (AVANT toute autre opération)
       isLoggingOutRef.current = true;
       
@@ -1507,73 +1823,131 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isUpdatingRef.current = true;
       
       // Arrêter le suivi de localisation en arrière-plan
-      const { LocationService } = await import('../lib/locationService');
-      LocationService.stopBackgroundTracking();
+      try {
+        const { LocationService } = await import('../lib/locationService');
+        LocationService.stopBackgroundTracking();
+      } catch (locationError) {
+        console.log('⚠️ Erreur lors de l\'arrêt du suivi de localisation:', locationError);
+      }
       
-      // D'abord, mettre à jour l'état local pour déclencher les redirections
+      // Mettre à jour l'état local IMMÉDIATEMENT pour déclencher les redirections
       setUser(null);
       setIsAuthenticated(false);
       
-      // Nettoyer le cache
+      // Nettoyer TOUS les caches liés à l'authentification
+      try {
+        // Nettoyer la session
+        await AsyncStorage.removeItem('auth_session');
+        
+        // Nettoyer le profil utilisateur si on a l'ID
+        if (userId) {
+          await AsyncStorage.removeItem(`user_profile_${userId}`);
+        }
+        
+        // Nettoyer tous les profils utilisateur potentiels (au cas où)
+        try {
+          const allKeys = await AsyncStorage.getAllKeys();
+          const profileKeys = allKeys.filter((key: string) => key.startsWith('user_profile_'));
+          if (profileKeys.length > 0) {
+            await AsyncStorage.multiRemove(profileKeys);
+            console.log(`🧹 ${profileKeys.length} profil(s) supprimé(s) du cache`);
+          }
+          
+          // Nettoyer les clés Supabase liées à l'authentification
+          // Supabase stocke la session dans des clés spécifiques
+          const supabaseKeys = allKeys.filter((key: string) => 
+            key.startsWith('supabase.auth.token') || 
+            (key.includes('supabase') && key.includes('auth'))
+          );
+          if (supabaseKeys.length > 0) {
+            await AsyncStorage.multiRemove(supabaseKeys);
+            console.log(`🧹 ${supabaseKeys.length} clé(s) Supabase supprimée(s)`);
+          }
+        } catch (multiRemoveError) {
+          console.log('⚠️ Erreur lors du nettoyage multiple du cache:', multiRemoveError);
+        }
+      } catch (cacheError) {
+        console.log('⚠️ Erreur lors du nettoyage du cache:', cacheError);
+        // Continuer même en cas d'erreur de cache
+      }
+      
+      // Signer out de Supabase (cela nettoie aussi la session interne de Supabase)
+      const { error: signOutError } = await supabase.auth.signOut();
+      
+      if (signOutError) {
+        if (!isNetworkError(signOutError)) {
+          console.error('❌ Erreur lors de la déconnexion Supabase:', signOutError);
+        }
+        // Même en cas d'erreur, on continue le nettoyage
+      }
+      
+      // Vérifier que la session est bien supprimée après signOut
+      const { data: { session: sessionAfter } } = await supabase.auth.getSession();
+      
+      if (sessionAfter?.user) {
+        console.warn('⚠️ La session existe encore après signOut, forcer la suppression');
+        // Essayer de forcer la suppression en nettoyant manuellement
+        try {
+          // Nettoyer toutes les clés Supabase
+          const allKeysForClean = await AsyncStorage.getAllKeys();
+          const supabaseAuthKeys = allKeysForClean.filter((key: string) => 
+            key.includes('supabase') || 
+            key.includes('auth') ||
+            key.includes('session')
+          );
+          if (supabaseAuthKeys.length > 0) {
+            await AsyncStorage.multiRemove(supabaseAuthKeys);
+            console.log(`🧹 ${supabaseAuthKeys.length} clé(s) d'authentification supprimée(s) manuellement`);
+          }
+        } catch (forceCleanError) {
+          console.log('⚠️ Erreur lors du nettoyage forcé:', forceCleanError);
+        }
+        
+        // Forcer la suppression de l'état
+        setUser(null);
+        setIsAuthenticated(false);
+      } else {
+        console.log('✅ Session Supabase supprimée avec succès');
+      }
+      
+      // Réinitialiser les flags après un délai pour s'assurer que tout est nettoyé
+      setTimeout(() => {
+        isUpdatingRef.current = false;
+        // Garder isLoggingOutRef à true plus longtemps pour éviter les rechargements automatiques
+        setTimeout(() => {
+          isLoggingOutRef.current = false;
+          console.log('✅ Flags de déconnexion réinitialisés');
+        }, 2000);
+      }, 500);
+      
+      console.log('✅ Déconnexion complète réussie');
+    } catch (error: any) {
+      if (!isNetworkError(error)) {
+        console.error('❌ Erreur lors de la déconnexion:', error);
+      }
+      
+      // S'assurer que l'état est bien à false même en cas d'erreur
+      setUser(null);
+      setIsAuthenticated(false);
+      
+      // Nettoyer le cache même en cas d'erreur
       try {
         await AsyncStorage.removeItem('auth_session');
         if (user?.id) {
           await AsyncStorage.removeItem(`user_profile_${user.id}`);
         }
       } catch (cacheError) {
-        console.log('⚠️ Erreur lors du nettoyage du cache:', cacheError);
+        console.log('⚠️ Erreur lors du nettoyage du cache en cas d\'erreur:', cacheError);
       }
       
-      // Vérifier que la session est bien supprimée
-      const { data: { session: sessionBefore } } = await supabase.auth.getSession();
-      console.log('📋 Session avant déconnexion:', sessionBefore?.user?.id || 'Aucune');
-      
-      // Ensuite, signer out de Supabase
-      const { error } = await supabase.auth.signOut();
-      if (error) {
-        if (!isNetworkError(error)) {
-          console.error('Error signing out:', error);
-        }
-        // Même en cas d'erreur, on garde l'état local à false
-        // pour forcer la redirection vers la page d'authentification
-        throw error;
-      }
-      
-      // Vérifier que la session est bien supprimée après signOut
-      const { data: { session: sessionAfter } } = await supabase.auth.getSession();
-      console.log('📋 Session après déconnexion:', sessionAfter?.user?.id || 'Aucune');
-      
-      if (sessionAfter?.user) {
-        console.warn('⚠️ La session existe encore après signOut, forcer la suppression');
-        // Forcer la suppression de l'état
-        setUser(null);
-        setIsAuthenticated(false);
-      }
-      
-      // Réinitialiser les flags après un délai plus long pour s'assurer que tout est nettoyé
-      setTimeout(() => {
-        isUpdatingRef.current = false;
-        // Garder isLoggingOutRef à true plus longtemps pour éviter les rechargements
-        setTimeout(() => {
-          isLoggingOutRef.current = false;
-          console.log('✅ Flags de déconnexion réinitialisés');
-        }, 3000);
-      }, 1000);
-      
-      console.log('✅ Déconnexion réussie');
-    } catch (error: any) {
-      if (!isNetworkError(error)) {
-        console.error('Error logging out:', error);
-      }
-      // S'assurer que l'état est bien à false même en cas d'erreur
-      setUser(null);
-      setIsAuthenticated(false);
       // Réinitialiser les flags après un délai
       setTimeout(() => {
         isUpdatingRef.current = false;
         isLoggingOutRef.current = false;
-      }, 3000);
-      throw error;
+      }, 2000);
+      
+      // Ne pas throw l'erreur pour permettre la redirection même en cas d'erreur
+      console.log('⚠️ Déconnexion terminée avec des erreurs, mais l\'utilisateur est déconnecté');
     }
   };
 

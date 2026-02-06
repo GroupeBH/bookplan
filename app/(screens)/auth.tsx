@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Image, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
@@ -737,12 +737,12 @@ export default function AuthScreen() {
         {/* Header */}
         <View style={styles.header}>
           <View style={styles.logoContainer}>
-            <LinearGradient
-              colors={[colors.pink500, colors.pink700]}
+            <Image
+              source={require('../../assets/images/kutana.png')}
               style={styles.logo}
-            >
-              <Ionicons name="sparkles" size={32} color="#ffffff" />
-            </LinearGradient>
+              resizeMode="contain"
+            />
+            <Text style={styles.logoText}>Kutana</Text>
           </View>
         </View>
 
@@ -1250,13 +1250,18 @@ const styles = StyleSheet.create({
   },
   logoContainer: {
     marginBottom: 8,
+    alignItems: 'center',
   },
   logo: {
-    width: 64,
-    height: 64,
-    borderRadius: 16,
-    justifyContent: 'center',
-    alignItems: 'center',
+    width: 80,
+    height: 80,
+    marginBottom: 12,
+  },
+  logoText: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: colors.text,
+    letterSpacing: 2,
   },
   scrollContent: {
     flexGrow: 1,

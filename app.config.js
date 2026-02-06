@@ -4,7 +4,7 @@ export default {
     slug: "kutana",
     version: "1.0.0",
     orientation: "portrait",
-    icon: "./assets/images/kutana.png",
+    icon: "./assets/images/icon.png",
     scheme: "kutana",
     userInterfaceStyle: "automatic",
     // newArchEnabled: true
@@ -27,7 +27,7 @@ export default {
       package: "com.kuntana",  // Doit correspondre à google-services.json
       adaptiveIcon: {
         backgroundColor: "#E6F4FE",
-        foregroundImage: "./assets/images/kutana.png",
+        foregroundImage: "./assets/images/android-icon-foreground.png",
         backgroundImage: "./assets/images/android-icon-background.png",
         monochromeImage: "./assets/images/android-icon-monochrome.png"
       },
@@ -52,7 +52,7 @@ export default {
       [
         "expo-splash-screen",
         {
-          image: "./assets/images/kutana.png",
+          image: "./assets/images/splash-icon.png",
           imageWidth: 200,
           resizeMode: "contain",
           backgroundColor: "#ffffff",
@@ -86,7 +86,7 @@ export default {
       [
         "expo-notifications",
         {
-          icon: "./assets/images/kutana.png",
+          icon: "./assets/images/icon.png",
           color: "#ffffff"
         }
       ],

@@ -934,7 +934,14 @@ export default function Dashboard() {
     <SafeAreaView style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>KUTANA</Text>
+        <View style={styles.headerLeft}>
+          <Image
+            source={require('../../assets/images/kutana.png')}
+            style={styles.headerLogo}
+            resizeMode="contain"
+          />
+          <Text style={styles.headerTitle}>KUTANA</Text>
+        </View>
         <View style={styles.headerRight}>
           {currentUser?.isSubscribed && (
             <Badge variant="info" style={styles.badge}>
@@ -1336,6 +1343,15 @@ const styles = StyleSheet.create({
     backgroundColor: `${colors.backgroundSecondary}80`,
     borderBottomWidth: 1,
     borderBottomColor: colors.borderSecondary,
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  headerLogo: {
+    width: 28,
+    height: 28,
   },
   headerTitle: {
     fontSize: 20,

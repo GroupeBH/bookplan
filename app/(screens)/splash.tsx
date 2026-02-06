@@ -1,7 +1,7 @@
-import React, { useEffect } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import React, { useEffect } from 'react';
+import { ActivityIndicator, Image, StyleSheet, Text, View } from 'react-native';
 import { colors } from '../../constants/colors';
 import { useAuth } from '../../context/AuthContext';
 
@@ -26,12 +26,17 @@ export default function SplashScreen() {
   }, [isAuthenticated, isLoading, router]);
 
   return (
-    <View style={styles.container}>
+    <LinearGradient
+      colors={[colors.pink500, '#000000']}
+      style={styles.container}
+    >
       {/* Logo */}
       <View style={styles.logoContainer}>
-        <View style={styles.logo}>
-          <Ionicons name="sparkles" size={48} color="#ffffff" />
-        </View>
+        <Image
+          source={require('../../assets/images/kutana.png')}
+          style={styles.logo}
+          resizeMode="contain"
+        />
       </View>
 
       {/* Title */}
@@ -42,16 +47,15 @@ export default function SplashScreen() {
 
       {/* Loading indicator */}
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={colors.purple500} />
+        <ActivityIndicator size="large" color={colors.pink500} />
       </View>
-    </View>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000000',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20,
@@ -60,17 +64,8 @@ const styles = StyleSheet.create({
     marginBottom: 32,
   },
   logo: {
-    width: 96,
-    height: 96,
-    borderRadius: 24,
-    backgroundColor: colors.purple500,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: colors.purple500,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.5,
-    shadowRadius: 20,
-    elevation: 10,
+    width: 120,
+    height: 120,
   },
   textContainer: {
     alignItems: 'center',
