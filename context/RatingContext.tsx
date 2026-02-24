@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { supabase } from '../lib/supabase';
 import { Rating } from '../types';
 import { useAuth } from './AuthContext';
@@ -16,20 +16,35 @@ interface RatingContextType {
 
 const RatingContext = createContext<RatingContextType | undefined>(undefined);
 
+const toTimestamp = (value?: string): number => {
+  const parsed = Date.parse(value ?? '');
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const dedupeLatestRatingsByRater = (items: Rating[]): Rating[] => {
+  const sorted = [...items].sort((a, b) => {
+    const bTime = Math.max(toTimestamp(b.updatedAt), toTimestamp(b.createdAt));
+    const aTime = Math.max(toTimestamp(a.updatedAt), toTimestamp(a.createdAt));
+    return bTime - aTime;
+  });
+
+  const byRater = new Map<string, Rating>();
+  for (const item of sorted) {
+    if (!byRater.has(item.raterId)) {
+      byRater.set(item.raterId, item);
+    }
+  }
+
+  return Array.from(byRater.values());
+};
+
 export function RatingProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const [ratings, setRatings] = useState<Rating[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Charger les ratings au démarrage
-  useEffect(() => {
-    if (user) {
-      refreshRatings();
-    }
-  }, [user]);
-
   // Rafraîchir les ratings
-  const refreshRatings = async () => {
+  const refreshRatings = useCallback(async () => {
     setIsLoading(true);
     try {
       const { data, error } = await supabase
@@ -55,7 +70,14 @@ export function RatingProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
+
+  // Charger les ratings au démarrage
+  useEffect(() => {
+    if (user) {
+      refreshRatings();
+    }
+  }, [user, refreshRatings]);
 
   // Créer une note
   const createRating = async (
@@ -77,14 +99,70 @@ export function RatingProvider({ children }: { children: ReactNode }) {
     }
 
     try {
+      const normalizedComment = comment?.trim() ? comment.trim() : null;
+      const { data: existingRatings, error: existingError } = await supabase
+        .from('ratings')
+        .select('*')
+        .eq('rater_id', user.id)
+        .eq('rated_id', ratedId)
+        .order('updated_at', { ascending: false, nullsFirst: false })
+        .order('created_at', { ascending: false });
+
+      if (existingError) {
+        if (!isNetworkError(existingError)) {
+          console.error('Error checking existing rating:', existingError);
+        }
+        return { error: existingError, rating: null };
+      }
+
+      const latestExisting = existingRatings && existingRatings.length > 0
+        ? existingRatings[0]
+        : null;
+
+      if (latestExisting) {
+        const nextBookingId = latestExisting.booking_id || bookingId || null;
+        const { data: updatedData, error: updateError } = await supabase
+          .from('ratings')
+          .update({
+            rating,
+            comment: normalizedComment,
+            booking_id: nextBookingId,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', latestExisting.id)
+          .eq('rater_id', user.id)
+          .select()
+          .single();
+
+        if (updateError) {
+          if (!isNetworkError(updateError)) {
+            console.error('Error updating existing rating in create flow:', updateError);
+          }
+          return { error: updateError, rating: null };
+        }
+
+        if (updatedData) {
+          const normalizedUpdatedRating = mapRatingFromDB(updatedData);
+          setRatings((prev) => {
+            const filtered = prev.filter(
+              (r) => !(r.raterId === normalizedUpdatedRating.raterId && r.ratedId === normalizedUpdatedRating.ratedId)
+            );
+            return [normalizedUpdatedRating, ...filtered];
+          });
+          return { error: null, rating: normalizedUpdatedRating };
+        }
+
+        return { error: { message: 'No data returned' }, rating: null };
+      }
+
       const { data, error } = await supabase
         .from('ratings')
         .insert({
           rater_id: user.id,
           rated_id: ratedId,
           rating,
-          comment,
-          booking_id: bookingId,
+          comment: normalizedComment,
+          booking_id: bookingId || null,
         })
         .select()
         .single();
@@ -98,7 +176,12 @@ export function RatingProvider({ children }: { children: ReactNode }) {
 
       if (data) {
         const newRating = mapRatingFromDB(data);
-        setRatings([newRating, ...ratings]);
+        setRatings((prev) => {
+          const filtered = prev.filter(
+            (r) => !(r.raterId === newRating.raterId && r.ratedId === newRating.ratedId)
+          );
+          return [newRating, ...filtered];
+        });
         return { error: null, rating: newRating };
       }
 
@@ -139,7 +222,12 @@ export function RatingProvider({ children }: { children: ReactNode }) {
 
       if (data) {
         const updatedRating = mapRatingFromDB(data);
-        setRatings(ratings.map(r => r.id === ratingId ? updatedRating : r));
+        setRatings((prev) => {
+          const filtered = prev.filter(
+            (r) => !(r.raterId === updatedRating.raterId && r.ratedId === updatedRating.ratedId)
+          );
+          return [updatedRating, ...filtered];
+        });
         return { error: null };
       }
 
@@ -159,6 +247,7 @@ export function RatingProvider({ children }: { children: ReactNode }) {
         .from('ratings')
         .select('*')
         .eq('rated_id', userId)
+        .order('updated_at', { ascending: false, nullsFirst: false })
         .order('created_at', { ascending: false });
 
       if (error) {
@@ -168,7 +257,8 @@ export function RatingProvider({ children }: { children: ReactNode }) {
         return [];
       }
 
-      return data ? data.map(mapRatingFromDB) : [];
+      if (!data) return [];
+      return dedupeLatestRatingsByRater(data.map(mapRatingFromDB));
     } catch (error: any) {
       if (!isNetworkError(error)) {
         console.error('Error in getUserRatings:', error);
@@ -180,31 +270,10 @@ export function RatingProvider({ children }: { children: ReactNode }) {
   // Obtenir la moyenne des notes d'un utilisateur
   const getUserAverageRating = async (userId: string) => {
     try {
-      const { data, error } = await supabase.rpc('calculate_user_rating', {
-        user_id_param: userId,
-      });
-
-      if (error) {
-        if (!isNetworkError(error)) {
-          console.error('Error calculating user rating:', error);
-        }
-        // Fallback : calculer manuellement
-        const userRatings = await getUserRatings(userId);
-        if (userRatings.length === 0) {
-          return { average: 0, count: 0 };
-        }
-        const sum = userRatings.reduce((acc, r) => acc + r.rating, 0);
-        return { average: sum / userRatings.length, count: userRatings.length };
-      }
-
-      if (data && data.length > 0) {
-        return {
-          average: parseFloat(data[0].average_rating) || 0,
-          count: data[0].total_ratings || 0,
-        };
-      }
-
-      return { average: 0, count: 0 };
+      const userRatings = await getUserRatings(userId);
+      if (userRatings.length === 0) return { average: 0, count: 0 };
+      const sum = userRatings.reduce((acc, r) => acc + r.rating, 0);
+      return { average: sum / userRatings.length, count: userRatings.length };
     } catch (error: any) {
       if (!isNetworkError(error)) {
         console.error('Error in getUserAverageRating:', error);

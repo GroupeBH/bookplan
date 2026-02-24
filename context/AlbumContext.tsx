@@ -232,7 +232,7 @@ export function AlbumProvider({ children }: { children: ReactNode }) {
             .delete()
             .eq('id', photoId)
             .select();
-          success = deleteResult.data && deleteResult.data.length > 0;
+          success = !!(deleteResult.data && deleteResult.data.length > 0);
           error = deleteResult.error;
         } else {
           throw rpcError;
@@ -339,4 +339,3 @@ export function useAlbum() {
   }
   return context;
 }
-

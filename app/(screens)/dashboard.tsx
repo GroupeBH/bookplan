@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/exhaustive-deps */
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
@@ -12,113 +13,71 @@ import { useAuth } from '../../context/AuthContext';
 import { useBooking } from '../../context/BookingContext';
 import { useMessage } from '../../context/MessageContext';
 import { useNotification } from '../../context/NotificationContext';
+import { useOffer } from '../../context/OfferContext';
 import { useRating } from '../../context/RatingContext';
 import { useUser } from '../../context/UserContext';
 import { getDefaultProfileImage } from '../../lib/defaultImages';
 import { isMapboxAvailable } from '../../lib/mapbox';
-import { User } from '../../types';
+import { Offer, OfferType, User } from '../../types';
 
 // Import conditionnel de Mapbox
 let Mapbox: any = null;
 let MapView: any = null;
 let PointAnnotation: any = null;
 let Camera: any = null;
-let Callout: any = null;
 
 if (isMapboxAvailable) {
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const mapboxModule = require('@rnmapbox/maps');
     Mapbox = mapboxModule.default;
     MapView = mapboxModule.MapView;
     PointAnnotation = mapboxModule.PointAnnotation;
     Camera = mapboxModule.Camera;
-    Callout = mapboxModule.Callout;
-  } catch (error) {
+  } catch {
     console.warn('Failed to load Mapbox components');
   }
 }
 
-const mockUsers: User[] = [
-  {
-    id: '1',
-    pseudo: 'Amina',
-    age: 24,
-    photo: 'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=400',
-    description: 'Passionnée de danse et de sorties entre amis',
-    distance: 2.3,
-    rating: 4.8,
-    reviewCount: 23,
-    isSubscribed: true,
-    subscriptionStatus: 'active',
-    lastSeen: 'En ligne',
-    gender: 'female',
-    lat: -4.3276,
-    lng: 15.3136,
-  },
-  {
-    id: '2',
-    pseudo: 'Joël',
-    age: 28,
-    photo: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400',
-    description: 'Entrepreneur, aime les discussions profondes',
-    distance: 3.7,
-    rating: 4.5,
-    reviewCount: 18,
-    isSubscribed: true,
-    subscriptionStatus: 'active',
-    lastSeen: 'Il y a 5 min',
-    gender: 'male',
-    lat: -4.3376,
-    lng: 15.3236,
-  },
-  {
-    id: '3',
-    pseudo: 'Grace',
-    age: 26,
-    photo: 'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=400',
-    description: 'Amatrice de bonne musique et de soirées',
-    distance: 1.5,
-    rating: 4.9,
-    reviewCount: 31,
-    isSubscribed: true,
-    subscriptionStatus: 'active',
-    lastSeen: 'En ligne',
-    gender: 'female',
-    lat: -4.3176,
-    lng: 15.3036,
-  },
-  {
-    id: '4',
-    pseudo: 'Patrick',
-    age: 30,
-    photo: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400',
-    description: 'Sportif et sociable',
-    distance: 5.2,
-    rating: 4.3,
-    reviewCount: 15,
-    isSubscribed: true,
-    subscriptionStatus: 'active',
-    lastSeen: 'Il y a 1h',
-    gender: 'male',
-    lat: -4.3476,
-    lng: 15.3336,
-  },
-];
-
 type Tab = 'home' | 'search' | 'messages' | 'notifications' | 'profile';
+
+const PROXIMITY_RADIUS_KM = 10;
+const ONLINE_WINDOW_MINUTES = 2;
+const ONLINE_WINDOW_MS = ONLINE_WINDOW_MINUTES * 60 * 1000;
+
+const OFFER_TYPE_LABELS: Record<OfferType, string> = {
+  drink: 'A boire',
+  food: 'A manger',
+  transport: 'Transport',
+  gift: 'Present',
+};
+
+const OFFER_TYPE_ICONS: Record<OfferType, keyof typeof Ionicons.glyphMap> = {
+  drink: 'wine-outline',
+  food: 'restaurant-outline',
+  transport: 'car-outline',
+  gift: 'gift-outline',
+};
+
+const isOfferAvailable = (offer: Offer, now: Date) => {
+  if (offer.status !== 'active') return false;
+  const expiresAt = new Date(offer.expiresAt);
+  if (Number.isNaN(expiresAt.getTime())) return false;
+  return expiresAt.getTime() > now.getTime();
+};
 
 /**
  * Fonction utilitaire pour obtenir la source d'image correcte pour React Native Image
- * Gère à la fois les URLs HTTP/HTTPS (Supabase) et les images locales par défaut
+ * Ã¨ Ã      / ()      Ã©
  */
 const getImageSource = (photoUrl: string | null | undefined, gender: 'male' | 'female' = 'female') => {
-  // Vérifier si on a une URL valide
+  // Ã©      v
   if (photoUrl && typeof photoUrl === 'string' && photoUrl.trim() !== '') {
     const trimmedUrl = photoUrl.trim();
     
     // Rejeter les URIs locales (file://) - elles ne sont pas accessibles depuis d'autres appareils
     if (trimmedUrl.startsWith('file://')) {
-      console.warn(`⚠️ URI locale détectée (non accessible): ${trimmedUrl.substring(0, 50)}... - Utilisation de l'image par défaut`);
+      console.warn(`URI locale detectee (non accessible): ${trimmedUrl.substring(0, 50)}... - Utilisation de l'image par defaut`);
       return gender === 'male' 
         ? require('../../assets/images/avatar_men.png')
         : require('../../assets/images/avatar_woman.png');
@@ -136,13 +95,13 @@ const getImageSource = (photoUrl: string | null | undefined, gender: 'male' | 'f
     }
   }
   
-  // Sinon, utiliser l'image par défaut selon le genre
+  // ,  '  Ã©   
   return gender === 'male' 
     ? require('../../assets/images/avatar_men.png')
     : require('../../assets/images/avatar_woman.png');
 };
 
-// Composant mémorisé pour le callout utilisateur
+//  Ã©Ã©    
 const UserCallout = React.memo(({ 
   user, 
   onViewProfile, 
@@ -191,7 +150,7 @@ const UserCallout = React.memo(({
     </View>
   );
 }, (prevProps, nextProps) => {
-  // Comparaison personnalisée pour éviter les re-renders inutiles
+  //  Ã©  Ã©v  - 
   const prevRawPhoto = (prevProps.user as any).rawPhoto || prevProps.user.photo;
   const nextRawPhoto = (nextProps.user as any).rawPhoto || nextProps.user.photo;
   return prevProps.user.id === nextProps.user.id &&
@@ -211,6 +170,8 @@ export default function Dashboard() {
   const { getUserAverageRating } = useRating();
   const { conversations } = useMessage();
   const { unreadCount: unreadNotificationsCount } = useNotification();
+  const { offers, refreshOffers } = useOffer();
+  const [nowMs, setNowMs] = useState(Date.now());
   
   // Calculer le total des messages non lus
   const totalUnreadMessages = useMemo(() => {
@@ -227,12 +188,12 @@ export default function Dashboard() {
   const [selectedUserForCallout, setSelectedUserForCallout] = useState<User | null>(null);
   const [mapReady, setMapReady] = useState(false);
 
-  // Protection de route - ne rediriger que si vraiment non authentifié
-  // Utiliser useRef pour éviter les re-renders inutiles et les problèmes de timing
-  const authCheckRef = useRef({ hasChecked: false, timeoutId: null as NodeJS.Timeout | null });
+  //    -     v  Ã©
+  //    Ã©v  -    Ã¨  
+  const authCheckRef = useRef({ hasChecked: false, timeoutId: null as ReturnType<typeof setTimeout> | null });
   
   useEffect(() => {
-    // Nettoyer le timeout précédent
+    // y   Ã©Ã©
     if (authCheckRef.current.timeoutId) {
       clearTimeout(authCheckRef.current.timeoutId);
       authCheckRef.current.timeoutId = null;
@@ -244,19 +205,19 @@ export default function Dashboard() {
       return;
     }
     
-    // Marquer qu'on a vérifié une fois le chargement terminé
+    //  '  vÃ©Ã©     Ã©
     if (!authCheckRef.current.hasChecked) {
       authCheckRef.current.hasChecked = true;
     }
     
-    // Vérifier l'authentification avec un délai pour éviter les problèmes de timing
-    // Ne rediriger que si on est sûr que l'utilisateur n'est pas authentifié
+    // Ã© ' v  Ã©  Ã©v  Ã¨  
+    //       Ã»  ' '  Ã©
     authCheckRef.current.timeoutId = setTimeout(() => {
-      // Double vérification : s'assurer que le chargement est terminé et qu'on n'est pas authentifié
+      //  vÃ©  '     Ã©  ' '  Ã©
       if (authCheckRef.current.hasChecked && !isLoading && !isAuthenticated && !user) {
         router.replace('/(screens)/auth');
       }
-    }, 500); // Délai réduit à 500ms pour une meilleure réactivité
+    }, ) // Ã© Ã© Ã      Ã©vÃ©
     
     return () => {
       if (authCheckRef.current.timeoutId) {
@@ -266,76 +227,146 @@ export default function Dashboard() {
     };
   }, [isAuthenticated, isLoading, user, router]);
 
-  // Réinitialiser l'onglet actif quand on revient au dashboard
+  // Ã© '    v  
   const pathname = usePathname();
   useFocusEffect(
     useCallback(() => {
-      // Si on est sur le dashboard, réinitialiser l'onglet actif à 'home'
+      //      , Ã© '  Ã  ''
       if (pathname === '/(screens)/dashboard') {
         setActiveTab('home');
       }
     }, [pathname])
   );
 
-  // État pour savoir si le dashboard est actif (focus)
+  //   v      ()
   const isDashboardFocusedRef = useRef(false);
   const initialLoadDone = useRef(false);
   const lastLocationRef = useRef<{ lat: number; lng: number } | null>(null);
   const locationPermissionRequestedRef = useRef(false);
-  const lastLocationUpdateTimeRef = useRef<number>(0); // Pour limiter les mises à jour de position dans Supabase
-  const isLoadingUsersRef = useRef(false); // Pour éviter les appels multiples simultanés
+  const lastLocationUpdateTimeRef = useRef<number>(0); // Pour limiter les mises a jour de position dans Supabase
+  const isLoadingUsersRef = useRef(false); // Pour eviter les appels multiples simultanes
   const lastLoadUsersTimeRef = useRef<number>(0); // Pour limiter les chargements d'utilisateurs
-  const pendingSubscriptionRef = useRef<Location.LocationSubscription | null>(null); // Pour tracker les subscriptions en cours de création
-  const activeTimersRef = useRef<Set<NodeJS.Timeout>>(new Set()); // Pour tracker tous les timers actifs
+  const pendingSubscriptionRef = useRef<Location.LocationSubscription | null>(null); // Pour tracker les subscriptions en cours de creation
+  const activeTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set()); // Pour tracker tous les timers actifs
 
-  // Démarrer/arrêter le tracking uniquement quand le dashboard est focus
+  const isUserOnlineNow = useCallback((lastSeen?: string): boolean => {
+    if (!lastSeen || typeof lastSeen !== 'string') return false;
+
+    const parsedMs = Date.parse(lastSeen);
+    if (!Number.isFinite(parsedMs)) return false;
+
+    const nowMs = Date.now();
+    if (parsedMs > nowMs + 5000) return false;
+    return nowMs - parsedMs <= ONLINE_WINDOW_MS;
+  }, []);
+
+  const nearbyUsers = useMemo(() => {
+    return availableUsers.filter((u) => {
+      return (
+        u.distance !== undefined &&
+        Number.isFinite(u.distance) &&
+        u.distance >= 0 &&
+        u.distance <= PROXIMITY_RADIUS_KM &&
+        isUserOnlineNow(u.lastSeen)
+      );
+    });
+  }, [availableUsers, isUserOnlineNow]);
+
+  const availableOffers = useMemo(() => {
+    const now = new Date(nowMs);
+    return offers
+      .filter((offer) => isOfferAvailable(offer, now))
+      .sort((a, b) => {
+        const aExpires = new Date(a.expiresAt).getTime();
+        const bExpires = new Date(b.expiresAt).getTime();
+        if (aExpires !== bExpires) return aExpires - bExpires;
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      });
+  }, [offers, nowMs]);
+
+  const offersPreview = useMemo(() => availableOffers.slice(0, 3), [availableOffers]);
+
+  const formatOfferTimeLeft = useCallback((expiresAt: string) => {
+    const end = new Date(expiresAt);
+    if (Number.isNaN(end.getTime())) return 'Disponibilite inconnue';
+
+    const diffMs = end.getTime() - nowMs;
+    if (diffMs <= 0) return 'Expiree';
+
+    const totalMinutes = Math.ceil(diffMs / (1000 * 60));
+    if (totalMinutes < 60) return `Expire dans ${totalMinutes} min`;
+
+    const totalHours = Math.floor(totalMinutes / 60);
+    const remainingMinutes = totalMinutes % 60;
+    if (totalHours < 24) {
+      return remainingMinutes > 0
+        ? `Expire dans ${totalHours}h${remainingMinutes}`
+        : `Expire dans ${totalHours}h`;
+    }
+
+    const days = Math.floor(totalHours / 24);
+    return `Expire dans ${days} jour${days > 1 ? 's' : ''}`;
+  }, [nowMs]);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 60 * 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshOffers();
+    }, [])
+  );
+
+  // Ã©/Ãª        
   useFocusEffect(
     useCallback(() => {
       // Marquer que le dashboard est actif
       isDashboardFocusedRef.current = true;
 
-      // Ne démarrer le suivi que si authentifié
+      //  Ã©  v   Ã©
       if (!isAuthenticated || !user) {
         return;
       }
 
-      // NE PAS démarrer le LocationService sur le dashboard
-      // Le dashboard utilise son propre système de tracking local qui est mieux optimisé
-      // Cela évite les conflits et les icônes qui clignotent
+      //   Ã©  v   
+      //      yÃ¨      x Ã©
+      //  Ã©v     Ã´  
 
       // Charger les utilisateurs disponibles au premier focus
       if (!initialLoadDone.current) {
         initialLoadDone.current = true;
-        // Utiliser la position du profil utilisateur en premier (si disponible) pour un chargement instantané
+        //         ( )    Ã©
         if (user.lat && user.lng) {
           const profileLocation = { lat: user.lat, lng: user.lng };
           setUserLocation(profileLocation);
-          // Charger les utilisateurs immédiatement avec la position du profil
+          //    Ã© v    
           loadAvailableUsers(profileLocation);
         } else {
-          // Sinon, charger sans position (sera mis à jour quand la position arrive)
+          // ,    (  Ã      v)
           loadAvailableUsers();
         }
       }
 
-      // Demander la permission de localisation de manière non bloquante (une seule fois)
+      //       Ã¨   (  )
       if (!locationPermissionRequestedRef.current) {
         locationPermissionRequestedRef.current = true;
-        // Démarrer la demande de permission en arrière-plan (non bloquant)
+        // Ã©      Ã¨- ( )
         requestLocationPermission().catch(() => {
           // Ignorer les erreurs, ne pas bloquer l'authentification
         });
       }
 
-      // Démarrer le suivi de position (même si la permission n'est pas encore accordée)
+      // Ã©  v   (Ãª    '   Ã©)
       startLocationTracking().then((subscription) => {
-        // Vérifier qu'on est toujours sur le dashboard et authentifié avant d'assigner la subscription
+        // Ã© '       Ã© v '  
         if (isDashboardFocusedRef.current && isAuthenticated && user) {
           locationSubscriptionRef.current = subscription;
           pendingSubscriptionRef.current = null; // Nettoyer la ref
         } else if (subscription) {
-          // Si on n'est plus sur le dashboard, arrêter immédiatement
-          console.log('🛑 Dashboard non actif, arrêt immédiat du tracking GPS');
+          //   '    , Ãª Ã©
+          console.log('Dashboard non actif, arret immediat du tracking GPS');
           subscription.remove();
           locationSubscriptionRef.current = null;
           pendingSubscriptionRef.current = null;
@@ -347,41 +378,41 @@ export default function Dashboard() {
 
       // Cleanup quand on quitte le dashboard
       return () => {
-        console.log('🛑 Cleanup dashboard - Arrêt de toutes les opérations');
-        // Marquer que le dashboard n'est plus actif IMMÉDIATEMENT
+        console.log('Cleanup dashboard - Arret de toutes les operations');
+        //     '   
         isDashboardFocusedRef.current = false;
         
-        // Arrêter tous les timers actifs
+        // Ãª    
         activeTimersRef.current.forEach((timer) => {
           clearTimeout(timer);
         });
         activeTimersRef.current.clear();
         
-        // Arrêter le chargement des utilisateurs en cours
+        // Ãª      
         isLoadingUsersRef.current = false;
         
-        // Arrêter le suivi de position local IMMÉDIATEMENT
-        // Arrêter d'abord la subscription en cours de création si elle existe
+        //   v    
+        // Ãª '      Ã©   x
         if (pendingSubscriptionRef.current) {
-          console.log('🛑 Arrêt de la subscription GPS en cours de création');
+          console.log('Arret de la subscription GPS en cours de creation');
           pendingSubscriptionRef.current.remove();
           pendingSubscriptionRef.current = null;
         }
         
-        // Arrêter aussi la subscription stockée dans la ref
+        // Ãª    Ã©   
         if (locationSubscriptionRef.current) {
-          console.log('🛑 Arrêt de la subscription GPS stockée');
+          console.log('Arret de la subscription GPS stockee');
           locationSubscriptionRef.current.remove();
           locationSubscriptionRef.current = null;
         }
 
-        // Le LocationService n'est pas utilisé sur le dashboard, donc pas besoin de l'arrêter
+        //  v '  Ã©   ,     'Ãª
       };
-    }, [isAuthenticated, user, loadAvailableUsers])
+    }, [isAuthenticated, user])
   );
 
-  // Recharger les utilisateurs quand la position GPS est mise à jour (seulement si différente et si on est sur le dashboard)
-  // Utiliser un debounce pour éviter les rechargements trop fréquents
+  //          Ã   (  Ã©       )
+  //     Ã©v    Ã©
   useEffect(() => {
     // Ne recharger que si le dashboard est actif
     if (!isDashboardFocusedRef.current) {
@@ -392,24 +423,24 @@ export default function Dashboard() {
       return;
     }
 
-    // Vérifier si la position a vraiment changé de manière significative (au moins 100 mètres)
-    // 0.001 degré ≈ 111 mètres à l'équateur, donc 0.001 est un bon seuil
+    // Ã©     v Ã©  Ã¨ v (   Ã¨)
+    // .      ',  .    
     const hasChanged = !lastLocationRef.current || 
       Math.abs(lastLocationRef.current.lat - userLocation.lat) > 0.001 ||
       Math.abs(lastLocationRef.current.lng - userLocation.lng) > 0.001;
     
     if (hasChanged) {
-      // Utiliser un debounce pour éviter les rechargements trop fréquents
+      //     Ã©v    Ã©
       const debounceTimer = setTimeout(() => {
-        // Vérifier à nouveau que le dashboard est toujours actif avant de charger
+        // Ã© Ã  v       v  
         if (!isDashboardFocusedRef.current) {
           return;
         }
         lastLocationRef.current = userLocation;
         loadAvailableUsers(userLocation);
-      }, 2000); // Attendre 2 secondes avant de recharger pour éviter les appels trop fréquents
+      }, ) //    v    Ã©v    Ã©
 
-      // Ajouter le timer à la liste des timers actifs
+      //    Ã      
       activeTimersRef.current.add(debounceTimer);
 
       return () => {
@@ -417,9 +448,9 @@ export default function Dashboard() {
         activeTimersRef.current.delete(debounceTimer);
       };
     }
-  }, [userLocation?.lat, userLocation?.lng, isAuthenticated, user, loadAvailableUsers]);
+  }, [userLocation?.lat, userLocation?.lng, isAuthenticated, user]);
 
-  // Réessayer la demande de localisation quand l'app revient au premier plan (après retour des paramètres)
+  // Ã©y      ' v    (Ã¨   Ã¨)
   // Seulement si le dashboard est actif
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextAppState) => {
@@ -429,10 +460,10 @@ export default function Dashboard() {
       }
       
       if (nextAppState === 'active' && isAuthenticated && user && locationPermissionRequestedRef.current) {
-        // Réessayer de demander la permission si l'utilisateur revient des paramètres
-        // Mais seulement après un court délai pour éviter les boucles
+        // Ã©y      ' v  Ã¨
+        //   Ã¨   Ã©  Ã©v  
         const timer = setTimeout(() => {
-          // Vérifier à nouveau que le dashboard est toujours actif
+          // Ã© Ã  v      
           if (!isDashboardFocusedRef.current) {
             return;
           }
@@ -441,14 +472,14 @@ export default function Dashboard() {
           }
         }, 500);
         
-        // Ajouter le timer à la liste des timers actifs
+        //    Ã      
         activeTimersRef.current.add(timer);
       }
     });
 
     return () => {
       subscription.remove();
-      // Nettoyer tous les timers liés à AppState
+      // y    Ã© Ã  
       activeTimersRef.current.forEach((timer) => {
         clearTimeout(timer);
       });
@@ -458,14 +489,14 @@ export default function Dashboard() {
 
   const requestLocationPermission = async () => {
     try {
-      // Vérifier d'abord si les services de localisation sont activés
+      // Ã© '   v    vÃ©
       const isLocationEnabled = await Location.hasServicesEnabledAsync();
       if (!isLocationEnabled) {
-        // Demander à l'utilisateur s'il veut activer la localisation (non bloquant)
+        //  Ã  ' ' v v   ( )
         // Ne pas bloquer l'authentification, juste informer
         Alert.alert(
-          'Localisation désactivée',
-          'Pour afficher les utilisateurs à proximité, veuillez activer la localisation dans les paramètres de votre appareil.',
+          'Localisation desactivee',
+          'Pour afficher les utilisateurs a proximite, veuillez activer la localisation dans les parametres de votre appareil.',
           [
             {
               text: 'Plus tard',
@@ -476,7 +507,7 @@ export default function Dashboard() {
               },
             },
             {
-              text: 'Ouvrir les paramètres',
+              text: 'Ouvrir les parametres',
               onPress: () => {
                 if (Platform.OS === 'ios') {
                   Linking.openURL('app-settings:');
@@ -494,7 +525,7 @@ export default function Dashboard() {
       // Demander la permission de localisation
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
-        console.warn('Permission de localisation refusée');
+        console.warn('Permission de localisation refusee');
         // Ne pas bloquer, l'utilisateur peut continuer sans localisation
         return;
       }
@@ -506,22 +537,22 @@ export default function Dashboard() {
 
   const startLocationTracking = async (): Promise<Location.LocationSubscription | null> => {
     try {
-      // Essayer d'abord de récupérer la position depuis le cache
+      // y '  Ã©Ã©     
       try {
         const cachedLocationStr = await AsyncStorage.getItem('user_location');
         if (cachedLocationStr) {
           const cachedLocation = JSON.parse(cachedLocationStr);
-          // Utiliser la position en cache immédiatement pour un chargement instantané
-          // Ne pas charger les utilisateurs ici, cela sera géré par useFocusEffect
+          //      Ã©    Ã©
+          //      ,   Ã©Ã©  
           if (cachedLocation.lat && cachedLocation.lng) {
             setUserLocation(cachedLocation);
           }
         }
-      } catch (e) {
+      } catch {
         // Ignorer les erreurs de cache
       }
 
-      // Obtenir la position actuelle avec la précision la plus basse pour une réponse rapide
+      //     v  Ã©      Ã© 
       const locationPromise = Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.Lowest, // Plus rapide que Balanced
       });
@@ -540,7 +571,7 @@ export default function Dashboard() {
           const profileLocation = { lat: user.lat, lng: user.lng };
           setUserLocation(profileLocation);
           await AsyncStorage.setItem('user_location', JSON.stringify(profileLocation));
-          // Mettre à jour en arrière-plan avec une meilleure précision
+          //  Ã    Ã¨- v   Ã©
           Location.getCurrentPositionAsync({
             accuracy: Location.Accuracy.Balanced,
           }).then((betterLocation) => {
@@ -568,26 +599,26 @@ export default function Dashboard() {
       // Sauvegarder dans le cache
       await AsyncStorage.setItem('user_location', JSON.stringify(newLocation));
 
-      // Mettre à jour la position dans le profil Supabase en arrière-plan (non bloquant)
+      //  Ã          Ã¨- ( )
       if (user) {
         updateLocation(newLocation.lat, newLocation.lng).catch(() => {
           // Ignorer les erreurs silencieusement
         });
       }
 
-      // Suivre les changements de position avec des intervalles plus longs pour éviter les mises à jour trop fréquentes
+      // v     v  v    Ã©v   Ã    Ã©
       const subscription = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.Balanced,
-          timeInterval: 30000, // Mettre à jour toutes les 30 secondes (réduit la charge et les icônes qui clignotent)
-          distanceInterval: 100, // Ou tous les 100 mètres (réduit les mises à jour)
+          timeInterval: 30000, // Mettre a jour toutes les 30 secondes
+          distanceInterval: 100, // Ou tous les 100 metres
         },
         (location) => {
-          // Ne mettre à jour la position que si le dashboard est actif
-          // Vérifier IMMÉDIATEMENT au début du callback
+          //   Ã          
+          //      
           if (!isDashboardFocusedRef.current) {
-            // Ignorer complètement les mises à jour si on n'est plus sur le dashboard
-            // Le cleanup dans useFocusEffect s'occupera d'arrêter la subscription
+            //  Ã¨   Ã     '    
+            //     ' 'Ãª  
             return;
           }
 
@@ -596,8 +627,8 @@ export default function Dashboard() {
             lng: location.coords.longitude,
           };
 
-          // Vérifier si la position a vraiment changé de manière significative avant de mettre à jour
-          // Cela évite les mises à jour inutiles qui causent les icônes qui clignotent
+          // Ã©     v Ã©  Ã¨ v v   Ã  
+          //  Ã©v   Ã       Ã´  
           const hasChanged = !userLocation || 
             Math.abs(userLocation.lat - updatedLocation.lat) > 0.001 ||
             Math.abs(userLocation.lng - updatedLocation.lng) > 0.001;
@@ -607,10 +638,10 @@ export default function Dashboard() {
             // Sauvegarder dans le cache
             AsyncStorage.setItem('user_location', JSON.stringify(updatedLocation)).catch(() => {});
 
-            // Mettre à jour la position dans le profil Supabase en arrière-plan (avec last_seen)
-            // Utiliser un debounce pour éviter les mises à jour trop fréquentes
+            //  Ã          Ã¨- (v )
+            //     Ã©v   Ã    Ã©
             if (user && isAuthenticated) {
-              // Ne mettre à jour que toutes les 30 secondes maximum
+              //   Ã        x
               const now = Date.now();
               if (!lastLocationUpdateTimeRef.current || now - lastLocationUpdateTimeRef.current > 30000) {
                 lastLocationUpdateTimeRef.current = now;
@@ -625,17 +656,17 @@ export default function Dashboard() {
 
       return subscription;
     } catch (error: any) {
-      // Gérer l'erreur de localisation de manière gracieuse
+      // Ã© '    Ã¨ 
       if (error.message?.includes('location is unavailable') || error.message?.includes('timeout')) {
-        console.log('⚠️ Localisation non disponible ou timeout');
+        console.log('Localisation non disponible ou timeout');
         // Utiliser la position du profil utilisateur si disponible
         if (user?.lat && user?.lng) {
           const profileLocation = { lat: user.lat, lng: user.lng };
           setUserLocation(profileLocation);
           await AsyncStorage.setItem('user_location', JSON.stringify(profileLocation)).catch(() => {});
         } else {
-          // Optionnel : définir une position par défaut pour le développement
-          const defaultLocation = { lat: -4.3276, lng: 15.3136 }; // Kinshasa par défaut
+          //   Ã©    Ã©   Ã©v
+          const defaultLocation = { lat: -4.3276, lng: 15.3136 }; // Kinshasa par defaut
           setUserLocation(defaultLocation);
         }
       } else {
@@ -648,21 +679,21 @@ export default function Dashboard() {
   const loadAvailableUsers = useCallback(async (locationOverride?: { lat: number; lng: number }) => {
     // NE PAS charger si on n'est pas sur le dashboard
     if (!isDashboardFocusedRef.current) {
-      console.log('⏭️ Dashboard non actif, skip chargement des utilisateurs');
-      isLoadingUsersRef.current = false; // Réinitialiser le flag
+      console.log('Dashboard non actif, skip chargement des utilisateurs');
+      isLoadingUsersRef.current = false; // Reinitialiser le flag
       return;
     }
 
-    // Éviter les appels multiples simultanés
+    // v    
     if (isLoadingUsersRef.current) {
-      console.log('⏭️ Chargement des utilisateurs déjà en cours, skip');
+      console.log('Chargement des utilisateurs deja en cours, skip');
       return;
     }
 
-    // Limiter les chargements à maximum toutes les 10 secondes
+    //    Ã  x    
     const now = Date.now();
-    if (lastLoadUsersTimeRef.current && now - lastLoadUsersTimeRef.current < 10000) {
-      console.log('⏭️ Chargement des utilisateurs trop récent, skip');
+    if (lastLoadUsersTimeRef.current && now - lastLoadUsersTimeRef.current < 5000) {
+      console.log('Chargement des utilisateurs trop recent, skip');
       return;
     }
 
@@ -670,81 +701,39 @@ export default function Dashboard() {
       isLoadingUsersRef.current = true;
       lastLoadUsersTimeRef.current = now;
 
-      // Vérifier à nouveau que le dashboard est toujours actif avant de continuer
+      // Ã© Ã  v       v  
       if (!isDashboardFocusedRef.current) {
-        console.log('⏭️ Dashboard non actif pendant le chargement, arrêt');
+        console.log('Dashboard non actif apres le chargement, arret');
         isLoadingUsersRef.current = false;
         return;
       }
 
       // Utiliser la position fournie ou la position actuelle
       const currentLocation = locationOverride || userLocation;
+      if (!currentLocation) {
+        setAvailableUsers([]);
+        return;
+      }
+
+      //      v ' 
+      const users = await getAvailableUsers({
+        center: currentLocation || undefined,
+        radiusKm: PROXIMITY_RADIUS_KM,
+        onlineWithinMinutes: ONLINE_WINDOW_MINUTES,
+      });
       
-      // Charger les utilisateurs en parallèle avec d'autres opérations
-      const users = await getAvailableUsers();
-      
-      // Vérifier à nouveau que le dashboard est toujours actif après le chargement
+      // Verifier a nouveau que le dashboard est toujours actif apres le chargement
       if (!isDashboardFocusedRef.current) {
-        console.log('⏭️ Dashboard non actif après le chargement, arrêt');
+        console.log('Dashboard non actif apres le chargement, arret');
         isLoadingUsersRef.current = false;
         return;
       }
-      
-      // Log pour déboguer la récupération des photos
-      console.log('📸 DEBUG: Utilisateurs récupérés:', users.length);
-      const jhonUser = users.find((u: any) => u.pseudo === 'Jhon' || u.pseudo === 'jhon');
-      if (jhonUser) {
-        console.log('🔍 DEBUG Jhon - Données brutes depuis DB:', {
-          id: jhonUser.id,
-          pseudo: jhonUser.pseudo,
-          photo: jhonUser.photo,
-          p_photo: jhonUser.p_photo,
-          allKeys: Object.keys(jhonUser),
-        });
-      }
-      // Fonction pour calculer si un utilisateur est en ligne
-      const calculateOnlineStatus = (lastSeenValue: string | null | undefined): boolean => {
-        if (!lastSeenValue) {
-          return false; // Pas de last_seen = pas en ligne
-        }
-        if (lastSeenValue === 'En ligne' || lastSeenValue.toLowerCase() === 'en ligne') {
-          return true;
-        }
-        // Vérifier si c'est une date récente (moins de 5 minutes)
-        try {
-          const lastSeenDate = new Date(lastSeenValue);
-          if (isNaN(lastSeenDate.getTime())) {
-            return false; // Date invalide = pas en ligne
-          }
-          const now = new Date();
-          const diffMs = now.getTime() - lastSeenDate.getTime();
-          const diffMinutes = diffMs / (1000 * 60);
-          return diffMinutes < 5; // En ligne si vu il y a moins de 5 minutes
-        } catch {
-          return false; // Erreur de parsing = pas en ligne
-        }
-      };
-
-      // Convertir les données de la DB en format User
+      // Convertir les donnees de la DB en format User
       const formattedUsers: User[] = users.map((u: any) => {
         const userGender = (u.gender === 'male' || u.gender === 'female') ? u.gender : 'female';
-        // Récupérer la photo depuis la DB
+        // Recuperer la photo depuis la DB
         const rawPhoto = u.photo || null;
-        
-        // Log pour déboguer les photos
-        if (u.pseudo === 'Jhon' || u.pseudo === 'jhon') {
-          console.log(`🔍 DEBUG Photo pour ${u.pseudo}:`, {
-            id: u.id,
-            photo: u.photo,
-            rawPhoto: rawPhoto,
-            hasPhoto: !!rawPhoto,
-            photoType: typeof rawPhoto,
-            photoLength: rawPhoto ? rawPhoto.length : 0,
-            photoPreview: rawPhoto ? rawPhoto.substring(0, 100) : 'null',
-          });
-        }
-        
-        // Convertir les coordonnées de manière robuste
+        // Convertir les coordonnees de maniere robuste
         const parseCoord = (coord: any): number | undefined => {
           if (coord == null || coord === '') return undefined;
           const parsed = typeof coord === 'string' ? parseFloat(coord) : coord;
@@ -756,14 +745,14 @@ export default function Dashboard() {
           pseudo: u.pseudo || 'Utilisateur',
           age: u.age || 25,
           phone: u.phone,
-          photo: rawPhoto || getDefaultProfileImage(userGender), // URL de la photo ou image par défaut (pour compatibilité)
-          rawPhoto: rawPhoto, // Conserver la photo brute pour déterminer la source d'image
+          photo: rawPhoto || getDefaultProfileImage(userGender), // URL de la photo ou image par defaut
+          rawPhoto: rawPhoto, // Conserver la photo brute pour determiner la source d'image
           description: u.description || '',
           rating: parseFloat(u.rating) || 0,
           reviewCount: u.review_count || 0,
           isSubscribed: u.is_subscribed || false,
           subscriptionStatus: u.subscription_status || 'pending',
-          lastSeen: u.last_seen || 'Hors ligne', // Ne pas mettre 'En ligne' par défaut
+          lastSeen: u.last_seen || 'Hors ligne', // Ne pas mettre 'En ligne' par defaut
           gender: userGender,
           lat: parseCoord(u.lat),
           lng: parseCoord(u.lng),
@@ -774,7 +763,7 @@ export default function Dashboard() {
       // Calculer les distances si on a la position de l'utilisateur
       if (currentLocation) {
         formattedUsers.forEach((u) => {
-          // Vérifier que les coordonnées sont valides (non null, non undefined, et convertibles en nombre)
+          // Ã©   Ã©  v ( ,  ,  v  )
           const lat = typeof u.lat === 'string' ? parseFloat(u.lat) : u.lat;
           const lng = typeof u.lng === 'string' ? parseFloat(u.lng) : u.lng;
           
@@ -786,20 +775,16 @@ export default function Dashboard() {
               lng
             );
           } else {
-            // Coordonnées invalides
+            // Ã© v
             u.distance = undefined;
           }
         });
 
-        // Filtrer les utilisateurs à 0-10 km seulement
-        // Inclure les utilisateurs avec distance = 0 (même endroit)
+        // Filtrer les utilisateurs strictement en ligne et dans un rayon de 10 km
         const filteredUsers = formattedUsers.filter((u) => {
-          // Inclure les utilisateurs avec distance calculée entre 0 et 10 km
-          if (u.distance !== undefined && !isNaN(u.distance)) {
-            return u.distance >= 0 && u.distance <= 10;
-          }
-          // Exclure les utilisateurs sans distance (pas de coordonnées valides)
-          return false;
+          if (u.distance === undefined || isNaN(u.distance)) return false;
+          if (u.distance < 0 || u.distance > PROXIMITY_RADIUS_KM) return false;
+          return isUserOnlineNow(u.lastSeen);
         });
 
         // Trier par distance
@@ -807,24 +792,24 @@ export default function Dashboard() {
 
         setAvailableUsers(filteredUsers);
 
-        // Charger les avis réels pour chaque utilisateur en arrière-plan (non bloquant)
+        //   v Ã©     Ã¨- ( )
         // Ne pas attendre pour afficher les utilisateurs
         const ratingsMap = new Map<string, { average: number; count: number }>();
-        // Initialiser avec les valeurs par défaut d'abord
+        //  v  v  Ã© '
         filteredUsers.forEach((u) => {
           ratingsMap.set(u.id, { average: u.rating || 0, count: u.reviewCount || 0 });
         });
         setUserRatings(ratingsMap);
 
-        // Charger les vrais avis en arrière-plan
+        //   v v  Ã¨-
         Promise.all(
           filteredUsers.map(async (u) => {
             try {
               const avgRating = await getUserAverageRating(u.id);
               ratingsMap.set(u.id, avgRating);
-              // Mettre à jour les ratings une fois chargés
+              //  Ã       Ã©
               setUserRatings(new Map(ratingsMap));
-            } catch (error) {
+            } catch {
               // Ignorer les erreurs silencieusement
             }
           })
@@ -835,45 +820,31 @@ export default function Dashboard() {
         // Si pas de position, ne pas afficher d'utilisateurs
         setAvailableUsers([]);
       }
-      
-      // Log pour déboguer
-      const finalUsers = currentLocation ? formattedUsers.filter((u) => {
-        return u.distance !== undefined && u.distance >= 0 && u.distance <= 10;
-      }) : [];
-      
-      // Log détaillé pour déboguer les utilisateurs au même endroit
-      const usersAtSameLocation = formattedUsers.filter((u) => {
-        return u.distance !== undefined && u.distance < 0.01; // Moins de 10 mètres
-      });
-      
-      if (usersAtSameLocation.length > 0) {
-        console.log('📍 Utilisateurs au même endroit:', usersAtSameLocation.map(u => ({
-          id: u.id,
-          pseudo: u.pseudo,
-          distance: u.distance?.toFixed(4),
-          lat: u.lat,
-          lng: u.lng,
-          lastSeen: u.lastSeen,
-          isAvailable: u.isAvailable,
-        })));
-      }
-      
-      console.log('📊 Utilisateurs disponibles:', {
-        total: formattedUsers.length,
-        avecCoordonnees: formattedUsers.filter(u => u.lat != null && u.lng != null).length,
-        sansCoordonnees: formattedUsers.filter(u => u.lat == null || u.lng == null).length,
-        avecDistance: formattedUsers.filter(u => u.distance !== undefined).length,
-        dansRayon10km: finalUsers.length,
-        auMemeEndroit: usersAtSameLocation.length,
-        userLocation: currentLocation ? `${currentLocation.lat}, ${currentLocation.lng}` : 'non disponible',
-      });
     } catch (error) {
       console.error('Error loading available users:', error);
     } finally {
-      // Réinitialiser le flag de chargement
+      // Reinitialiser le flag de chargement
       isLoadingUsersRef.current = false;
     }
-  }, [userLocation, getAvailableUsers, getUserAverageRating]);
+  }, [userLocation, getAvailableUsers, getUserAverageRating, isUserOnlineNow]);
+
+  // Rafraichir la liste proche en continu, meme si l'utilisateur ne se deplace pas.
+  useFocusEffect(
+    useCallback(() => {
+      if (!isAuthenticated || !user) {
+        return;
+      }
+
+      const intervalId = setInterval(() => {
+        if (!isDashboardFocusedRef.current) return;
+        loadAvailableUsers(userLocation || undefined);
+      }, 15000);
+
+      return () => {
+        clearInterval(intervalId);
+      };
+    }, [isAuthenticated, user, userLocation?.lat, userLocation?.lng, loadAvailableUsers])
+  );
 
   // Calculer la distance entre deux points (formule de Haversine)
   const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
@@ -893,13 +864,13 @@ export default function Dashboard() {
     router.push('/(screens)/user-profile');
   }, [setSelectedUser, router]);
 
-  // Handler optimisé pour la sélection des marqueurs
+  //  Ã©   Ã©  
   const handleMarkerSelect = useCallback((markerId: string, user?: User) => {
     if (markerId === 'current-user') {
       setSelectedMarkerId(prev => prev === markerId ? null : markerId);
       setSelectedUserForCallout(null);
     } else if (user) {
-      // Afficher immédiatement le modal pour l'utilisateur sélectionné
+      //  Ã©    ' Ã©Ã©
       setSelectedMarkerId(markerId);
       setSelectedUserForCallout(user);
     } else {
@@ -921,6 +892,13 @@ export default function Dashboard() {
     if (tab === 'notifications') router.push('/(screens)/notifications');
     if (tab === 'profile') router.push('/(screens)/profile');
   };
+
+  const handleOpenOffer = useCallback((offer: Offer) => {
+    router.push({
+      pathname: '/(screens)/offer-details',
+      params: { offerId: offer.id },
+    });
+  }, [router]);
 
   const tabs = [
     { id: 'home' as Tab, icon: 'home', label: 'Accueil' },
@@ -945,7 +923,7 @@ export default function Dashboard() {
         <View style={styles.headerRight}>
           {currentUser?.isSubscribed && (
             <Badge variant="info" style={styles.badge}>
-              Abonné
+              Ã©
             </Badge>
           )}
           <TouchableOpacity
@@ -964,8 +942,8 @@ export default function Dashboard() {
             <Ionicons name="map-outline" size={48} color={colors.purple400} />
             <Text style={styles.mapPlaceholderText}>Carte non disponible</Text>
             <Text style={styles.mapPlaceholderSubtext}>
-              Un build de développement est requis pour utiliser Mapbox.{'\n'}
-              Exécutez: eas build --profile development
+                 Ã©v     x.{''}
+              xÃ©z   -- v
             </Text>
           </View>
         ) : userLocation && userLocation.lng !== undefined && userLocation.lat !== undefined && Mapbox && Mapbox.StyleURL && MapView && Camera ? (
@@ -976,7 +954,7 @@ export default function Dashboard() {
             attributionEnabled={false}
             onPress={handleCloseCallout}
             onDidFinishLoadingMap={() => {
-              // Attendre que la carte soit complètement chargée avant de rendre les marqueurs
+              //      Ã¨ Ã© v    
               setTimeout(() => setMapReady(true), 100);
             }}
           >
@@ -987,7 +965,7 @@ export default function Dashboard() {
               animationDuration={2000}
             />
             
-            {/* Marker pour l'utilisateur actuel - zIndex élevé pour être au-dessus */}
+            {/*   '  - zx Ã©vÃ©  Ãª - */}
             {mapReady && PointAnnotation && userLocation && 
              userLocation.lng !== undefined && userLocation.lat !== undefined &&
              isFinite(userLocation.lng) && isFinite(userLocation.lat) ? (
@@ -1003,46 +981,41 @@ export default function Dashboard() {
               </PointAnnotation>
             ) : null}
 
-            {/* Markers pour les utilisateurs disponibles - zIndex plus bas pour être sous le marqueur utilisateur */}
+            {/*      - zx    Ãª     */}
             {mapReady ? (() => {
-              // Filtrer d'abord les utilisateurs valides
-              const validUsers = availableUsers.filter((user) => {
-                const hasCoords = user.lat !== undefined && user.lat !== null && user.lng !== undefined && user.lng !== null;
-                // Vérifier aussi que la distance est dans la plage 0-10 km
-                const inRange = user.distance !== undefined && user.distance >= 0 && user.distance <= 10;
-                if (!hasCoords) {
-                  console.log(`⚠️ Utilisateur ${user.pseudo} (${user.id}) n'a pas de coordonnées`);
-                }
-                if (hasCoords && !inRange) {
-                  console.log(`⚠️ Utilisateur ${user.pseudo} (${user.id}) est à ${user.distance?.toFixed(1)} km, hors de la plage 0-10 km`);
-                }
-                return hasCoords && inRange;
+              const validUsers = nearbyUsers.filter((nearbyUser) => {
+                return (
+                  nearbyUser.lat !== undefined &&
+                  nearbyUser.lat !== null &&
+                  nearbyUser.lng !== undefined &&
+                  nearbyUser.lng !== null
+                );
               });
 
-              // Compter les utilisateurs à 0.0 km (ou très proches)
+              //    Ã  .  ( Ã¨ )
               const usersAtZero = validUsers.filter(u => 
                 u.distance === 0 || (u.distance !== undefined && u.distance < 0.001)
               );
               const usersAtZeroCount = usersAtZero.length;
 
-              // Créer un index pour les utilisateurs à 0.0 km
+              // Ã©  x    Ã  . 
               let zeroIndex = 0;
 
-              return validUsers.map((user, index) => {
-                // Pour les utilisateurs à 0.0 km (même position), décaler légèrement les marqueurs en cercle autour du marqueur utilisateur
+              return validUsers.map((user) => {
+                //    Ã  .  (Ãª ), Ã© Ã©Ã¨        
                 let latOffset = 0;
                 let lngOffset = 0;
                 
                 if (user.distance === 0 || (user.distance !== undefined && user.distance < 0.001)) {
-                  // Créer un cercle autour du marqueur utilisateur
-                  // Distance du centre : environ 0.0015 degrés (environ 165 mètres) - assez grand pour être bien visible et séparé
+                  // Ã©      
+                  //     v . Ã© (v  Ã¨) - z   Ãª  v  Ã©Ã©
                   const radius = 0.0015;
                   // Angle en radians pour placer les marqueurs en cercle
-                  // Utiliser le nombre total d'utilisateurs à 0.0 km pour répartir équitablement
-                  // Commencer à 0 degrés (à droite) pour le premier marqueur
-                  const angle = usersAtZeroCount > 1 ? (zeroIndex * 2 * Math.PI) / usersAtZeroCount : Math.PI / 4; // Par défaut à 45 degrés si seul
+                  //     ' Ã  .   Ã© Ã©
+                  //  Ã   Ã© (Ã  )    
+                  const angle = usersAtZeroCount > 1 ? (zeroIndex * 2 * Math.PI) / usersAtZeroCount : Math.PI / 4; // Par defaut a 45 degres si seul
                   // Calculer les offsets en latitude et longitude
-                  // Note: la longitude doit être ajustée par le cosinus de la latitude pour un cercle correct
+                  //     Ãª Ã©          
                   const lat = user.lat || (userLocation?.lat || 0);
                   const latRad = lat * Math.PI / 180;
                   latOffset = radius * Math.cos(angle);
@@ -1051,11 +1024,11 @@ export default function Dashboard() {
                   zeroIndex++;
                 }
                 
-                // Vérifier que les coordonnées sont valides avant de rendre le PointAnnotation
+                // Ã©   Ã©  v v    
                 const userLat = (user.lat || 0) + latOffset;
                 const userLng = (user.lng || 0) + lngOffset;
                 
-                // Vérifications strictes pour éviter les erreurs Mapbox
+                // Ã©   Ã©v   x
                 if (!PointAnnotation || !userLocation || 
                     userLat === 0 || userLng === 0 ||
                     isNaN(userLat) || isNaN(userLng) ||
@@ -1064,8 +1037,6 @@ export default function Dashboard() {
                     user.lng === undefined || user.lng === null) {
                   return null;
                 }
-                
-                console.log(`📍 Affichage marqueur pour ${user.pseudo} à (${user.lat}, ${user.lng}), distance: ${user.distance?.toFixed(3)} km, offset: (${latOffset.toFixed(6)}, ${lngOffset.toFixed(6)})`);
                 return (
                   <PointAnnotation
                     key={user.id}
@@ -1082,34 +1053,8 @@ export default function Dashboard() {
                         defaultSource={user.gender === 'male' 
                           ? require('../../assets/images/avatar_men.png')
                           : require('../../assets/images/avatar_woman.png')}
-                        onError={(error) => {
-                          console.log(`❌ Erreur de chargement de l'image du marqueur pour ${user.pseudo}`);
-                        }}
-                        onLoad={() => {
-                          console.log(`✅ Image du marqueur chargée avec succès pour ${user.pseudo}`);
-                        }}
                       />
-                      {(() => {
-                        // Vérifier si l'utilisateur est vraiment en ligne avant d'afficher l'indicateur
-                        const isOnline = (() => {
-                          if (!user.lastSeen) return false;
-                          if (user.lastSeen === 'En ligne' || user.lastSeen.toLowerCase() === 'en ligne') {
-                            return true;
-                          }
-                          // Vérifier si c'est une date récente (moins de 5 minutes)
-                          try {
-                            const lastSeenDate = new Date(user.lastSeen);
-                            if (isNaN(lastSeenDate.getTime())) return false;
-                            const now = new Date();
-                            const diffMs = now.getTime() - lastSeenDate.getTime();
-                            const diffMinutes = diffMs / (1000 * 60);
-                            return diffMinutes < 5;
-                          } catch {
-                            return false;
-                          }
-                        })();
-                        return isOnline ? <View style={styles.onlineIndicator} /> : null;
-                      })()}
+                      {isUserOnlineNow(user.lastSeen) ? <View style={styles.onlineIndicator} /> : null}
                     </View>
                   </PointAnnotation>
                 );
@@ -1124,7 +1069,7 @@ export default function Dashboard() {
         )}
       </View>
 
-      {/* Modal pour le callout utilisateur - s'affiche immédiatement */}
+      {/*      - ' Ã© */}
       <Modal
         visible={selectedUserForCallout !== null}
         transparent={true}
@@ -1177,29 +1122,115 @@ export default function Dashboard() {
       >
         {/* Offers Section */}
         <View style={styles.offersTabsContainer}>
+          <View style={styles.offersSummaryCard}>
+            <View style={styles.offersSummaryIcon}>
+              <Ionicons name="sparkles-outline" size={18} color={colors.pink500} />
+            </View>
+            <View style={styles.offersSummaryTextBox}>
+              <Text style={styles.offersSummaryTitle}>Offres actives maintenant</Text>
+              <Text style={styles.offersSummarySubtitle}>
+                Tu vois seulement les offres disponibles et non expirees.
+              </Text>
+            </View>
+            <Text style={styles.offersSummaryCount}>{availableOffers.length}</Text>
+          </View>
+
           <TouchableOpacity
             style={styles.offerTabContent}
             onPress={() => router.push('/(screens)/create-offer')}
           >
             <Ionicons name="add-circle" size={24} color={colors.pink500} />
-            <Text style={styles.offerTabContentText}>Créer une nouvelle offre</Text>
+            <Text style={styles.offerTabContentText}>Creer une nouvelle offre</Text>
             <Ionicons name="chevron-forward" size={20} color={colors.textTertiary} />
           </TouchableOpacity>
-          
+
           <TouchableOpacity
             style={[styles.offerTabContent, styles.offerTabContentPink]}
             onPress={() => router.push('/(screens)/offers')}
           >
             <Ionicons name="gift" size={24} color="#ffffff" />
             <Text style={[styles.offerTabContentText, styles.offerTabContentTextPink]}>
-              Voir les propositions
+              Voir toutes les offres
             </Text>
             <Ionicons name="chevron-forward" size={20} color="#ffffff" />
           </TouchableOpacity>
+
+          {offersPreview.length > 0 ? (
+            <View style={styles.offersPreviewList}>
+              {offersPreview.map((offer) => {
+                const offerTypesToDisplay = (offer.offerTypes && offer.offerTypes.length > 0)
+                  ? offer.offerTypes
+                  : (offer.offerType ? [offer.offerType] : []);
+
+                return (
+                  <TouchableOpacity
+                    key={offer.id}
+                    style={styles.offerPreviewCard}
+                    onPress={() => handleOpenOffer(offer)}
+                    activeOpacity={0.8}
+                  >
+                    <View style={styles.offerPreviewHeader}>
+                      <View style={styles.offerPreviewTypes}>
+                        {offerTypesToDisplay.slice(0, 2).map((type, index) => (
+                          <View key={`${offer.id}-${type}-${index}`} style={styles.offerPreviewTypeBadge}>
+                            <Ionicons
+                              name={OFFER_TYPE_ICONS[type]}
+                              size={12}
+                              color={colors.pink500}
+                            />
+                            <Text style={styles.offerPreviewTypeText}>{OFFER_TYPE_LABELS[type]}</Text>
+                          </View>
+                        ))}
+                      </View>
+                      <Badge variant="success" style={styles.offerPreviewStatusBadge}>
+                        Disponible
+                      </Badge>
+                    </View>
+
+                    <Text style={styles.offerPreviewTitle} numberOfLines={1}>
+                      {offer.title}
+                    </Text>
+
+                    <View style={styles.offerPreviewMeta}>
+                      <View style={styles.offerPreviewMetaItem}>
+                        <Ionicons name="person-outline" size={13} color={colors.textSecondary} />
+                        <Text style={styles.offerPreviewMetaText} numberOfLines={1}>
+                          {offer.author?.pseudo || 'Utilisateur'}
+                        </Text>
+                      </View>
+                      {offer.location ? (
+                        <View style={styles.offerPreviewMetaItem}>
+                          <Ionicons name="location-outline" size={13} color={colors.textSecondary} />
+                          <Text style={styles.offerPreviewMetaText} numberOfLines={1}>
+                            {offer.location}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+
+                    <View style={styles.offerPreviewFooter}>
+                      <View style={styles.offerPreviewTimeBadge}>
+                        <Ionicons name="time-outline" size={12} color={colors.pink400} />
+                        <Text style={styles.offerPreviewTimeText}>
+                          {formatOfferTimeLeft(offer.expiresAt)}
+                        </Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={16} color={colors.textTertiary} />
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          ) : (
+            <View style={styles.offersEmptyCard}>
+              <Ionicons name="gift-outline" size={20} color={colors.textTertiary} />
+              <Text style={styles.offersEmptyText}>Aucune offre active pour le moment.</Text>
+            </View>
+          )}
         </View>
-        
-        <Text style={styles.sectionTitle}>À proximité</Text>
-        {availableUsers.length === 0 ? (
+
+        <Text style={styles.sectionTitle}>Ã€ proximitÃ©</Text>
+        {nearbyUsers.length === 0 ? (
           <View style={styles.emptyState}>
             <Ionicons name="people-outline" size={48} color={colors.textTertiary} />
             <Text style={styles.emptyStateText}>
@@ -1209,12 +1240,7 @@ export default function Dashboard() {
             </Text>
           </View>
         ) : (
-          availableUsers
-            .filter((user) => {
-              // Filtrer pour ne garder que les utilisateurs à 0-10 km
-              return user.distance !== undefined && user.distance >= 0 && user.distance <= 10;
-            })
-            .map((user) => (
+          nearbyUsers.map((user) => (
           <TouchableOpacity
             key={user.id}
             style={styles.userCard}
@@ -1230,32 +1256,12 @@ export default function Dashboard() {
                   ? require('../../assets/images/avatar_men.png')
                   : require('../../assets/images/avatar_woman.png')}
               />
-              {(() => {
-                // Vérifier si l'utilisateur est vraiment en ligne
-                const isOnline = (() => {
-                  if (!user.lastSeen) return false;
-                  if (user.lastSeen === 'En ligne' || user.lastSeen.toLowerCase() === 'en ligne') {
-                    return true;
-                  }
-                  // Vérifier si c'est une date récente (moins de 5 minutes)
-                  try {
-                    const lastSeenDate = new Date(user.lastSeen);
-                    if (isNaN(lastSeenDate.getTime())) return false;
-                    const now = new Date();
-                    const diffMs = now.getTime() - lastSeenDate.getTime();
-                    const diffMinutes = diffMs / (1000 * 60);
-                    return diffMinutes < 5;
-                  } catch {
-                    return false;
-                  }
-                })();
-                return isOnline ? <View style={styles.onlineBadge} /> : null;
-              })()}
+              {isUserOnlineNow(user.lastSeen) ? <View style={styles.onlineBadge} /> : null}
             </View>
             <View style={styles.userInfo}>
               <View style={styles.userHeader}>
                 <Text style={styles.userName}>{user.pseudo}</Text>
-                <Text style={styles.userSeparator}>·</Text>
+                <Text style={styles.userSeparator}>Â·</Text>
                 <Text style={styles.userAge}>{user.age} ans</Text>
               </View>
               {user.description && user.description.trim() ? (
@@ -1378,6 +1384,43 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     gap: 12,
   },
+  offersSummaryCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: `${colors.pink500}44`,
+    backgroundColor: `${colors.pink500}14`,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 10,
+  },
+  offersSummaryIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: `${colors.pink500}22`,
+  },
+  offersSummaryTextBox: {
+    flex: 1,
+  },
+  offersSummaryTitle: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  offersSummarySubtitle: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    marginTop: 2,
+  },
+  offersSummaryCount: {
+    color: colors.pink400,
+    fontSize: 22,
+    fontWeight: '700',
+  },
   offerTabContent: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1401,6 +1444,99 @@ const styles = StyleSheet.create({
   },
   offerTabContentTextPink: {
     color: '#ffffff',
+  },
+  offersPreviewList: {
+    gap: 10,
+  },
+  offerPreviewCard: {
+    backgroundColor: colors.backgroundSecondary,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 8,
+  },
+  offerPreviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  offerPreviewTypes: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+    flex: 1,
+  },
+  offerPreviewTypeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.backgroundTertiary,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    gap: 4,
+  },
+  offerPreviewTypeText: {
+    color: colors.pink400,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  offerPreviewStatusBadge: {
+    backgroundColor: `${colors.green500}22`,
+  },
+  offerPreviewTitle: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  offerPreviewMeta: {
+    gap: 6,
+  },
+  offerPreviewMetaItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  offerPreviewMetaText: {
+    flex: 1,
+    color: colors.textSecondary,
+    fontSize: 12,
+  },
+  offerPreviewFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: colors.borderSecondary,
+  },
+  offerPreviewTimeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  offerPreviewTimeText: {
+    color: colors.pink400,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  offersEmptyCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+    backgroundColor: `${colors.backgroundSecondary}70`,
+  },
+  offersEmptyText: {
+    color: colors.textSecondary,
+    fontSize: 13,
   },
   mapSection: {
     height: 256,
@@ -1609,8 +1745,8 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '500',
   },
-  // Note: currentUserMarker est défini plus haut dans les styles
-  // Cette définition semble être un doublon, on la garde pour compatibilité mais elle ne devrait pas être utilisée
+  //    Ã©     y
+  //  Ã©  Ãª  ,     Ã©    v  Ãª Ã©
   emptyState: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -1733,4 +1869,22 @@ const styles = StyleSheet.create({
     elevation: 10,
   },
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

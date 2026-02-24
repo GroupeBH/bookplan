@@ -101,7 +101,7 @@ export default function MyRequestsScreen() {
     });
 
     // Timeout de sécurité pour éviter un chargement infini
-    let safetyTimeout: NodeJS.Timeout | null = null;
+    let safetyTimeout: ReturnType<typeof setTimeout> | null = null;
     
     try {
       const allRequests: RequestItem[] = [];
@@ -502,7 +502,7 @@ export default function MyRequestsScreen() {
       } else {
         console.log('⏭️ Focus trop récent, pas de rafraîchissement');
       }
-    }, [currentUser?.id, sentAccessRequests, sentBookings, refreshRequests, refreshBookings, loadRequests]) // eslint-disable-line react-hooks/exhaustive-deps
+    }, [currentUser?.id, sentAccessRequests, sentBookings, refreshRequests, refreshBookings, loadRequests])
   );
 
   const onRefresh = useCallback(async () => {
@@ -980,6 +980,4 @@ const styles = StyleSheet.create({
     marginTop: 0,
   },
 });
-
-
 

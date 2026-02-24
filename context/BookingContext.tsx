@@ -20,7 +20,11 @@ interface BookingContextType {
   getCompanionshipTopics: () => Promise<{ error: any; topics: any[] }>;
   updateBookingStatus: (bookingId: string, status: Booking['status']) => Promise<{ error: any }>;
   getUserBookings: (userId?: string) => Promise<Booking[]>;
-  getAvailableUsers: () => Promise<any[]>;
+  getAvailableUsers: (options?: {
+    center?: { lat: number; lng: number };
+    radiusKm?: number;
+    onlineWithinMinutes?: number;
+  }) => Promise<any[]>;
   getAllUsers: () => Promise<any[]>; // Pour la page recherche (tous les utilisateurs, pas seulement en ligne)
   refreshBookings: () => Promise<void>;
   getActiveBookingWithUser: (userId: string) => Promise<Booking | null>;
@@ -31,12 +35,67 @@ interface BookingContextType {
 
 const BookingContext = createContext<BookingContextType | undefined>(undefined);
 
+const toRadians = (value: number): number => (value * Math.PI) / 180;
+
+const calculateDistanceKm = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+  const R = 6371;
+  const dLat = toRadians(lat2 - lat1);
+  const dLon = toRadians(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
+
+const isProfileOnlineNow = (lastSeen: unknown, onlineWindowMs: number): boolean => {
+  if (typeof lastSeen !== 'string' || !lastSeen.trim()) return false;
+
+  const parsedMs = Date.parse(lastSeen);
+  if (!Number.isFinite(parsedMs)) return false;
+
+  const nowMs = Date.now();
+  // Tolérer 5s d'écart d'horloge max.
+  if (parsedMs > nowMs + 5000) return false;
+  return nowMs - parsedMs <= onlineWindowMs;
+};
+
+const HOUR_MS = 60 * 60 * 1000;
+
+const parseTimeMs = (value: unknown): number | null => {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const isBookingStillLive = (
+  status: unknown,
+  bookingDateValue: unknown,
+  durationHoursValue?: unknown
+): boolean => {
+  if (status !== 'pending' && status !== 'accepted') return false;
+
+  const bookingDateMs = parseTimeMs(bookingDateValue);
+  if (bookingDateMs === null) return true;
+
+  const now = Date.now();
+  if (status === 'pending') {
+    return bookingDateMs > now;
+  }
+
+  const durationHours = Number(durationHoursValue);
+  const safeDuration = Number.isFinite(durationHours) && durationHours > 0 ? durationHours : 1;
+  const bookingEndMs = bookingDateMs + safeDuration * HOUR_MS;
+  return bookingEndMs > now;
+};
+
 export function BookingProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const { createNotification } = useNotification();
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const bookingCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const bookingCheckIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Charger les bookings au démarrage
   useEffect(() => {
@@ -131,6 +190,9 @@ export function BookingProvider({ children }: { children: ReactNode }) {
           console.log('⚠️ Demande trouvée mais avec statut invalide:', data1.status);
           return null;
         }
+        if (!isBookingStillLive(data1.status, data1.booking_date, data1.duration_hours)) {
+          return null;
+        }
         console.log('✅ Demande active trouvée (requester):', data1.id, data1.status);
         return mapBookingFromDB(data1);
       }
@@ -157,6 +219,9 @@ export function BookingProvider({ children }: { children: ReactNode }) {
         // Double vérification : s'assurer que le statut n'est pas cancelled ou rejected
         if (data2.status === 'cancelled' || data2.status === 'rejected') {
           console.log('⚠️ Demande trouvée mais avec statut invalide:', data2.status);
+          return null;
+        }
+        if (!isBookingStillLive(data2.status, data2.booking_date, data2.duration_hours)) {
           return null;
         }
         console.log('✅ Demande active trouvée (provider):', data2.id, data2.status);
@@ -218,7 +283,7 @@ export function BookingProvider({ children }: { children: ReactNode }) {
     const localActiveBooking = bookings.find(
       b => ((b.requesterId === user.id && b.providerId === providerId) ||
            (b.providerId === user.id && b.requesterId === providerId)) &&
-           (b.status === 'pending' || b.status === 'accepted')
+           isBookingStillLive(b.status, b.bookingDate, b.durationHours)
     );
     
     if (localActiveBooking) {
@@ -281,7 +346,7 @@ export function BookingProvider({ children }: { children: ReactNode }) {
       if (data) {
         const newBooking = mapBookingFromDB(data);
         // Mise à jour optimiste : ajouter immédiatement au state local
-        setBookings([newBooking, ...bookings]);
+        setBookings((prev) => [newBooking, ...prev.filter((b) => b.id !== newBooking.id)]);
         
         // Rafraîchir les bookings en arrière-plan (non bloquant) - pour synchroniser avec la DB
         refreshBookings().catch(() => {
@@ -326,6 +391,11 @@ export function BookingProvider({ children }: { children: ReactNode }) {
       return { error: { message: 'Not authenticated' } };
     }
 
+    const currentLocalBooking = bookings.find((b) => b.id === bookingId);
+    if (currentLocalBooking?.status === status) {
+      return { error: null };
+    }
+
     try {
       const { data, error } = await supabase
         .from('bookings')
@@ -344,7 +414,7 @@ export function BookingProvider({ children }: { children: ReactNode }) {
 
       if (data) {
         const updatedBooking = mapBookingFromDB(data);
-        setBookings(bookings.map(b => b.id === bookingId ? updatedBooking : b));
+        setBookings((prev) => prev.map((b) => (b.id === bookingId ? updatedBooking : b)));
         
         // Envoyer une notification selon le statut
         if (status === 'accepted') {
@@ -387,16 +457,16 @@ export function BookingProvider({ children }: { children: ReactNode }) {
           await Promise.all([
             createNotification(
               requesterId,
-              'booking_completed',
+              'booking_request_accepted',
               'Compagnie terminée',
-              'Votre compagnie est terminée. N\'oubliez pas de noter votre partenaire !',
+              'Votre compagnie est terminée. Ouvrez les détails pour noter, modifier votre avis ou demander une prolongation.',
               { bookingId: bookingId }
             ),
             createNotification(
               providerId,
-              'booking_completed',
+              'booking_request_accepted',
               'Compagnie terminée',
-              'Votre compagnie est terminée. N\'oubliez pas de noter votre partenaire !',
+              'Votre compagnie est terminée. Ouvrez les détails pour noter, modifier votre avis ou demander une prolongation.',
               { bookingId: bookingId }
             ),
           ]);
@@ -459,7 +529,11 @@ export function BookingProvider({ children }: { children: ReactNode }) {
   };
 
   // Obtenir les utilisateurs disponibles (uniquement ceux en ligne)
-  const getAvailableUsers = async () => {
+  const getAvailableUsers = async (options?: {
+    center?: { lat: number; lng: number };
+    radiusKm?: number;
+    onlineWithinMinutes?: number;
+  }) => {
     try {
       // En mode développement, si l'utilisateur n'a pas d'UUID valide, retourner un tableau vide
       if (!isValidUUID(user?.id)) {
@@ -467,9 +541,10 @@ export function BookingProvider({ children }: { children: ReactNode }) {
         return [];
       }
 
-      // Calculer le timestamp il y a 5 minutes (300000 ms)
-      // Un utilisateur est considéré en ligne si last_seen est dans les 5 dernières minutes
-      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      const center = options?.center;
+      const radiusKm = Math.max(1, Math.min(options?.radiusKm ?? 10, 100));
+      const onlineWithinMinutes = Math.max(1, Math.min(options?.onlineWithinMinutes ?? 2, 10));
+      const onlineWindowMs = onlineWithinMinutes * 60 * 1000;
 
       let query = supabase
         .from('profiles')
@@ -478,6 +553,18 @@ export function BookingProvider({ children }: { children: ReactNode }) {
         // S'assurer qu'ils ont une position (lat et lng)
         .not('lat', 'is', null)
         .not('lng', 'is', null);
+
+      if (center && Number.isFinite(center.lat) && Number.isFinite(center.lng)) {
+        const latDelta = radiusKm / 111.32;
+        const cosLat = Math.cos(toRadians(center.lat));
+        const lngDelta = radiusKm / Math.max(111.32 * Math.abs(cosLat), 1e-6);
+
+        query = query
+          .gte('lat', center.lat - latDelta)
+          .lte('lat', center.lat + latDelta)
+          .gte('lng', center.lng - lngDelta)
+          .lte('lng', center.lng + lngDelta);
+      }
 
       // Exclure l'utilisateur actuel seulement si c'est un UUID valide
       if (user?.id && isValidUUID(user.id)) {
@@ -496,29 +583,20 @@ export function BookingProvider({ children }: { children: ReactNode }) {
 
       if (!data) return [];
 
-      // Filtrer côté client pour vérifier que last_seen est récent
-      // Cela évite les problèmes de comparaison avec le type TEXT
-      const now = new Date();
       const filteredData = data.filter((profile: any) => {
-        if (!profile.last_seen) return false;
-        
-        // Si last_seen est "En ligne", considérer comme en ligne
-        if (profile.last_seen === 'En ligne' || profile.last_seen.toLowerCase() === 'en ligne') {
+        if (!isValidUUID(profile?.id)) return false;
+        if (!isProfileOnlineNow(profile?.last_seen, onlineWindowMs)) return false;
+
+        if (!center || !Number.isFinite(center.lat) || !Number.isFinite(center.lng)) {
           return true;
         }
-        
-        // Sinon, essayer de parser comme timestamp ISO
-        try {
-          const lastSeenDate = new Date(profile.last_seen);
-          if (isNaN(lastSeenDate.getTime())) {
-            return false; // Date invalide
-          }
-          const diffMs = now.getTime() - lastSeenDate.getTime();
-          const diffMinutes = diffMs / (1000 * 60);
-          return diffMinutes < 5; // En ligne si vu il y a moins de 5 minutes
-        } catch {
-          return false; // Erreur de parsing
-        }
+
+        const lat = Number(profile?.lat);
+        const lng = Number(profile?.lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+
+        const distanceKm = calculateDistanceKm(center.lat, center.lng, lat, lng);
+        return Number.isFinite(distanceKm) && distanceKm <= radiusKm;
       });
 
       return filteredData;
@@ -643,10 +721,12 @@ export function BookingProvider({ children }: { children: ReactNode }) {
 
       // Mapper le booking retourné
       const updatedBooking = mapBookingFromDB(data.booking);
-      setBookings(bookings.map(b => b.id === bookingId ? updatedBooking : b));
+      setBookings((prev) => prev.map((b) => (b.id === bookingId ? updatedBooking : b)));
       
       // Rafraîchir les bookings pour avoir la liste à jour
-      await refreshBookings();
+      refreshBookings().catch(() => {
+        // Ignorer les erreurs de rafraîchissement arrière-plan
+      });
       
       return { error: null };
     } catch (error: any) {
@@ -703,7 +783,7 @@ export function BookingProvider({ children }: { children: ReactNode }) {
 
       if (data) {
         const updatedBooking = mapBookingFromDB(data);
-        setBookings(bookings.map(b => b.id === bookingId ? updatedBooking : b));
+        setBookings((prev) => prev.map((b) => (b.id === bookingId ? updatedBooking : b)));
         return { error: null };
       }
 
@@ -881,6 +961,7 @@ export function BookingProvider({ children }: { children: ReactNode }) {
     updatedAt: dbBooking.updated_at,
     extensionRequestedHours: dbBooking.extension_requested_hours,
     extensionRequestedAt: dbBooking.extension_requested_at,
+    extensionRequestedBy: dbBooking.extension_requested_by,
   });
 
   return (
@@ -913,4 +994,3 @@ export function useBooking() {
   }
   return context;
 }
-

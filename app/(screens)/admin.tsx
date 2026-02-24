@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, KeyboardAvoidingView, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -114,137 +114,148 @@ export default function AdminScreen() {
         <View style={{ width: 24 }} />
       </View>
 
-      {/* Tabs */}
-      <View style={styles.tabs}>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'users' && styles.tabActive]}
-          onPress={() => setActiveTab('users')}
-        >
-          <Text style={[styles.tabText, activeTab === 'users' && styles.tabTextActive]}>
-            Utilisateurs
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'reports' && styles.tabActive]}
-          onPress={() => setActiveTab('reports')}
-        >
-          <View style={styles.tabWithBadge}>
-            <Text style={[styles.tabText, activeTab === 'reports' && styles.tabTextActive]}>
-              Signalements
+      <KeyboardAvoidingView
+        style={styles.content}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 16}
+      >
+        {/* Tabs */}
+        <View style={styles.tabs}>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'users' && styles.tabActive]}
+            onPress={() => setActiveTab('users')}
+          >
+            <Text style={[styles.tabText, activeTab === 'users' && styles.tabTextActive]}>
+              Utilisateurs
             </Text>
-            {pendingReportsCount > 0 && (
-              <View style={styles.tabBadge}>
-                <Text style={styles.tabBadgeText}>{pendingReportsCount}</Text>
-              </View>
-            )}
-          </View>
-        </TouchableOpacity>
-      </View>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'reports' && styles.tabActive]}
+            onPress={() => setActiveTab('reports')}
+          >
+            <View style={styles.tabWithBadge}>
+              <Text style={[styles.tabText, activeTab === 'reports' && styles.tabTextActive]}>
+                Signalements
+              </Text>
+              {pendingReportsCount > 0 && (
+                <View style={styles.tabBadge}>
+                  <Text style={styles.tabBadgeText}>{pendingReportsCount}</Text>
+                </View>
+              )}
+            </View>
+          </TouchableOpacity>
+        </View>
 
-      {/* Search */}
-      <View style={styles.searchContainer}>
-        <Input
-          placeholder={
-            activeTab === 'users' ? 'Rechercher un utilisateur...' : 'Rechercher un signalement...'
-          }
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          leftIcon={<Ionicons name="search-outline" size={20} color={colors.textTertiary} />}
-          containerStyle={styles.searchInput}
-        />
-      </View>
+        {/* Search */}
+        <View style={styles.searchContainer}>
+          <Input
+            placeholder={
+              activeTab === 'users' ? 'Rechercher un utilisateur...' : 'Rechercher un signalement...'
+            }
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            leftIcon={<Ionicons name="search-outline" size={20} color={colors.textTertiary} />}
+            containerStyle={styles.searchInput}
+          />
+        </View>
 
-      {/* Content */}
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
-        {activeTab === 'users' ? (
-          <View style={styles.usersList}>
-            {mockAdminUsers.map((user) => (
-              <View key={user.id} style={styles.userCard}>
-                <View style={styles.userHeader}>
-                  <ImageWithFallback source={{ uri: user.photo }} style={styles.userAvatar} />
-                  <View style={styles.userInfo}>
-                    <View style={styles.userNameRow}>
-                      <Text style={styles.userName}>{user.pseudo}</Text>
-                      {getStatusBadge(user.status)}
-                    </View>
-                    <Text style={styles.userPhone}>{user.phone}</Text>
-                    <Text style={styles.userJoinDate}>Inscrit le {user.joinDate}</Text>
-                    {user.reports > 0 && (
-                      <View style={styles.reportsRow}>
-                        <Ionicons name="flag-outline" size={16} color={colors.red500} />
-                        <Text style={styles.reportsText}>
-                          {user.reports} signalement{user.reports > 1 ? 's' : ''}
-                        </Text>
+        {/* Content */}
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+        >
+          {activeTab === 'users' ? (
+            <View style={styles.usersList}>
+              {mockAdminUsers.map((user) => (
+                <View key={user.id} style={styles.userCard}>
+                  <View style={styles.userHeader}>
+                    <ImageWithFallback source={{ uri: user.photo }} style={styles.userAvatar} />
+                    <View style={styles.userInfo}>
+                      <View style={styles.userNameRow}>
+                        <Text style={styles.userName}>{user.pseudo}</Text>
+                        {getStatusBadge(user.status)}
                       </View>
-                    )}
+                      <Text style={styles.userPhone}>{user.phone}</Text>
+                      <Text style={styles.userJoinDate}>Inscrit le {user.joinDate}</Text>
+                      {user.reports > 0 && (
+                        <View style={styles.reportsRow}>
+                          <Ionicons name="flag-outline" size={16} color={colors.red500} />
+                          <Text style={styles.reportsText}>
+                            {user.reports} signalement{user.reports > 1 ? 's' : ''}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
                   </View>
-                </View>
-                <View style={styles.userActions}>
-                  <Button
-                    title="Voir"
-                    onPress={() => {}}
-                    variant="outline"
-                    icon={<Ionicons name="eye-outline" size={16} color={colors.text} />}
-                    style={styles.actionButton}
-                  />
-                  <Button
-                    title="Suspendre"
-                    onPress={() => {}}
-                    variant="outline"
-                    disabled={user.status === 'suspended'}
-                    icon={<Ionicons name="ban-outline" size={16} color={colors.yellow400} />}
-                    style={[styles.actionButton, styles.actionButtonWarning]}
-                    textStyle={{ color: colors.yellow400 }}
-                  />
-                  <Button
-                    title="Supprimer"
-                    onPress={() => {}}
-                    variant="outline"
-                    icon={<Ionicons name="trash-outline" size={16} color={colors.red500} />}
-                    style={[styles.actionButton, styles.actionButtonDanger]}
-                    textStyle={{ color: colors.red500 }}
-                  />
-                </View>
-              </View>
-            ))}
-          </View>
-        ) : (
-          <View style={styles.reportsList}>
-            {mockReports.map((report) => (
-              <View key={report.id} style={styles.reportCard}>
-                <View style={styles.reportHeader}>
-                  <View>
-                    <Text style={styles.reportTitle}>Signalement contre {report.reportedUser}</Text>
-                    <Text style={styles.reportBy}>Par {report.reportedBy}</Text>
-                    <Text style={styles.reportDate}>{report.date}</Text>
-                  </View>
-                  {getReportStatusBadge(report.status)}
-                </View>
-                <View style={styles.reportReason}>
-                  <Text style={styles.reportReasonText}>{report.reason}</Text>
-                </View>
-                {report.status === 'pending' && (
-                  <View style={styles.reportActions}>
+                  <View style={styles.userActions}>
                     <Button
-                      title="Approuver"
-                      onPress={() => {}}
-                      icon={<Ionicons name="checkmark-circle-outline" size={16} color="#ffffff" />}
-                      style={[styles.reportActionButton, styles.reportActionButtonSuccess]}
-                    />
-                    <Button
-                      title="Rejeter"
+                      title="Voir"
                       onPress={() => {}}
                       variant="outline"
-                      icon={<Ionicons name="close-circle-outline" size={16} color={colors.text} />}
-                      style={styles.reportActionButton}
+                      icon={<Ionicons name="eye-outline" size={16} color={colors.text} />}
+                      style={styles.actionButton}
+                    />
+                    <Button
+                      title="Suspendre"
+                      onPress={() => {}}
+                      variant="outline"
+                      disabled={user.status === 'suspended'}
+                      icon={<Ionicons name="ban-outline" size={16} color={colors.yellow400} />}
+                      style={[styles.actionButton, styles.actionButtonWarning]}
+                      textStyle={{ color: colors.yellow400 }}
+                    />
+                    <Button
+                      title="Supprimer"
+                      onPress={() => {}}
+                      variant="outline"
+                      icon={<Ionicons name="trash-outline" size={16} color={colors.red500} />}
+                      style={[styles.actionButton, styles.actionButtonDanger]}
+                      textStyle={{ color: colors.red500 }}
                     />
                   </View>
-                )}
-              </View>
-            ))}
-          </View>
-        )}
-      </ScrollView>
+                </View>
+              ))}
+            </View>
+          ) : (
+            <View style={styles.reportsList}>
+              {mockReports.map((report) => (
+                <View key={report.id} style={styles.reportCard}>
+                  <View style={styles.reportHeader}>
+                    <View>
+                      <Text style={styles.reportTitle}>Signalement contre {report.reportedUser}</Text>
+                      <Text style={styles.reportBy}>Par {report.reportedBy}</Text>
+                      <Text style={styles.reportDate}>{report.date}</Text>
+                    </View>
+                    {getReportStatusBadge(report.status)}
+                  </View>
+                  <View style={styles.reportReason}>
+                    <Text style={styles.reportReasonText}>{report.reason}</Text>
+                  </View>
+                  {report.status === 'pending' && (
+                    <View style={styles.reportActions}>
+                      <Button
+                        title="Approuver"
+                        onPress={() => {}}
+                        icon={<Ionicons name="checkmark-circle-outline" size={16} color="#ffffff" />}
+                        style={[styles.reportActionButton, styles.reportActionButtonSuccess]}
+                      />
+                      <Button
+                        title="Rejeter"
+                        onPress={() => {}}
+                        variant="outline"
+                        icon={<Ionicons name="close-circle-outline" size={16} color={colors.text} />}
+                        style={styles.reportActionButton}
+                      />
+                    </View>
+                  )}
+                </View>
+              ))}
+            </View>
+          )}
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -253,6 +264,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.background,
+  },
+  content: {
+    flex: 1,
   },
   header: {
     flexDirection: 'row',

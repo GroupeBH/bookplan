@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/exhaustive-deps */
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -88,24 +89,23 @@ export default function UserProfileScreen() {
       } else {
         return { isOnline: false, statusText: 'Hors ligne' };
       }
-    } catch (error) {
+    } catch {
       // En cas d'erreur de parsing, considérer comme hors ligne
       return { isOnline: false, statusText: 'Hors ligne' };
     }
   };
   const { requestAccess, hasAccess, canViewFullProfile, accessRequests, refreshRequests } = useAccessRequest();
-  const { createRating, getUserRatings, updateRating, getUserAverageRating } = useRating();
-  const { getActiveBookingWithUser, cancelBooking, updateBookingStatus } = useBooking();
-  const { blockUser, unblockUser, isUserBlocked, blockedUsers } = useBlock();
+  const { createRating, getUserRatings, updateRating } = useRating();
+  const { bookings, getActiveBookingWithUser, cancelBooking, updateBookingStatus } = useBooking();
+  const { blockUser, unblockUser, isUserBlocked } = useBlock();
   const { getUserAlbumPhotos } = useAlbum();
   const { likeUser, unlikeUser, isUserLiked } = useLike();
   const [isBlocked, setIsBlocked] = useState(false);
   const [isLiked, setIsLiked] = useState(false);
   const [userAlbumPhotos, setUserAlbumPhotos] = useState<any[]>([]);
-  const [isLoadingAlbum, setIsLoadingAlbum] = useState(false);
+  const [, setIsLoadingAlbum] = useState(false);
   const [showAccessDialog, setShowAccessDialog] = useState(false);
   const [showRatingDialog, setShowRatingDialog] = useState(false);
-  const [showBookingDialog, setShowBookingDialog] = useState(false);
   const [activeBooking, setActiveBooking] = useState<any>(null);
   const [rating, setRating] = useState(0);
   const [comment, setComment] = useState('');
@@ -114,7 +114,8 @@ export default function UserProfileScreen() {
   const [isLoadingRatings, setIsLoadingRatings] = useState(false);
   const [existingRating, setExistingRating] = useState<any>(null);
   const [averageRating, setAverageRating] = useState({ average: 0, count: 0 });
-  const [isLoadingBooking, setIsLoadingBooking] = useState(false);
+  const [, setIsLoadingBooking] = useState(false);
+  const [bookingActionLoading, setBookingActionLoading] = useState<'accept' | 'reject' | 'cancel' | null>(null);
   const isLoadingBookingRef = React.useRef(false);
   const lastLoadTimeRef = React.useRef<number>(0);
   const lastSelectedUserIdRef = React.useRef<string | null>(null);
@@ -122,6 +123,48 @@ export default function UserProfileScreen() {
   const lastRatingsLoadTimeRef = React.useRef<number>(0);
   const lastRatingsUserIdRef = React.useRef<string | null>(null);
   const lastFocusTimeRef = React.useRef<number>(0);
+  const isSubmittingRatingRef = React.useRef(false);
+
+  const isBookingStillLiveForProfile = React.useCallback((booking: any) => {
+    if (!booking) return false;
+    if (booking.status !== 'pending' && booking.status !== 'accepted') {
+      return false;
+    }
+
+    const bookingDateMs = Date.parse(booking.bookingDate || '');
+    if (!Number.isFinite(bookingDateMs)) {
+      return true;
+    }
+
+    const now = Date.now();
+    if (booking.status === 'pending') {
+      return bookingDateMs > now;
+    }
+
+    const durationHours = Number(booking.durationHours);
+    const safeDuration = Number.isFinite(durationHours) && durationHours > 0 ? durationHours : 1;
+    const endMs = bookingDateMs + safeDuration * 60 * 60 * 1000;
+    return endMs > now;
+  }, []);
+
+  const getMostRecentLiveBookingBetweenUsers = React.useCallback((list: any[]) => {
+    if (!selectedUser?.id || !currentUser?.id || !Array.isArray(list)) return null;
+
+    const match = list
+      .filter((booking) => {
+        const isPair =
+          (booking.requesterId === currentUser.id && booking.providerId === selectedUser.id) ||
+          (booking.providerId === currentUser.id && booking.requesterId === selectedUser.id);
+        return isPair && isBookingStillLiveForProfile(booking);
+      })
+      .sort((a, b) => {
+        const aTime = Date.parse(a.createdAt || a.bookingDate || '') || 0;
+        const bTime = Date.parse(b.createdAt || b.bookingDate || '') || 0;
+        return bTime - aTime;
+      });
+
+    return match.length > 0 ? match[0] : null;
+  }, [selectedUser?.id, currentUser?.id, isBookingStillLiveForProfile]);
 
   // Fonction pour charger la demande active
   const loadActiveBooking = React.useCallback(async (force = false) => {
@@ -166,7 +209,7 @@ export default function UserProfileScreen() {
       const booking = await getActiveBookingWithUser(selectedUser.id);
       clearTimeout(timeoutId);
       console.log('📋 Demande active chargée:', booking ? `${booking.id} - ${booking.status}` : 'Aucune demande');
-      setActiveBooking(booking);
+      setActiveBooking(booking && isBookingStillLiveForProfile(booking) ? booking : null);
     } catch (error: any) {
       clearTimeout(timeoutId);
       // Ne logger comme erreur que si ce n'est pas un timeout ou une erreur réseau
@@ -179,14 +222,24 @@ export default function UserProfileScreen() {
       setIsLoadingBooking(false);
       isLoadingBookingRef.current = false;
     }
-  }, [selectedUser?.id, currentUser?.id, getActiveBookingWithUser]);
+  }, [selectedUser?.id, currentUser?.id, getActiveBookingWithUser, isBookingStillLiveForProfile]);
 
   // Charger la demande active au montage
   React.useEffect(() => {
     if (selectedUser?.id && currentUser?.id) {
       loadActiveBooking(true); // Force le chargement initial
     }
-  }, [selectedUser?.id, currentUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedUser?.id, currentUser?.id]);
+
+  React.useEffect(() => {
+    const localBooking = getMostRecentLiveBookingBetweenUsers(bookings as any[]);
+    if (localBooking) {
+      setActiveBooking(localBooking);
+      return;
+    }
+
+    setActiveBooking((prev: any) => (prev && !isBookingStillLiveForProfile(prev) ? null : prev));
+  }, [bookings, getMostRecentLiveBookingBetweenUsers, isBookingStillLiveForProfile]);
 
   // Charger les avis du profil
   const loadUserRatings = React.useCallback(async (force = false) => {
@@ -212,7 +265,7 @@ export default function UserProfileScreen() {
     lastRatingsLoadTimeRef.current = now;
     lastRatingsUserIdRef.current = selectedUser.id;
     setIsLoadingRatings(true);
-    let timeoutId: NodeJS.Timeout | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     try {
       // Ajouter un timeout pour éviter que le chargement reste bloqué
       const timeoutPromise = new Promise<never>((_, reject) => {
@@ -237,7 +290,7 @@ export default function UserProfileScreen() {
       // Charger les informations des raters pour chaque avis avec timeout individuel
       const ratingsWithRaterInfo = await Promise.all(
         ratings.map(async (ratingItem) => {
-          let raterTimeoutId: NodeJS.Timeout | null = null;
+          let raterTimeoutId: ReturnType<typeof setTimeout> | null = null;
           try {
             const profilePromise = supabase
               .from('profiles')
@@ -295,47 +348,19 @@ export default function UserProfileScreen() {
         setExistingRating(myRating || null);
       }
 
-      // Charger la moyenne des notes avec timeout
-      let avgRating: { average: number; count: number } = { average: 0, count: 0 };
-      try {
-        const timeoutPromise = new Promise<{ average: number; count: number }>((resolve) => {
-          setTimeout(() => resolve({ average: 0, count: 0 }), 10000); // 10 secondes timeout
-        });
+      const finalCount = ratingsWithRaterInfo.length;
+      const finalAverage = finalCount > 0
+        ? ratingsWithRaterInfo.reduce((acc, r) => acc + r.rating, 0) / finalCount
+        : 0;
 
-        avgRating = await Promise.race([
-          getUserAverageRating(selectedUser.id),
-          timeoutPromise,
-        ]) as { average: number; count: number };
-      } catch (error) {
-        console.error('Error getting average rating:', error);
-        // En cas d'erreur, calculer manuellement depuis les ratings chargés
-        if (ratings.length > 0) {
-          const sum = ratings.reduce((acc, r) => acc + r.rating, 0);
-          avgRating = {
-            average: sum / ratings.length,
-            count: ratings.length,
-          };
-        }
-      }
-      
-      console.log('⭐ Note moyenne calculée pour', selectedUser.id, ':', {
-        average: avgRating.average,
-        count: avgRating.count,
-        ratingsLength: ratings.length,
-      });
-      
-      // S'assurer que count est bien un nombre et utiliser les ratings chargés comme fallback
-      const finalCount = typeof avgRating.count === 'number' && avgRating.count > 0 
-        ? avgRating.count 
-        : (ratings.length || 0);
-      const finalAverage = typeof avgRating.average === 'number' && !isNaN(avgRating.average) && avgRating.average > 0
-        ? avgRating.average
-        : (ratings.length > 0 
-          ? ratings.reduce((acc, r) => acc + r.rating, 0) / ratings.length 
-          : 0);
-      
-      console.log('⭐ Valeurs finales:', { average: finalAverage, count: finalCount, ratingsLength: ratings.length });
       setAverageRating({ average: finalAverage, count: finalCount });
+      if (selectedUser) {
+        setSelectedUser({
+          ...selectedUser,
+          rating: finalAverage,
+          reviewCount: finalCount,
+        });
+      }
       
       // Marquer comme chargé
       ratingsLoadedForUserRef.current = selectedUser.id;
@@ -347,14 +372,16 @@ export default function UserProfileScreen() {
       } else if (!error?.message?.includes('Network')) {
         console.error('Error loading user ratings:', error);
       }
-      // En cas d'erreur, initialiser avec des valeurs par défaut (ne pas bloquer l'UI)
-      setUserRatings([]);
-      setAverageRating({ average: 0, count: 0 });
+      // En cas d'erreur réseau, garder les données déjà affichées si disponibles
+      if (userRatings.length === 0) {
+        setUserRatings([]);
+        setAverageRating({ average: 0, count: 0 });
+      }
     } finally {
       setIsLoadingRatings(false);
       isLoadingRatingsRef.current = false;
     }
-  }, [selectedUser?.id, currentUser?.id, userRatings.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedUser?.id, currentUser?.id, userRatings.length]);
 
   // Calculer la distance entre l'utilisateur actuel et le profil sélectionné
   React.useEffect(() => {
@@ -487,6 +514,10 @@ export default function UserProfileScreen() {
       // Réinitialiser les avis et le ref quand on change d'utilisateur
       setUserRatings([]);
       setAverageRating({ average: 0, count: 0 });
+      setExistingRating(null);
+      setShowRatingDialog(false);
+      setRating(0);
+      setComment('');
       ratingsLoadedForUserRef.current = null;
     }
   }, [selectedUser?.id]);
@@ -497,7 +528,7 @@ export default function UserProfileScreen() {
       ratingsLoadedForUserRef.current = selectedUser.id;
       loadUserRatings(true); // Forcer le chargement initial
     }
-  }, [selectedUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedUser?.id]);
 
   // Charger le profil depuis userId si selectedUser n'est pas défini
   useEffect(() => {
@@ -555,7 +586,7 @@ export default function UserProfileScreen() {
     };
 
     loadProfileFromParams();
-  }, [params.userId, selectedUser, setSelectedUser, router, loadUserAlbumPhotos]);
+  }, [params.userId, selectedUser, setSelectedUser, router]);
 
   // Recharger quand on revient sur la page (après avoir créé une demande par exemple)
   // MAIS ne pas recharger les avis automatiquement pour éviter les boucles
@@ -582,7 +613,7 @@ export default function UserProfileScreen() {
             // Recharger les photos d'album pour avoir les dernières photos
             loadUserAlbumPhotos();
           }
-        }, 500); // Délai augmenté à 500ms pour laisser le temps à la DB
+        }, 150); // Délai court pour garder une UI réactive
 
         return () => {
           clearTimeout(timer);
@@ -590,7 +621,7 @@ export default function UserProfileScreen() {
       } else {
         console.log('⏭️ Focus trop récent, pas de rafraîchissement');
       }
-    }, [selectedUser?.id, currentUser?.id, refreshRequests, loadActiveBooking, reloadUserProfile, loadUserAlbumPhotos]) // eslint-disable-line react-hooks/exhaustive-deps
+    }, [selectedUser?.id, currentUser?.id, refreshRequests, loadActiveBooking, reloadUserProfile])
   );
 
   // Vérifier si on a déjà demandé l'accès (doit être avant le return conditionnel)
@@ -730,7 +761,7 @@ export default function UserProfileScreen() {
   };
 
   const handleCancelBooking = () => {
-    if (!activeBooking) return;
+    if (!activeBooking || bookingActionLoading) return;
 
     Alert.alert(
       'Annuler la demande',
@@ -741,24 +772,27 @@ export default function UserProfileScreen() {
           text: 'Oui, annuler',
           style: 'destructive',
           onPress: async () => {
-            setIsLoading(true);
-            const bookingIdToCancel = activeBooking.id;
+            const bookingSnapshot = { ...activeBooking };
+            const bookingIdToCancel = bookingSnapshot.id;
+            setBookingActionLoading('cancel');
+            setActiveBooking(null); // UI instantanée
             try {
               const { error } = await cancelBooking(bookingIdToCancel);
               if (error) {
+                setActiveBooking(bookingSnapshot);
                 Alert.alert('Erreur', error.message || 'Impossible d\'annuler la demande');
               } else {
-                // Mettre à jour immédiatement le state local pour refléter l'annulation
-                setActiveBooking(null);
                 Alert.alert('Succès', 'La demande a été annulée');
-                // Recharger la demande active pour s'assurer que tout est à jour
-                await loadActiveBooking(true);
+                loadActiveBooking(true).catch(() => {
+                  // Ignore refresh errors
+                });
               }
             } catch (error: any) {
+              setActiveBooking(bookingSnapshot);
               Alert.alert('Erreur', 'Une erreur est survenue');
               console.error('Cancel booking error:', error);
             } finally {
-              setIsLoading(false);
+              setBookingActionLoading(null);
             }
           },
         },
@@ -767,7 +801,7 @@ export default function UserProfileScreen() {
   };
 
   const handleAcceptBooking = async () => {
-    if (!activeBooking || !currentUser) return;
+    if (!activeBooking || !currentUser || bookingActionLoading) return;
 
     Alert.alert(
       'Accepter la demande',
@@ -777,23 +811,66 @@ export default function UserProfileScreen() {
         {
           text: 'Accepter',
           onPress: async () => {
-            setIsLoading(true);
+            const bookingSnapshot = { ...activeBooking };
+            setBookingActionLoading('accept');
+            setActiveBooking({ ...bookingSnapshot, status: 'accepted' }); // Optimiste
             try {
               const { error } = await updateBookingStatus(activeBooking.id, 'accepted');
               if (error) {
+                setActiveBooking(bookingSnapshot);
                 Alert.alert('Erreur', error.message || 'Impossible d\'accepter la demande');
               } else {
-                // Mettre à jour immédiatement le state local
-                setActiveBooking({ ...activeBooking, status: 'accepted' });
                 Alert.alert('Succès', 'La demande a été acceptée');
-                // Recharger la demande active pour s'assurer que tout est à jour
-                await loadActiveBooking(true);
+                loadActiveBooking(true).catch(() => {
+                  // Ignore refresh errors
+                });
               }
             } catch (error: any) {
+              setActiveBooking(bookingSnapshot);
               Alert.alert('Erreur', 'Une erreur est survenue');
               console.error('Accept booking error:', error);
             } finally {
-              setIsLoading(false);
+              setBookingActionLoading(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleRejectBooking = async () => {
+    if (!activeBooking || bookingActionLoading) return;
+
+    Alert.alert(
+      'Rejeter la demande',
+      'Êtes-vous sûr de vouloir rejeter cette demande ?',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Rejeter',
+          style: 'destructive',
+          onPress: async () => {
+            const bookingSnapshot = { ...activeBooking };
+            setBookingActionLoading('reject');
+            setActiveBooking(null); // Optimiste
+
+            try {
+              const { error } = await updateBookingStatus(bookingSnapshot.id, 'rejected');
+              if (error) {
+                setActiveBooking(bookingSnapshot);
+                Alert.alert('Erreur', error.message || 'Impossible de rejeter la demande');
+              } else {
+                Alert.alert('Succès', 'La demande a été rejetée');
+                loadActiveBooking(true).catch(() => {
+                  // Ignore refresh errors
+                });
+              }
+            } catch (error: any) {
+              setActiveBooking(bookingSnapshot);
+              Alert.alert('Erreur', 'Une erreur est survenue');
+              console.error('Reject booking error:', error);
+            } finally {
+              setBookingActionLoading(null);
             }
           },
         },
@@ -803,7 +880,6 @@ export default function UserProfileScreen() {
 
   // Déterminer si l'utilisateur actuel est l'expéditeur (requester) ou le récepteur (provider)
   const isRequester = activeBooking && currentUser?.id === activeBooking.requesterId;
-  const isProvider = activeBooking && currentUser?.id === activeBooking.providerId;
 
   const handleSubmitRating = async () => {
     if (rating === 0) {
@@ -811,50 +887,94 @@ export default function UserProfileScreen() {
       return;
     }
 
-    if (!currentUser) return;
+    if (!currentUser || !selectedUser) return;
+    if (isSubmittingRatingRef.current) return;
 
+    const wasExisting = !!existingRating;
+    const submittedRating = rating;
+    const submittedComment = comment?.trim() || '';
+
+    isSubmittingRatingRef.current = true;
     setIsLoading(true);
     try {
-      let error;
-      
+      let error: any = null;
+      let nextRatingId: string | undefined = existingRating?.id;
+
       // Si l'utilisateur a déjà noté ce profil, mettre à jour l'avis existant
       if (existingRating) {
-        const result = await updateRating(existingRating.id, rating, comment);
+        const result = await updateRating(existingRating.id, submittedRating, submittedComment);
         error = result.error;
       } else {
         // Sinon, créer un nouvel avis
-        const result = await createRating(selectedUser.id, rating, comment);
+        const result = await createRating(selectedUser.id, submittedRating, submittedComment);
         error = result.error;
+        nextRatingId = result.rating?.id;
       }
       
       if (error) {
         Alert.alert('Erreur', error.message || 'Impossible d\'envoyer l\'avis');
-        setIsLoading(false);
         return;
       }
 
-      const wasExisting = !!existingRating;
+      const nowIso = new Date().toISOString();
+      const optimisticRating = {
+        id: nextRatingId || existingRating?.id || `local-${currentUser.id}-${selectedUser.id}`,
+        raterId: currentUser.id,
+        ratedId: selectedUser.id,
+        rating: submittedRating,
+        comment: submittedComment,
+        bookingId: existingRating?.bookingId,
+        createdAt: existingRating?.createdAt || nowIso,
+        updatedAt: nowIso,
+        rater: {
+          pseudo: currentUser.pseudo || 'Vous',
+          photo: currentUser.photo || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400',
+        },
+      };
+
+      setUserRatings((prev) => {
+        const withoutMine = prev.filter((item) => item.raterId !== currentUser.id);
+        const nextRatings = [optimisticRating, ...withoutMine];
+        const nextCount = nextRatings.length;
+        const nextAverage = nextCount > 0
+          ? nextRatings.reduce((acc, item) => acc + (parseFloat(item.rating) || 0), 0) / nextCount
+          : 0;
+
+        setAverageRating({ average: nextAverage, count: nextCount });
+        setSelectedUser({
+          ...selectedUser,
+          rating: nextAverage,
+          reviewCount: nextCount,
+        });
+
+        return nextRatings;
+      });
+
+      setExistingRating({
+        id: optimisticRating.id,
+        rating: optimisticRating.rating,
+        comment: optimisticRating.comment || '',
+        bookingId: optimisticRating.bookingId,
+        createdAt: optimisticRating.createdAt,
+      });
+
       setShowRatingDialog(false);
+      Keyboard.dismiss();
       setRating(0);
       setComment('');
-      setExistingRating(null);
-      
-      // Attendre un peu pour que la DB se mette à jour
-      await new Promise(resolve => setTimeout(resolve, 1000)); // Augmenté à 1 seconde
-      
-      console.log('🔄 Rechargement des avis après ajout/modification...');
-      // Mettre à jour lastFocusTimeRef pour éviter que useFocusEffect ne recharge immédiatement après
+
       lastFocusTimeRef.current = Date.now();
-      // Réinitialiser le ref pour permettre le rechargement
       ratingsLoadedForUserRef.current = null;
-      // Recharger les avis pour mettre à jour l'affichage
-      await loadUserRatings(true); // Forcer le rechargement après modification
-      // Mettre à jour le ref après le chargement
-      if (selectedUser?.id) {
-        ratingsLoadedForUserRef.current = selectedUser.id;
-      }
-      
-      console.log('✅ Avis rechargés après ajout/modification');
+
+      loadUserRatings(true)
+        .then(() => {
+          if (selectedUser?.id) {
+            ratingsLoadedForUserRef.current = selectedUser.id;
+          }
+        })
+        .catch((refreshError) => {
+          console.error('Error refreshing ratings after submit:', refreshError);
+        });
       
       Alert.alert('Succès', wasExisting ? 'Votre avis a été modifié' : 'Votre avis a été envoyé');
     } catch (error: any) {
@@ -862,10 +982,13 @@ export default function UserProfileScreen() {
       console.error('Submit rating error:', error);
     } finally {
       setIsLoading(false);
+      isSubmittingRatingRef.current = false;
     }
   };
 
   const handleOpenRatingDialog = () => {
+    if (isLoading || isSubmittingRatingRef.current) return;
+
     // Si l'utilisateur a déjà noté ce profil, pré-remplir le formulaire
     if (existingRating) {
       setRating(existingRating.rating);
@@ -881,7 +1004,7 @@ export default function UserProfileScreen() {
     if (!selectedUser?.id) return;
     
     setIsLoadingAlbum(true);
-    let timeoutId: NodeJS.Timeout | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     try {
       // Ajouter un timeout pour éviter que le chargement reste bloqué
       const timeoutPromise = new Promise<never>((_, reject) => {
@@ -1048,10 +1171,10 @@ export default function UserProfileScreen() {
                 <Ionicons name="alert-circle" size={20} color={colors.pink400} />
                 <View style={styles.accessText}>
                   <Text style={styles.accessTitle}>
-                    Pour voir les informations personnelles de ce profil, vous devez demander l'accès.
+                    Pour voir les informations personnelles de ce profil, vous devez demander l&apos;accès.
                   </Text>
                   <Text style={styles.accessWarning}>
-                    ⚠️ En demandant l'accès, cette personne pourra aussi voir vos informations personnelles.
+                    ⚠️ En demandant l&apos;accès, cette personne pourra aussi voir vos informations personnelles.
                   </Text>
                 </View>
               </View>
@@ -1068,8 +1191,8 @@ export default function UserProfileScreen() {
             <View style={styles.pendingCard}>
               <Ionicons name="time-outline" size={20} color={colors.yellow400} />
               <View>
-                <Text style={styles.pendingTitle}>Demande d'accès envoyée</Text>
-                <Text style={styles.pendingSubtitle}>En attente de l'approbation</Text>
+                <Text style={styles.pendingTitle}>Demande d&apos;accès envoyée</Text>
+                <Text style={styles.pendingSubtitle}>En attente de l&apos;approbation</Text>
               </View>
             </View>
           )}
@@ -1081,7 +1204,7 @@ export default function UserProfileScreen() {
                 <Text style={styles.verifiedTitle}>Accès accordé</Text>
               </View>
               <Text style={styles.verifiedSubtitle}>
-                Votre demande d'accès a été acceptée. Vous pouvez maintenant voir les informations personnelles de ce profil.
+                Votre demande d&apos;accès a été acceptée. Vous pouvez maintenant voir les informations personnelles de ce profil.
               </Text>
             </Animated.View>
           )}
@@ -1187,8 +1310,8 @@ export default function UserProfileScreen() {
                     variant="outline"
                     icon={<Ionicons name="close-circle-outline" size={20} color={colors.red500} />}
                     style={[styles.bookingActionButton, { flex: 1 }]}
-                    loading={isLoading}
-                    disabled={isLoading}
+                    loading={bookingActionLoading === 'cancel'}
+                    disabled={bookingActionLoading !== null}
                   />
                 ) : (
                   <>
@@ -1197,17 +1320,17 @@ export default function UserProfileScreen() {
                       onPress={handleAcceptBooking}
                       icon={<Ionicons name="checkmark-circle-outline" size={20} color="#ffffff" />}
                       style={[styles.bookingActionButton, { flex: 1 }]}
-                      loading={isLoading}
-                      disabled={isLoading}
+                      loading={bookingActionLoading === 'accept'}
+                      disabled={bookingActionLoading !== null}
                     />
                     <Button
-                      title="Annuler"
-                      onPress={handleCancelBooking}
+                      title="Rejeter"
+                      onPress={handleRejectBooking}
                       variant="outline"
                       icon={<Ionicons name="close-circle-outline" size={20} color={colors.red500} />}
                       style={[styles.bookingActionButton, { flex: 1 }]}
-                      loading={isLoading}
-                      disabled={isLoading}
+                      loading={bookingActionLoading === 'reject'}
+                      disabled={bookingActionLoading !== null}
                     />
                   </>
                 )}
@@ -1421,9 +1544,9 @@ export default function UserProfileScreen() {
                 )}
               </View>
               {currentUser?.id !== selectedUser.id && (
-                <TouchableOpacity onPress={handleOpenRatingDialog}>
+                <TouchableOpacity onPress={handleOpenRatingDialog} disabled={isLoading}>
                   <Text style={styles.ratingLink}>
-                    {existingRating ? 'Modifier mon avis' : 'Laisser un avis'}
+                    {existingRating ? 'Modifier mon avis' : 'Laisser mon avis'}
                   </Text>
                 </TouchableOpacity>
               )}
@@ -1499,17 +1622,17 @@ export default function UserProfileScreen() {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Demander l'accès</Text>
+            <Text style={styles.modalTitle}>Demander l&apos;accès</Text>
             <Text style={styles.modalDescription}>
-              Confirmez-vous vouloir demander l'accès aux informations personnelles ?
+              Confirmez-vous vouloir demander l&apos;accès aux informations personnelles ?
             </Text>
             <View style={styles.modalWarning}>
               <Text style={styles.modalWarningText}>
-                En demandant l'accès, vous autorisez aussi {selectedUser.pseudo || 'l\'utilisateur'} à voir vos informations personnelles :
+                En demandant l&apos;accès, vous autorisez aussi {selectedUser.pseudo || 'l\'utilisateur'} à voir vos informations personnelles :
               </Text>
               <Text style={styles.modalWarningItem}>• Votre âge exact</Text>
               <Text style={styles.modalWarningItem}>• Votre numéro WhatsApp</Text>
-              <Text style={styles.modalWarningItem}>• Votre statut d'abonnement</Text>
+              <Text style={styles.modalWarningItem}>• Votre statut d&apos;abonnement</Text>
               <Text style={styles.modalWarningItem}>• Votre dernière connexion</Text>
             </View>
             <View style={styles.modalActions}>
@@ -1539,7 +1662,7 @@ export default function UserProfileScreen() {
         <KeyboardAvoidingView
           style={styles.modalOverlay}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
         >
           <ScrollView
             contentContainerStyle={styles.modalScrollContent}
@@ -1644,7 +1767,6 @@ const styles = StyleSheet.create({
     right: 0,
     height: '60%',
     backgroundColor: 'transparent',
-    background: 'linear-gradient(to top, rgba(10, 10, 10, 1), rgba(10, 10, 10, 0.5), transparent)',
   },
   imageInfo: {
     position: 'absolute',
@@ -2104,4 +2226,3 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 });
-

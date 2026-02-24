@@ -1,5 +1,10 @@
 // Token d'accès Mapbox
-const MAPBOX_ACCESS_TOKEN = 'pk.eyJ1IjoiZ2Joc2FybCIsImEiOiJjbWlvbWdvOTUwM2lqM2VxbzhlMnk3YmRnIn0.nroScN5w8bLu6OXHZgO_kw';
+import Constants from 'expo-constants';
+
+export const MAPBOX_ACCESS_TOKEN =
+  Constants.expoConfig?.extra?.mapboxAccessToken ||
+  process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN ||
+  '';
 
 let Mapbox: any = null;
 let isMapboxAvailable = false;
@@ -9,9 +14,11 @@ try {
   const { MapView, PointAnnotation, Camera } = require('@rnmapbox/maps');
   
   // Vérifier si le module natif est disponible
-  if (Mapbox && typeof Mapbox.setAccessToken === 'function') {
+  if (Mapbox && typeof Mapbox.setAccessToken === 'function' && MAPBOX_ACCESS_TOKEN) {
     Mapbox.setAccessToken(MAPBOX_ACCESS_TOKEN);
     isMapboxAvailable = true;
+  } else if (!MAPBOX_ACCESS_TOKEN) {
+    console.warn('Mapbox access token is missing. Set EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN.');
   }
 } catch (error) {
   console.warn('⚠️ @rnmapbox/maps native module not available. A development build is required.');
@@ -21,6 +28,5 @@ try {
 
 export { isMapboxAvailable };
 export default Mapbox;
-
 
 

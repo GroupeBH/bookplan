@@ -1,12 +1,12 @@
 import React from 'react';
-import { View, Text, StyleSheet, ViewStyle, TextStyle } from 'react-native';
+import { View, Text, StyleSheet, ViewStyle, TextStyle, StyleProp } from 'react-native';
 import { colors } from '../../constants/colors';
 
 interface BadgeProps {
   children: React.ReactNode;
   variant?: 'default' | 'success' | 'error' | 'warning' | 'info';
-  style?: ViewStyle;
-  textStyle?: TextStyle;
+  style?: StyleProp<ViewStyle>;
+  textStyle?: StyleProp<TextStyle>;
 }
 
 export function Badge({ children, variant = 'default', style, textStyle }: BadgeProps) {

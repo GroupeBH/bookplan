@@ -1,5 +1,5 @@
+/* eslint-disable react-hooks/exhaustive-deps */
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
@@ -59,7 +59,6 @@ export default function ProfileScreen() {
   const [userRatings, setUserRatings] = useState<any[]>([]);
   const [isLoadingRatings, setIsLoadingRatings] = useState(false);
   const [averageRating, setAverageRating] = useState({ average: 0, count: 0 });
-  const [showAlbumModal, setShowAlbumModal] = useState(false);
 
   // Refs pour éviter les appels multiples
   const isLoadingRatingsRef = React.useRef(false);
@@ -640,7 +639,7 @@ export default function ProfileScreen() {
           <View style={styles.statusRow}>
             <Ionicons name="shield-checkmark" size={20} color={colors.purple400} />
             <View style={styles.statusInfo}>
-              <Text style={styles.statusTitle}>Statut d'abonnement</Text>
+              <Text style={styles.statusTitle}>Statut d&apos;abonnement</Text>
               <Text style={styles.statusSubtitle}>1000 CDF / mois</Text>
             </View>
           </View>
@@ -686,7 +685,7 @@ export default function ProfileScreen() {
             <View style={styles.emptyAlbum}>
               <Ionicons name="images-outline" size={48} color={colors.textTertiary} />
               <Text style={styles.emptyAlbumText}>Aucune photo dans votre album</Text>
-              <Text style={styles.emptyAlbumSubtext}>Ajoutez jusqu'à 5 photos</Text>
+              <Text style={styles.emptyAlbumSubtext}>Ajoutez jusqu&apos;à 5 photos</Text>
               <Button
                 title="Ajouter une photo"
                 onPress={handleAddPhoto}
@@ -1210,4 +1209,3 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 });
-

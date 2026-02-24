@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../constants/colors';
 
@@ -139,7 +139,7 @@ export function CalendarPicker({ selectedDate, onDateSelect, minimumDate, maximu
 
       {/* Bouton Aujourd'hui */}
       <TouchableOpacity onPress={goToToday} style={styles.todayButton}>
-        <Text style={styles.todayButtonText}>Aujourd'hui</Text>
+        <Text style={styles.todayButtonText}>Aujourd&apos;hui</Text>
       </TouchableOpacity>
 
       {/* Noms des jours */}
@@ -282,4 +282,3 @@ const styles = StyleSheet.create({
     color: colors.textTertiary,
   },
 });
-

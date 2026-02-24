@@ -67,6 +67,7 @@ export default function SearchScreen() {
   const [filter, setFilter] = useState<Filter>('all');
   const [currentIndex, setCurrentIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   const [users, setUsers] = useState<User[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [showFilters, setShowFilters] = useState(false);
@@ -81,7 +82,6 @@ export default function SearchScreen() {
   const [tempAgeMaxText, setTempAgeMaxText] = useState('100');
   const [tempMaxDistance, setTempMaxDistance] = useState<number | null>(null);
   const [tempMinRating, setTempMinRating] = useState<number>(0);
-  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const isLoadingRef = React.useRef(false);
   const lastLoadTimeRef = React.useRef<number>(0);
   const hasLoadedRef = React.useRef(false);
@@ -97,6 +97,10 @@ export default function SearchScreen() {
   const scale = useSharedValue(1);
   const SWIPE_THRESHOLD = screenWidth * 0.3; // 30% de l'écran
   const SWIPE_VELOCITY_THRESHOLD = 500;
+  const SWIPE_ANIMATION_DURATION = 220;
+  const SWIPE_RETURN_SPRING = { damping: 18, stiffness: 220, mass: 0.9 };
+  const isSwipeAnimatingRef = React.useRef(false);
+  const swipeTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Fonction pour calculer si un utilisateur est en ligne
   const calculateOnlineStatus = (lastSeenValue: string | null | undefined): boolean => {
@@ -144,20 +148,17 @@ export default function SearchScreen() {
 
     // Ne pas charger si le modal de filtres est ouvert pour éviter les re-renders qui ferment le clavier
     if (showFilters) {
-      console.log('⏭️ Modal de filtres ouvert, skip chargement');
       return;
     }
 
     // Éviter les appels multiples simultanés
     if (isLoadingRef.current) {
-      console.log('⏭️ Chargement déjà en cours, skip');
       return;
     }
 
     // Éviter de recharger trop souvent (max 1 fois par seconde)
     const now = Date.now();
     if (!force && hasLoadedRef.current && now - lastLoadTimeRef.current < 1000) {
-      console.log('⏭️ Rechargement trop récent, skip');
       return;
     }
 
@@ -169,7 +170,6 @@ export default function SearchScreen() {
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     timeoutId = setTimeout(() => {
       if (isLoadingRef.current) {
-        console.log('⏱️ Timeout lors du chargement des utilisateurs');
         setIsLoading(false);
         isLoadingRef.current = false;
         // Initialiser avec un tableau vide pour éviter un état bloqué
@@ -223,8 +223,6 @@ export default function SearchScreen() {
 
       // Récupérer la position de l'utilisateur actuel
       if (currentAuthUser.lat && currentAuthUser.lng) {
-        setUserLocation({ lat: currentAuthUser.lat, lng: currentAuthUser.lng });
-        
         // Calculer les distances
         formattedUsers.forEach((u) => {
           if (u.lat && u.lng) {
@@ -254,7 +252,7 @@ export default function SearchScreen() {
       setIsLoading(false);
       isLoadingRef.current = false;
     }
-  }, [currentAuthUser?.id, getAllUsers, showFilters]); // Ajouter showFilters comme dépendance
+  }, [currentAuthUser, getAllUsers, showFilters]); // Ajouter showFilters comme dépendance
 
   // Charger les utilisateurs UNE SEULE FOIS à l'arrivée sur l'onglet Recherche
   useFocusEffect(
@@ -267,7 +265,6 @@ export default function SearchScreen() {
       // Charger une seule fois à l'arrivée sur l'onglet
       if (!hasLoadedOnceRef.current && currentAuthUser?.id) {
         hasLoadedOnceRef.current = true;
-        console.log('🔄 Chargement initial des utilisateurs sur la page de recherche');
         loadUsers(true);
       } else if (!currentAuthUser?.id) {
         // Si pas d'utilisateur authentifié, arrêter le chargement
@@ -282,82 +279,34 @@ export default function SearchScreen() {
     }, [currentAuthUser?.id, loadUsers, showFilters])
   );
 
+  // Debounce de la recherche pour éviter un filtrage complet à chaque frappe.
+  React.useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery.trim().toLowerCase());
+    }, 120);
+    return () => clearTimeout(timeoutId);
+  }, [searchQuery]);
+
   // Filtrer les utilisateurs - mémoriser pour éviter les recalculs inutiles
-  // Ne pas recalculer quand le modal de filtres est ouvert pour éviter les re-renders
   const filteredUsers = useMemo(() => {
-    // Si le modal est ouvert, retourner la liste actuelle sans recalculer
-    // Cela évite les re-renders qui ferment le clavier
-    if (showFilters) {
-      return users.filter((user) => {
-        // Filtre par genre - comparer strictement avec le genre de l'utilisateur
-        if (filter !== 'all') {
-          // Normaliser le genre pour la comparaison (en minuscules et supprimer les espaces)
-          const userGender = user.gender?.toLowerCase().trim();
-          const filterGender = filter.toLowerCase().trim();
-          if (userGender !== filterGender) {
-            return false;
-          }
-        }
-        
-        // Filtre par recherche textuelle
-        if (searchQuery.trim()) {
-          const query = searchQuery.toLowerCase();
-          if (!user.pseudo.toLowerCase().includes(query) && 
-              !user.description.toLowerCase().includes(query)) {
-            return false;
-          }
-        }
-        
-        // Filtre par âge
-        if (user.age < ageRange.min || user.age > ageRange.max) return false;
-        
-        // Filtre par distance maximale
-        if (maxDistance !== null) {
-          // Si l'utilisateur n'a pas de distance calculée (pas de position), l'exclure
-          if (user.distance === undefined || user.distance === null) {
-            return false;
-          }
-          // Si la distance dépasse le maximum, exclure
-          if (user.distance > maxDistance) {
-            return false;
-          }
-        }
-        
-        // Filtre par note minimale
-        if (minRating > 0) {
-          // Si l'utilisateur n'a pas d'avis (reviewCount === 0), l'exclure si on demande une note minimale > 0
-          if (!user.reviewCount || user.reviewCount === 0) {
-            return false;
-          }
-          // Vérifier que la note est >= à la note minimale demandée
-          if (user.rating < minRating) {
-            return false;
-          }
-        }
-        
-        return true;
-      });
-    }
-    
-    // Sinon, filtrer normalement
+    const normalizedFilter = filter.toLowerCase().trim();
+    const query = debouncedSearchQuery;
+
     return users.filter((user) => {
       // Filtre par genre - comparer strictement avec le genre de l'utilisateur
       if (filter !== 'all') {
         // Normaliser le genre pour la comparaison (en minuscules et supprimer les espaces)
         const userGender = user.gender?.toLowerCase().trim();
-        const filterGender = filter.toLowerCase().trim();
-        // Debug: afficher les valeurs pour comprendre le problème
-        if (userGender !== filterGender) {
-          console.log(`🔍 Filtre genre: ${filterGender}, Genre utilisateur: ${userGender}, Match: ${userGender === filterGender}`);
+        if (userGender !== normalizedFilter) {
           return false;
         }
       }
       
       // Filtre par recherche textuelle
-      if (searchQuery.trim()) {
-        const query = searchQuery.toLowerCase();
-        if (!user.pseudo.toLowerCase().includes(query) && 
-            !user.description.toLowerCase().includes(query)) {
+      if (query) {
+        const pseudo = user.pseudo?.toLowerCase() || '';
+        const description = user.description?.toLowerCase() || '';
+        if (!pseudo.includes(query) && !description.includes(query)) {
           return false;
         }
       }
@@ -391,7 +340,7 @@ export default function SearchScreen() {
       
       return true;
     });
-  }, [users, filter, searchQuery, ageRange, maxDistance, minRating, showFilters]);
+  }, [users, filter, debouncedSearchQuery, ageRange, maxDistance, minRating]);
 
   // S'assurer que currentIndex est dans les limites du tableau
   const safeIndex = filteredUsers.length > 0 
@@ -414,6 +363,19 @@ export default function SearchScreen() {
   }, [filteredUsers.length, currentIndex, showFilters]);
 
   const currentUser = filteredUsers.length > 0 ? filteredUsers[safeIndex] : null;
+  const currentUserImageSource = currentUser
+    ? getImageSource(currentUser.photo, currentUser.gender || 'female')
+    : null;
+  const isCurrentUserRemoteImage = !!currentUserImageSource &&
+    typeof currentUserImageSource === 'object' &&
+    'uri' in currentUserImageSource;
+  const isCurrentUserOnline = calculateOnlineStatus(currentUser?.lastSeen);
+  const currentUserReviewCount = typeof currentUser?.reviewCount === 'number'
+    ? currentUser.reviewCount
+    : (typeof currentUser?.reviewCount === 'string' ? parseInt(currentUser.reviewCount, 10) || 0 : 0);
+  const currentUserDescription = currentUser?.description?.trim()
+    ? currentUser.description
+    : 'Aucune description pour le moment';
 
   // Réinitialiser les animations quand l'utilisateur change
   // Ne pas réinitialiser si le modal de filtres est ouvert pour éviter les re-renders
@@ -427,7 +389,7 @@ export default function SearchScreen() {
     translateY.value = 0;
     opacity.value = 1;
     scale.value = 1;
-  }, [currentIndex, currentUser?.id, showFilters]);
+  }, [currentIndex, currentUser?.id, opacity, scale, showFilters, translateX, translateY]);
 
   const handleViewProfile = (user: User) => {
     setSelectedUser(user);
@@ -435,31 +397,27 @@ export default function SearchScreen() {
   };
 
   const handleNext = () => {
-    if (currentIndex < filteredUsers.length - 1) {
-      setCurrentIndex(currentIndex + 1);
-    } else {
-      // Si on est à la fin, recommencer depuis le début
-      setCurrentIndex(0);
-    }
+    if (filteredUsers.length === 0) return;
+    setCurrentIndex((prev) => (prev < filteredUsers.length - 1 ? prev + 1 : 0));
     // Réinitialiser les animations
     translateX.value = 0;
     translateY.value = 0;
     opacity.value = 1;
     scale.value = 1;
+    isSwipeAnimatingRef.current = false;
   };
 
   const handlePrevious = () => {
-    if (currentIndex > 0) {
-      setCurrentIndex(currentIndex - 1);
-    } else {
-      // Si on est au début, aller à la fin
-      setCurrentIndex(Math.max(0, filteredUsers.length - 1));
-    }
+    if (filteredUsers.length === 0) return;
+    setCurrentIndex((prev) => (
+      prev > 0 ? prev - 1 : Math.max(0, filteredUsers.length - 1)
+    ));
     // Réinitialiser les animations
     translateX.value = 0;
     translateY.value = 0;
     opacity.value = 1;
     scale.value = 1;
+    isSwipeAnimatingRef.current = false;
   };
 
   // Fonction pour passer au suivant (appelée depuis le geste)
@@ -474,30 +432,32 @@ export default function SearchScreen() {
 
   // Fonction pour liker l'utilisateur actuel (appelée depuis le geste)
   const handleLikeCurrentUser = useCallback(() => {
-    const user = filteredUsers.length > 0 ? filteredUsers[Math.min(Math.max(0, currentIndex), filteredUsers.length - 1)] : null;
-    if (user && !isUserLiked(user.id)) {
-      likeUser(user.id);
+    if (currentUser && !isUserLiked(currentUser.id)) {
+      likeUser(currentUser.id);
     }
-  }, [filteredUsers, currentIndex, isUserLiked, likeUser]);
+  }, [currentUser, isUserLiked, likeUser]);
 
   // Fonction pour unliker l'utilisateur actuel (appelée depuis le geste)
   const handleUnlikeCurrentUser = useCallback(() => {
-    const user = filteredUsers.length > 0 ? filteredUsers[Math.min(Math.max(0, currentIndex), filteredUsers.length - 1)] : null;
-    if (user && isUserLiked(user.id)) {
-      unlikeUser(user.id);
+    if (currentUser && isUserLiked(currentUser.id)) {
+      unlikeUser(currentUser.id);
     }
-  }, [filteredUsers, currentIndex, isUserLiked, unlikeUser]);
+  }, [currentUser, isUserLiked, unlikeUser]);
 
   // Gérer le geste de swipe
   const onGestureEvent = (event: PanGestureHandlerGestureEvent) => {
+    if (isSwipeAnimatingRef.current) {
+      return;
+    }
+
     const { translationX, translationY } = event.nativeEvent;
     
     translateX.value = translationX;
     translateY.value = translationY;
     
     // Calculer l'opacité et l'échelle basées sur la distance
-    const distance = Math.sqrt(translationX * translationX + translationY * translationY);
-    const maxDistance = screenWidth;
+    const distance = Math.max(Math.abs(translationX), Math.abs(translationY) * 0.6);
+    const maxDistance = screenWidth * 0.9;
     opacity.value = interpolate(
       distance,
       [0, maxDistance],
@@ -514,6 +474,10 @@ export default function SearchScreen() {
 
   // Gérer la fin du geste
   const onHandlerStateChange = (event: PanGestureHandlerGestureEvent) => {
+    if (isSwipeAnimatingRef.current) {
+      return;
+    }
+
     const { translationX, velocityX, state } = event.nativeEvent;
     
     if (state === 5) { // END
@@ -521,32 +485,60 @@ export default function SearchScreen() {
       const shouldSwipeRight = translationX > SWIPE_THRESHOLD || velocityX > SWIPE_VELOCITY_THRESHOLD;
       
       if (shouldSwipeLeft) {
+        isSwipeAnimatingRef.current = true;
+        if (swipeTimeoutRef.current) {
+          clearTimeout(swipeTimeoutRef.current);
+          swipeTimeoutRef.current = null;
+        }
+        swipeTimeoutRef.current = setTimeout(() => {
+          isSwipeAnimatingRef.current = false;
+          swipeTimeoutRef.current = null;
+        }, SWIPE_ANIMATION_DURATION + 120);
+
         // Swipe vers la gauche - si déjà liké, enlever le like
         runOnJS(handleUnlikeCurrentUser)();
         // Swipe vers la gauche (suivant)
-        translateX.value = withTiming(-screenWidth * 1.5, { duration: 300 });
-        opacity.value = withTiming(0, { duration: 300 });
-        scale.value = withTiming(0.8, { duration: 300 }, () => {
+        translateX.value = withTiming(-screenWidth * 1.2, { duration: SWIPE_ANIMATION_DURATION });
+        opacity.value = withTiming(0, { duration: SWIPE_ANIMATION_DURATION });
+        scale.value = withTiming(0.86, { duration: SWIPE_ANIMATION_DURATION }, () => {
           runOnJS(goToNext)();
         });
       } else if (shouldSwipeRight) {
+        isSwipeAnimatingRef.current = true;
+        if (swipeTimeoutRef.current) {
+          clearTimeout(swipeTimeoutRef.current);
+          swipeTimeoutRef.current = null;
+        }
+        swipeTimeoutRef.current = setTimeout(() => {
+          isSwipeAnimatingRef.current = false;
+          swipeTimeoutRef.current = null;
+        }, SWIPE_ANIMATION_DURATION + 120);
+
         // Swipe vers la droite (côté cœur) - like automatique
         runOnJS(handleLikeCurrentUser)();
         // Swipe vers la droite (précédent)
-        translateX.value = withTiming(screenWidth * 1.5, { duration: 300 });
-        opacity.value = withTiming(0, { duration: 300 });
-        scale.value = withTiming(0.8, { duration: 300 }, () => {
+        translateX.value = withTiming(screenWidth * 1.2, { duration: SWIPE_ANIMATION_DURATION });
+        opacity.value = withTiming(0, { duration: SWIPE_ANIMATION_DURATION });
+        scale.value = withTiming(0.86, { duration: SWIPE_ANIMATION_DURATION }, () => {
           runOnJS(goToPrevious)();
         });
       } else {
         // Retour à la position initiale
-        translateX.value = withSpring(0);
-        translateY.value = withSpring(0);
-        opacity.value = withSpring(1);
-        scale.value = withSpring(1);
+        translateX.value = withSpring(0, SWIPE_RETURN_SPRING);
+        translateY.value = withSpring(0, SWIPE_RETURN_SPRING);
+        opacity.value = withSpring(1, SWIPE_RETURN_SPRING);
+        scale.value = withSpring(1, SWIPE_RETURN_SPRING);
       }
     }
   };
+
+  React.useEffect(() => {
+    return () => {
+      if (swipeTimeoutRef.current) {
+        clearTimeout(swipeTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // Style animé pour la carte
   const animatedCardStyle = useAnimatedStyle(() => {
@@ -608,16 +600,6 @@ export default function SearchScreen() {
     const finalMax = Math.max(normalizedMin, normalizedMax);
     
     // Utiliser les valeurs temporaires actuelles (celles modifiées dans le modal)
-    console.log('🔍 Application des filtres:', {
-      tempFilter,
-      tempMaxDistance,
-      tempMinRating,
-      tempAgeMinText,
-      tempAgeMaxText,
-      finalMin,
-      finalMax,
-    });
-    
     // Appliquer les filtres avec les valeurs temporaires actuelles
     setFilter(tempFilter);
     setAgeRange({ min: finalMin, max: finalMax });
@@ -933,10 +915,7 @@ export default function SearchScreen() {
                 />
                 <Button
                   title="Appliquer"
-                  onPress={() => {
-                    setShowFilters(false);
-                    setCurrentIndex(0);
-                  }}
+                  onPress={handleApplyFilters}
                   style={styles.modalButton}
                 />
               </View>
@@ -1230,10 +1209,7 @@ export default function SearchScreen() {
                 />
                 <Button
                   title="Appliquer"
-                  onPress={() => {
-                    setShowFilters(false);
-                    setCurrentIndex(0);
-                  }}
+                  onPress={handleApplyFilters}
                   style={styles.modalButton}
                 />
               </View>
@@ -1253,7 +1229,7 @@ export default function SearchScreen() {
             <Ionicons name="arrow-back" size={24} color={colors.textSecondary} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Recherche</Text>
-          <TouchableOpacity onPress={() => setShowFilters(true)}>
+          <TouchableOpacity onPress={handleOpenFilters}>
             <Ionicons name="options-outline" size={24} color={colors.textSecondary} />
           </TouchableOpacity>
         </View>
@@ -1321,31 +1297,19 @@ export default function SearchScreen() {
             {currentUser && (
               <>
                 <View style={styles.cardImageContainer}>
-                  {(() => {
-                    const imageSource = getImageSource(currentUser.photo, currentUser.gender || 'female');
-                    const isRemoteUri = typeof imageSource === 'object' && 'uri' in imageSource;
-                    
-                    if (isRemoteUri) {
-                      return (
-                        <ImageWithFallback
-                          source={imageSource}
-                          style={styles.cardImage}
-                        />
-                      );
-                    } else {
-                      return (
-                        <Image
-                          source={imageSource}
-                          style={styles.cardImage}
-                          resizeMode="cover"
-                        />
-                      );
-                    }
-                  })()}
-                  {(() => {
-                    const isOnline = calculateOnlineStatus(currentUser.lastSeen);
-                    return isOnline ? <View style={styles.onlineBadge} /> : null;
-                  })()}
+                  {currentUserImageSource && isCurrentUserRemoteImage ? (
+                    <ImageWithFallback
+                      source={currentUserImageSource}
+                      style={styles.cardImage}
+                    />
+                  ) : currentUserImageSource ? (
+                    <Image
+                      source={currentUserImageSource}
+                      style={styles.cardImage}
+                      resizeMode="cover"
+                    />
+                  ) : null}
+                  {isCurrentUserOnline ? <View style={styles.onlineBadge} /> : null}
                 </View>
                 <View style={styles.cardOverlay} />
                 <View style={styles.cardInfo}>
@@ -1359,7 +1323,7 @@ export default function SearchScreen() {
                       {currentUser.gender === 'male' ? 'Homme' : currentUser.gender === 'female' ? 'Femme' : ''}
                     </Text>
                   </View>
-                  <Text style={styles.cardDescription}>{currentUser.description}</Text>
+                  <Text style={styles.cardDescription}>{currentUserDescription}</Text>
                   <View style={styles.cardMeta}>
                     {currentUser.distance !== undefined && (
                       <View style={styles.cardMetaItem}>
@@ -1370,25 +1334,30 @@ export default function SearchScreen() {
                     <View style={styles.cardMetaItem}>
                       <Ionicons name="star" size={16} color={colors.yellow500} />
                       <Text style={styles.cardMetaText}>{currentUser.rating.toFixed(1)}</Text>
-                      {(() => {
-                        const reviewCount = typeof currentUser.reviewCount === 'number' 
-                          ? currentUser.reviewCount 
-                          : (typeof currentUser.reviewCount === 'string' ? parseInt(currentUser.reviewCount, 10) || 0 : 0);
-                        return reviewCount > 0 ? (
-                          <Text style={styles.cardMetaText}>
-                            ({reviewCount} avis)
-                          </Text>
-                        ) : (
-                          <Text style={styles.cardMetaTextSecondary}>
-                            (Aucun avis)
-                          </Text>
-                        );
-                      })()}
+                      {currentUserReviewCount > 0 ? (
+                        <Text style={styles.cardMetaText}>
+                          ({currentUserReviewCount} avis)
+                        </Text>
+                      ) : (
+                        <Text style={styles.cardMetaTextSecondary}>
+                          (Aucun avis)
+                        </Text>
+                      )}
+                    </View>
+                    <View style={styles.cardMetaItem}>
+                      <Ionicons
+                        name="ellipse"
+                        size={12}
+                        color={isCurrentUserOnline ? colors.green500 : colors.textTertiary}
+                      />
+                      <Text style={styles.cardMetaText}>
+                        {isCurrentUserOnline ? 'En ligne' : 'Hors ligne'}
+                      </Text>
                     </View>
                   </View>
                   <View style={styles.cardCounter}>
                     <Text style={styles.counterText}>
-                      {currentIndex + 1} / {filteredUsers.length}
+                      {safeIndex + 1} / {filteredUsers.length}
                     </Text>
                   </View>
                   <TouchableOpacity
@@ -1751,9 +1720,11 @@ const styles = StyleSheet.create({
   cardDescription: {
     fontSize: 16,
     color: colors.textSecondary,
+    lineHeight: 22,
   },
   cardMeta: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 16,
   },
   cardMetaItem: {

@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/exhaustive-deps */
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -31,7 +32,7 @@ const formatMessageTime = (dateString: string | null | undefined): string => {
     if (days < 7) return `Il y a ${days}j`;
     
     return date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }) || '';
-  } catch (error) {
+  } catch {
     return '';
   }
 };
@@ -54,7 +55,7 @@ const formatConversationTime = (dateString?: string | null): string => {
     if (days < 7) return `Il y a ${days}j`;
     
     return date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }) || '';
-  } catch (error) {
+  } catch {
     return '';
   }
 };
@@ -293,7 +294,7 @@ export default function ChatScreen() {
       recipientId: recipientId,
       content: content,
       isRead: false,
-      readAt: null,
+      readAt: undefined,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };

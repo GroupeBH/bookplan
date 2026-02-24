@@ -4,6 +4,7 @@ import React, { createContext, ReactNode, useContext, useEffect, useState } from
 import { Alert } from 'react-native';
 import { getDefaultProfileImage } from '../lib/defaultImages';
 import { isNetworkError } from '../lib/errorUtils';
+import { isValidPhoneNumber, normalizePhoneNumber } from '../lib/phone';
 import { supabase } from '../lib/supabase';
 import { User } from '../types';
 
@@ -19,6 +20,7 @@ interface AuthContextType {
   // Authentification par mot de passe
   signUpWithPassword: (phone: string, password: string, pseudo: string, age?: number, gender?: 'male' | 'female', lat?: number, lng?: number, specialty?: string) => Promise<{ error: any; user: User | null }>;
   loginWithPassword: (phone: string, password: string) => Promise<{ error: any; user: User | null }>;
+  loginWithOtpRecovery: (phone: string, otp: string) => Promise<{ error: any; user: User | null }>;
   // Réinitialisation de mot de passe
   resetPassword: (phone: string) => Promise<{ error: any }>;
   // Gestion de session
@@ -51,8 +53,7 @@ const DEFAULT_EMAIL = 'jonathantshombe@gmail.com';
 // IMPORTANT: Cette fonction doit être DÉTERMINISTE - elle doit toujours générer le même email pour le même téléphone
 // Format: {defaultEmail}+{phoneHash}@gmail.com (Gmail supporte les aliases avec +)
 const generateTempEmail = (phone: string, useExisting: boolean = true): string => {
-  // Normaliser le téléphone (enlever tous les caractères non numériques sauf le +)
-  const normalizedPhone = phone.startsWith('+') ? phone : `+${phone}`;
+  const normalizedPhone = normalizePhoneNumber(phone);
   const phoneDigits = normalizedPhone.replace(/[^0-9]/g, '');
   
   // Utiliser les 8 derniers chiffres pour générer l'email de manière déterministe
@@ -68,6 +69,20 @@ const generateTempEmail = (phone: string, useExisting: boolean = true): string =
   return email;
 };
 
+const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+    });
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+};
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -81,7 +96,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     checkAuth();
 
     // Écouter les changements d'authentification Supabase
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      setTimeout(() => {
+        void (async () => {
       console.log('Auth state changed:', event, session?.user?.id);
       
       // Ignorer TOUS les changements d'état si on est en train de se déconnecter
@@ -123,6 +140,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(null);
         setIsAuthenticated(false);
       }
+        })();
+      }, 0);
     });
 
     return () => {
@@ -388,11 +407,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.log('⚠️ Pas de session Supabase, vérification du cache...');
         try {
           const cachedSession = await AsyncStorage.getItem('auth_session');
-          const cachedProfile = user?.id ? await AsyncStorage.getItem(`user_profile_${user.id}`) : null;
-          
           if (cachedSession) {
             const sessionData = JSON.parse(cachedSession);
-            if (sessionData?.user?.id) {
+            const cachedUserId = sessionData?.user?.id;
+            const cachedProfile = cachedUserId ? await AsyncStorage.getItem(`user_profile_${cachedUserId}`) : null;
+
+            if (cachedUserId) {
               // Si on a un profil en cache, l'utiliser immédiatement
               if (cachedProfile) {
                 const userProfile: User = JSON.parse(cachedProfile);
@@ -403,15 +423,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 (async () => {
                   try {
                     const { data: { session: realSession } } = await supabase.auth.getSession();
-                    if (realSession?.user?.id === sessionData.user.id) {
-                      await loadUserProfile(sessionData.user.id, false);
+                    if (realSession?.user?.id === cachedUserId) {
+                      await loadUserProfile(cachedUserId, false);
                     }
                   } catch {}
                 })();
                 return;
               } else {
                 // Charger le profil depuis la base
-                await loadUserProfile(sessionData.user.id, true);
+                await loadUserProfile(cachedUserId, true);
                 setIsLoading(false);
                 return;
               }
@@ -513,16 +533,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // Essayer d'utiliser le cache en cas d'erreur réseau
         try {
           const cachedSession = await AsyncStorage.getItem('auth_session');
-          const cachedProfile = user?.id ? await AsyncStorage.getItem(`user_profile_${user.id}`) : null;
-          
-          if (cachedSession && cachedProfile) {
+          if (cachedSession) {
             const sessionData = JSON.parse(cachedSession);
-            const userProfile: User = JSON.parse(cachedProfile);
-            if (sessionData?.user?.id === userProfile.id) {
-              setUser(userProfile);
-              setIsAuthenticated(true);
-              setIsLoading(false);
-              return;
+            const cachedUserId = sessionData?.user?.id;
+            const cachedProfile = cachedUserId ? await AsyncStorage.getItem(`user_profile_${cachedUserId}`) : null;
+
+            if (cachedUserId && cachedProfile) {
+              const userProfile: User = JSON.parse(cachedProfile);
+              if (cachedUserId === userProfile.id) {
+                setUser(userProfile);
+                setIsAuthenticated(true);
+                setIsLoading(false);
+                return;
+              }
             }
           }
         } catch (cacheError) {
@@ -541,7 +564,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Envoyer un code OTP (notification interne)
   const sendOTP = async (phone: string): Promise<{ error: any; otpCode?: string }> => {
     try {
-      const formattedPhone = phone.startsWith('+') ? phone : `+${phone}`;
+      const formattedPhone = normalizePhoneNumber(phone);
+      if (!isValidPhoneNumber(formattedPhone)) {
+        return { error: { message: 'Numéro de téléphone invalide' } };
+      }
       
       // Générer un code OTP aléatoire
       const otpCode = generateOTP();
@@ -572,7 +598,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Marquer l'OTP comme vérifié (pour API externe comme Keccel)
   const markOTPAsVerified = (phone: string) => {
-    const formattedPhone = phone.startsWith('+') ? phone : `+${phone}`;
+    const formattedPhone = normalizePhoneNumber(phone);
+    if (!isValidPhoneNumber(formattedPhone)) {
+      return;
+    }
     verifiedOTPStorage.set(formattedPhone, {
       verifiedAt: Date.now(),
       expiresAt: Date.now() + 30 * 60 * 1000, // 30 minutes
@@ -593,7 +622,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     age?: number // Âge de l'utilisateur
   ): Promise<{ error: any; user: User | null }> => {
     try {
-      const formattedPhone = phone.startsWith('+') ? phone : `+${phone}`;
+      const formattedPhone = normalizePhoneNumber(phone);
+      if (!isValidPhoneNumber(formattedPhone)) {
+        return { error: { message: 'Numéro de téléphone invalide' }, user: null };
+      }
 
       // Si un mot de passe est fourni, cela signifie qu'on crée le compte
       // Vérifier d'abord que l'OTP a été vérifié récemment
@@ -647,7 +679,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             if (status === 'granted') {
               const loc = await Location.getCurrentPositionAsync({
                 accuracy: Location.Accuracy.Lowest,
-                maximumAge: 60000,
               });
               // Mettre à jour la position en arrière-plan si obtenue
               if (loc?.coords) {
@@ -660,125 +691,120 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         })();
       }
 
-      // Vérifier si l'utilisateur existe déjà (opération rapide, en parallèle avec la création)
-      const existingProfilePromise = supabase
-        .from('profiles')
-        .select('id')
-        .eq('phone', formattedPhone)
-        .maybeSingle();
-
       let authUser;
-      let isNewUser = false;
+      const tempEmail = generateTempEmail(formattedPhone);
 
-      // Attendre le résultat de la vérification du profil (rapide)
-      const { data: existingProfile } = await existingProfilePromise;
+      console.log('\n🔐 ========== CRÉATION COMPTE VIA OTP ==========');
+      console.log('📱 Téléphone:', formattedPhone);
+      console.log('📧 Email temporaire:', tempEmail);
+      console.log('🔑 Mot de passe: *** (fourni par l\'utilisateur)');
+      console.log('💾 Stockage: auth.users.encrypted_password (hashé par Supabase)');
+      console.log('===============================================\n');
 
-      if (existingProfile) {
-        // Utilisateur existant - récupérer la session ou se connecter
-        // On va utiliser signInWithPassword avec un mot de passe temporaire
-        // Mais d'abord, vérifier si on a une session active
-        const { data: { session } } = await supabase.auth.getSession();
-        
-        if (session?.user && session.user.id === existingProfile.id) {
-          // Session active, utiliser cet utilisateur
-          authUser = session.user;
-        } else {
-          // Utilisateur existant dans profiles mais pas de session
-          // On ne peut pas créer un nouveau compte, l'utilisateur doit se connecter avec son mot de passe
-          return { error: { message: 'Ce numéro de téléphone est déjà enregistré. Veuillez vous connecter avec votre mot de passe ou utiliser "Mot de passe oublié" si vous ne vous en souvenez plus.' }, user: null };
-        }
-      } else {
-        // Nouvel utilisateur - créer dans Supabase Auth avec le mot de passe saisi par l'utilisateur
-        const tempEmail = generateTempEmail(formattedPhone);
-
-        console.log('\n🔐 ========== CRÉATION COMPTE VIA OTP ==========');
-        console.log('📱 Téléphone:', formattedPhone);
-        console.log('📧 Email temporaire:', tempEmail);
-        console.log('🔑 Mot de passe: *** (fourni par l\'utilisateur)');
-        console.log('💾 Stockage: auth.users.encrypted_password (hashé par Supabase)');
-        console.log('===============================================\n');
-
-        const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-          email: tempEmail,
-          password: password, // Utiliser le mot de passe saisi par l'utilisateur
-          options: {
-            data: {
-              pseudo: pseudo || 'Utilisateur',
-              phone: formattedPhone,
-            },
-            emailRedirectTo: undefined, // Pas de redirection email
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        email: tempEmail,
+        password: password, // Utiliser le mot de passe saisi par l'utilisateur
+        options: {
+          data: {
+            pseudo: pseudo || 'Utilisateur',
+            phone: formattedPhone,
           },
-        });
+          emailRedirectTo: undefined, // Pas de redirection email
+        },
+      });
 
-        if (signUpError) {
+      if (signUpError) {
+        const signUpErrorMessage = signUpError?.message || '';
+        const isAlreadyRegisteredError =
+          signUpErrorMessage.includes('already registered') ||
+          signUpErrorMessage.includes('User already registered');
+
+        // Si l'utilisateur existe déjà avec cet email, essayer de se connecter
+        if (isAlreadyRegisteredError) {
+          console.log('⚠️ Utilisateur déjà enregistré, tentative de connexion avec le mot de passe fourni...');
+          const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+            email: tempEmail,
+            password: password,
+          });
+
+          if (signInError) {
+            // L'email existe mais pas le bon mot de passe
+            console.log('❌ Connexion échouée:', signInError.message);
+            const signInErrorMessage = signInError?.message || '';
+            const isInvalidCredentials = signInErrorMessage.includes('Invalid login credentials');
+
+            if (isInvalidCredentials) {
+              return {
+                error: {
+                  code: 'ACCOUNT_EXISTS_PASSWORD_MISMATCH',
+                  message:
+                    'Un compte existe déjà avec ce numéro. Utilisez la connexion, puis "Mot de passe oublié" pour recevoir un OTP si nécessaire.',
+                },
+                user: null,
+              };
+            }
+
+            return {
+              error: {
+                message:
+                  signInErrorMessage || 'Impossible de se connecter avec ce compte existant',
+              },
+              user: null,
+            };
+          }
+          authUser = signInData?.user;
+          console.log('✅ Connexion réussie avec le compte existant');
+
+          // S'assurer que le profil existe pour cet utilisateur existant
+          if (authUser?.id) {
+            try {
+              const { data: existingProfile } = await supabase
+                .from('profiles')
+                .select('id')
+                .eq('id', authUser.id)
+                .single();
+
+              if (!existingProfile) {
+                console.log('⚠️ Le profil n\'existe pas pour cet utilisateur existant, création...');
+                // Essayer d'utiliser la fonction ensure_profile_exists si elle existe
+                const { error: ensureError } = await supabase.rpc('ensure_profile_exists', {
+                  p_user_id: authUser.id,
+                });
+
+                if (ensureError) {
+                  // Si la fonction n'existe pas ou échoue, créer le profil manuellement
+                  console.log('⚠️ Fonction ensure_profile_exists non disponible, création directe...');
+                  const { error: insertError } = await supabase
+                    .from('profiles')
+                    .insert({
+                      id: authUser.id,
+                      phone: formattedPhone,
+                      pseudo: pseudo || 'Utilisateur',
+                    });
+
+                  if (insertError) {
+                    console.error('❌ Erreur lors de la création manuelle du profil:', insertError);
+                  } else {
+                    console.log('✅ Profil créé manuellement pour l\'utilisateur existant');
+                  }
+                } else {
+                  console.log('✅ Profil créé via ensure_profile_exists pour l\'utilisateur existant');
+                }
+              }
+            } catch (error) {
+              console.error('❌ Erreur lors de la vérification/création du profil:', error);
+            }
+          }
+        } else {
           if (!isNetworkError(signUpError)) {
             console.error('Error creating user:', signUpError);
           }
-          // Si l'utilisateur existe déjà avec cet email, essayer de se connecter
-          if (signUpError.message.includes('already registered') || signUpError.message.includes('User already registered')) {
-            console.log('⚠️ Utilisateur déjà enregistré, tentative de connexion avec le mot de passe fourni...');
-            const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-              email: tempEmail,
-              password: password,
-            });
-
-            if (signInError) {
-              // L'email existe mais pas le bon mot de passe
-              console.log('❌ Connexion échouée:', signInError.message);
-              return { error: { message: 'Un compte existe déjà avec ce numéro. Veuillez vous connecter avec votre mot de passe.' }, user: null };
-            }
-            authUser = signInData?.user;
-            console.log('✅ Connexion réussie avec le compte existant');
-
-            // S'assurer que le profil existe pour cet utilisateur existant
-            if (authUser?.id) {
-              try {
-                const { data: existingProfile } = await supabase
-                  .from('profiles')
-                  .select('id')
-                  .eq('id', authUser.id)
-                  .single();
-
-                if (!existingProfile) {
-                  console.log('⚠️ Le profil n\'existe pas pour cet utilisateur existant, création...');
-                  // Essayer d'utiliser la fonction ensure_profile_exists si elle existe
-                  const { error: ensureError } = await supabase.rpc('ensure_profile_exists', {
-                    p_user_id: authUser.id,
-                  });
-
-                  if (ensureError) {
-                    // Si la fonction n'existe pas ou échoue, créer le profil manuellement
-                    console.log('⚠️ Fonction ensure_profile_exists non disponible, création directe...');
-                    const { error: insertError } = await supabase
-                      .from('profiles')
-                      .insert({
-                        id: authUser.id,
-                        phone: formattedPhone,
-                        pseudo: pseudo || 'Utilisateur',
-                      });
-
-                    if (insertError) {
-                      console.error('❌ Erreur lors de la création manuelle du profil:', insertError);
-                    } else {
-                      console.log('✅ Profil créé manuellement pour l\'utilisateur existant');
-                    }
-                  } else {
-                    console.log('✅ Profil créé via ensure_profile_exists pour l\'utilisateur existant');
-                  }
-                }
-              } catch (error) {
-                console.error('❌ Erreur lors de la vérification/création du profil:', error);
-              }
-            }
-          } else {
-            return { error: signUpError, user: null };
-          }
-        } else {
-          authUser = signUpData?.user;
-          console.log('✅ Compte créé avec succès. User ID:', authUser?.id);
-          console.log('🔑 Mot de passe fourni lors de la création:', password ? 'OUI (***)' : 'NON');
+          return { error: signUpError, user: null };
         }
-        isNewUser = true;
+      } else {
+        authUser = signUpData?.user;
+        console.log('✅ Compte créé avec succès. User ID:', authUser?.id);
+        console.log('🔑 Mot de passe fourni lors de la création:', password ? 'OUI (***)' : 'NON');
       }
 
       if (!authUser) {
@@ -852,7 +878,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       (async () => {
         try {
           // Marquer l'email comme vérifié
-          await supabase.rpc('verify_user_email', { p_user_id: authUser.id }).catch(() => {});
+          try {
+            await supabase.rpc('verify_user_email', { p_user_id: authUser.id });
+          } catch {
+            // Optionnel: ne pas bloquer le flux principal
+          }
           // Charger le profil complet depuis la base (pour avoir les dernières données)
           await loadUserProfile(authUser.id).catch(() => {});
         } catch (error) {
@@ -881,7 +911,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Vérifier l'OTP simplement (sans toute la logique de création de compte)
   const verifyOTPSimple = async (phone: string, token: string): Promise<{ error: any }> => {
     try {
-      const formattedPhone = phone.startsWith('+') ? phone : `+${phone}`;
+      const formattedPhone = normalizePhoneNumber(phone);
+      if (!isValidPhoneNumber(formattedPhone)) {
+        return { error: { message: 'Numéro de téléphone invalide' } };
+      }
       
       // Vérifier l'OTP directement dans le stockage
       const storedOTP = otpStorage.get(formattedPhone);
@@ -921,7 +954,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     specialty?: string
   ): Promise<{ error: any; user: User | null }> => {
     try {
-      const formattedPhone = phone.startsWith('+') ? phone : `+${phone}`;
+      const formattedPhone = normalizePhoneNumber(phone);
+      if (!isValidPhoneNumber(formattedPhone)) {
+        return { error: { message: 'Numéro de téléphone invalide' }, user: null };
+      }
 
       // Obtenir la position actuelle si non fournie (non bloquant, utilise les valeurs par défaut si échoue)
       let userLat = lat;
@@ -1032,9 +1068,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           console.warn('⚠️ Avertissement de rate limiting, mais l\'utilisateur a été créé:', authError.message);
           // Continuer avec la création du profil
         } else if (authError.message.includes('already registered') || authError.message.includes('User already registered')) {
-          // Si l'utilisateur existe déjà, attendre un peu pour éviter le rate limiting puis essayer de se connecter
-          // Attendre 2 secondes pour éviter le rate limiting
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          // Si l'utilisateur existe déjà, courte pause pour limiter les erreurs de rafale puis connexion
+          await new Promise(resolve => setTimeout(resolve, 300));
           
           const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
             email: tempEmail,
@@ -1042,7 +1077,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           });
 
           if (signInError) {
-            return { error: { message: 'Numéro de téléphone déjà enregistré ou mot de passe incorrect' }, user: null };
+            const signInErrorMessage = signInError?.message || '';
+            const isInvalidCredentials = signInErrorMessage.includes('Invalid login credentials');
+
+            if (isInvalidCredentials) {
+              return {
+                error: {
+                  code: 'ACCOUNT_EXISTS_PASSWORD_MISMATCH',
+                  message:
+                    'Un compte existe déjà avec ce numéro. Utilisez la connexion, puis "Mot de passe oublié" pour recevoir un OTP si nécessaire.',
+                },
+                user: null,
+              };
+            }
+
+            return {
+              error: {
+                message: signInErrorMessage || 'Numéro de téléphone déjà enregistré ou mot de passe incorrect',
+              },
+              user: null,
+            };
           }
 
           if (!signInData?.user) {
@@ -1136,246 +1190,114 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  // Connexion avec mot de passe (optimisée pour la vitesse - connexion instantanée)
+  // Connexion avec mot de passe (optimisée pour une connexion perçue comme instantanée)
   const loginWithPassword = async (phone: string, password: string): Promise<{ error: any; user: User | null }> => {
     try {
-      const formattedPhone = phone.startsWith('+') ? phone : `+${phone}`;
-      
-      // Générer l'email principal (le plus courant - 99% des cas)
+      const formattedPhone = normalizePhoneNumber(phone);
+      if (!isValidPhoneNumber(formattedPhone)) {
+        return { error: { message: 'Numéro de téléphone invalide' }, user: null };
+      }
+
+      const buildFallbackUser = (authUser: any, fallbackEmail: string): User => ({
+        id: authUser.id,
+        email: authUser.email || fallbackEmail,
+        phone: formattedPhone,
+        pseudo: authUser.user_metadata?.pseudo || 'Utilisateur',
+        age: 25,
+        gender: 'female',
+        photo: getDefaultProfileImage('female'),
+        description: '',
+        rating: 0,
+        reviewCount: 0,
+        isSubscribed: false,
+        subscriptionStatus: 'pending',
+        lat: -4.3276,
+        lng: 15.3136,
+        isAvailable: true,
+        specialty: undefined,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      const finalizeSuccessfulLogin = async (authUser: any, fallbackEmail: string): Promise<User> => {
+        let fastUser = buildFallbackUser(authUser, fallbackEmail);
+
+        // Réutiliser le cache local si disponible pour éviter un "flash" de profil partiel
+        try {
+          const cachedUser = await AsyncStorage.getItem(`user_profile_${authUser.id}`);
+          if (cachedUser) {
+            const cachedProfile: User = JSON.parse(cachedUser);
+            if (cachedProfile?.id === authUser.id) {
+              fastUser = {
+                ...fastUser,
+                ...cachedProfile,
+                id: authUser.id,
+                email: authUser.email || fallbackEmail,
+                phone: cachedProfile.phone || formattedPhone,
+              };
+            }
+          }
+        } catch {}
+
+        setUser(fastUser);
+        setIsAuthenticated(true);
+
+        // Sauvegarde locale non bloquante pour persister la connexion
+        AsyncStorage.setItem(`user_profile_${fastUser.id}`, JSON.stringify(fastUser)).catch(() => {});
+        AsyncStorage.setItem('auth_session', JSON.stringify({ user: { id: fastUser.id } })).catch(() => {});
+
+        // Hydratation complète en arrière-plan (non bloquante)
+        (async () => {
+          try {
+            await supabase.rpc('verify_user_email', { p_user_id: authUser.id });
+          } catch {}
+          loadUserProfile(authUser.id, true).catch(() => {});
+        })();
+
+        return fastUser;
+      };
+
       const primaryEmail = generateTempEmail(formattedPhone);
-      
-      // Essayer directement la connexion avec l'email principal (cas le plus fréquent)
+
+      // Tentative principale (cas le plus fréquent)
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email: primaryEmail,
         password: password,
       });
 
-      // Si succès, charger le profil rapidement et retourner immédiatement
       if (!authError && authData?.user) {
-        // Marquer l'email comme vérifié en arrière-plan (non bloquant)
-        (async () => {
-          try {
-            await supabase.rpc('verify_user_email', { p_user_id: authData.user.id });
-          } catch {}
-        })();
-        
-        // Charger le profil rapidement avec timeout court (1.5 secondes max)
-        try {
-          const profilePromise = supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', authData.user.id)
-            .single();
-          
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Timeout')), 1500)
-          );
-
-          const profileResult = await Promise.race([profilePromise, timeoutPromise]) as any;
-          
-          if (profileResult?.data && !profileResult.error) {
-            const profile = profileResult.data;
-            const loggedUser: User = {
-              id: profile.id,
-              email: authData.user.email || primaryEmail,
-              phone: profile.phone || formattedPhone,
-              pseudo: profile.pseudo || 'Utilisateur',
-              age: profile.age || 25,
-              gender: profile.gender || 'female',
-              photo: profile.photo || getDefaultProfileImage(profile.gender || 'female'),
-              description: profile.description || '',
-              rating: profile.rating || 0,
-              reviewCount: profile.review_count || 0,
-              isSubscribed: profile.is_subscribed || false,
-              subscriptionStatus: profile.subscription_status || 'pending',
-              lat: profile.lat || -4.3276,
-              lng: profile.lng || 15.3136,
-              isAvailable: profile.is_available ?? true,
-              specialty: profile.specialty || undefined,
-              createdAt: profile.created_at,
-              updatedAt: profile.updated_at,
-            };
-
-            // Mettre à jour l'état immédiatement
-            setUser(loggedUser);
-            setIsAuthenticated(true);
-
-            // Sauvegarder dans le cache pour persistance (session + profil)
-            AsyncStorage.setItem(`user_profile_${loggedUser.id}`, JSON.stringify(loggedUser)).catch(() => {});
-            AsyncStorage.setItem('auth_session', JSON.stringify({ user: { id: loggedUser.id } })).catch(() => {});
-            
-            return { error: null, user: loggedUser };
-          }
-        } catch (profileError) {
-          // En cas d'erreur ou timeout, essayer le cache
-          try {
-            const cachedUser = await AsyncStorage.getItem(`user_profile_${authData.user.id}`);
-            if (cachedUser) {
-              const userProfile: User = JSON.parse(cachedUser);
-              setUser(userProfile);
-              setIsAuthenticated(true);
-              // Sauvegarder la session pour persistance
-              AsyncStorage.setItem('auth_session', JSON.stringify({ user: { id: userProfile.id } })).catch(() => {});
-              // Charger le profil complet en arrière-plan
-              loadUserProfile(authData.user.id).catch(() => {});
-              return { error: null, user: userProfile };
-            }
-          } catch (cacheError) {
-            // Ignorer les erreurs de cache
-          }
-        }
-
-        // Si pas de profil ni cache, charger en arrière-plan et retourner un utilisateur basique
-        const basicUser: User = {
-          id: authData.user.id,
-          email: authData.user.email || primaryEmail,
-          phone: formattedPhone,
-          pseudo: authData.user.user_metadata?.pseudo || 'Utilisateur',
-          age: 25,
-          gender: 'female',
-          photo: getDefaultProfileImage('female'),
-          description: '',
-          rating: 0,
-          reviewCount: 0,
-          isSubscribed: false,
-          subscriptionStatus: 'pending',
-          lat: -4.3276,
-          lng: 15.3136,
-          isAvailable: true,
-          specialty: undefined,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-
-        setUser(basicUser);
-        setIsAuthenticated(true);
-        
-        // Sauvegarder dans le cache pour persistance
-        AsyncStorage.setItem(`user_profile_${basicUser.id}`, JSON.stringify(basicUser)).catch(() => {});
-        AsyncStorage.setItem('auth_session', JSON.stringify({ user: { id: basicUser.id } })).catch(() => {});
-        
-        // Charger le profil complet en arrière-plan
-        loadUserProfile(authData.user.id).catch(() => {});
-        
-        return { error: null, user: basicUser };
+        const loggedUser = await finalizeSuccessfulLogin(authData.user, primaryEmail);
+        return { error: null, user: loggedUser };
       }
 
-      // Si échec avec "email not confirmed", essayer de confirmer automatiquement
+      // Si email non confirmé, tenter confirmation automatique puis retry
       if (authError?.message?.toLowerCase().includes('email not confirmed')) {
-        // Essayer de trouver l'utilisateur via RPC pour obtenir son ID
         const { data: emailData } = await supabase.rpc('get_user_email_by_phone', {
           p_phone: formattedPhone,
         });
 
         if (emailData && emailData.length > 0 && emailData[0]?.user_id) {
-          // Confirmer l'email et réessayer la connexion
           try {
             await supabase.rpc('verify_user_email', { p_user_id: emailData[0].user_id });
           } catch {}
-          
+
           const { data: retryAuthData, error: retryAuthError } = await supabase.auth.signInWithPassword({
             email: primaryEmail,
             password: password,
           });
 
           if (!retryAuthError && retryAuthData?.user) {
-            // Charger le profil rapidement (même logique que ci-dessus)
-            try {
-              const profilePromise = supabase
-                .from('profiles')
-                .select('*')
-                .eq('id', retryAuthData.user.id)
-                .single();
-              
-              const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Timeout')), 1500)
-              );
-
-              const profileResult = await Promise.race([profilePromise, timeoutPromise]) as any;
-              
-              if (profileResult?.data && !profileResult.error) {
-                const profile = profileResult.data;
-                const loggedUser: User = {
-                  id: profile.id,
-                  email: retryAuthData.user.email || primaryEmail,
-                  phone: profile.phone || formattedPhone,
-                  pseudo: profile.pseudo || 'Utilisateur',
-                  age: profile.age || 25,
-                  gender: profile.gender || 'female',
-                  photo: profile.photo || getDefaultProfileImage(profile.gender || 'female'),
-                  description: profile.description || '',
-                  rating: profile.rating || 0,
-                  reviewCount: profile.review_count || 0,
-                  isSubscribed: profile.is_subscribed || false,
-                  subscriptionStatus: profile.subscription_status || 'pending',
-                  lat: profile.lat || -4.3276,
-                  lng: profile.lng || 15.3136,
-                  isAvailable: profile.is_available ?? true,
-                  specialty: profile.specialty || undefined,
-                  createdAt: profile.created_at,
-                  updatedAt: profile.updated_at,
-                };
-
-                setUser(loggedUser);
-                setIsAuthenticated(true);
-                AsyncStorage.setItem(`user_profile_${loggedUser.id}`, JSON.stringify(loggedUser)).catch(() => {});
-                return { error: null, user: loggedUser };
-              }
-            } catch (profileError) {
-              // En cas d'erreur, utiliser le cache ou un utilisateur basique
-              try {
-                const cachedUser = await AsyncStorage.getItem(`user_profile_${retryAuthData.user.id}`);
-                if (cachedUser) {
-                  const userProfile: User = JSON.parse(cachedUser);
-                  setUser(userProfile);
-                  setIsAuthenticated(true);
-                  // Sauvegarder la session pour persistance
-                  AsyncStorage.setItem('auth_session', JSON.stringify({ user: { id: userProfile.id } })).catch(() => {});
-                  loadUserProfile(retryAuthData.user.id).catch(() => {});
-                  return { error: null, user: userProfile };
-                }
-              } catch {}
-            }
-
-            // Utilisateur basique en dernier recours
-            const basicUser: User = {
-              id: retryAuthData.user.id,
-              email: retryAuthData.user.email || primaryEmail,
-              phone: formattedPhone,
-              pseudo: retryAuthData.user.user_metadata?.pseudo || 'Utilisateur',
-              age: 25,
-              gender: 'female',
-              photo: getDefaultProfileImage('female'),
-              description: '',
-              rating: 0,
-              reviewCount: 0,
-              isSubscribed: false,
-              subscriptionStatus: 'pending',
-              lat: -4.3276,
-              lng: 15.3136,
-              isAvailable: true,
-              specialty: undefined,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            };
-
-            setUser(basicUser);
-            setIsAuthenticated(true);
-            // Sauvegarder dans le cache pour persistance
-            AsyncStorage.setItem(`user_profile_${basicUser.id}`, JSON.stringify(basicUser)).catch(() => {});
-            AsyncStorage.setItem('auth_session', JSON.stringify({ user: { id: basicUser.id } })).catch(() => {});
-            loadUserProfile(retryAuthData.user.id).catch(() => {});
-            return { error: null, user: basicUser };
+            const loggedUser = await finalizeSuccessfulLogin(retryAuthData.user, primaryEmail);
+            return { error: null, user: loggedUser };
           }
         }
       }
 
-      // Si échec avec "Invalid login credentials", essayer une seule variante d'email (cas rare)
+      // Cas rare: variante d'email
       if (authError?.message?.includes('Invalid login credentials')) {
         const phoneDigits = formattedPhone.replace(/[^0-9]/g, '');
         const alternativeEmail = `jonathantshombe+${phoneDigits.slice(-8)}@gmail.com`;
-        
-        // Si l'email alternatif est différent, l'essayer
+
         if (alternativeEmail !== primaryEmail) {
           const { data: retryAuthData, error: retryAuthError } = await supabase.auth.signInWithPassword({
             email: alternativeEmail,
@@ -1383,124 +1305,174 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           });
 
           if (!retryAuthError && retryAuthData?.user) {
-            // Marquer l'email comme vérifié en arrière-plan (non bloquant)
-            (async () => {
-              try {
-                await supabase.rpc('verify_user_email', { p_user_id: retryAuthData.user.id });
-              } catch {}
-            })();
-            
-            // Charger le profil rapidement (même logique que ci-dessus)
-            try {
-              const profilePromise = supabase
-                .from('profiles')
-                .select('*')
-                .eq('id', retryAuthData.user.id)
-                .single();
-              
-              const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Timeout')), 1500)
-              );
-
-              const profileResult = await Promise.race([profilePromise, timeoutPromise]) as any;
-              
-              if (profileResult?.data && !profileResult.error) {
-                const profile = profileResult.data;
-                const loggedUser: User = {
-                  id: profile.id,
-                  email: retryAuthData.user.email || alternativeEmail,
-                  phone: profile.phone || formattedPhone,
-                  pseudo: profile.pseudo || 'Utilisateur',
-                  age: profile.age || 25,
-                  gender: profile.gender || 'female',
-                  photo: profile.photo || getDefaultProfileImage(profile.gender || 'female'),
-                  description: profile.description || '',
-                  rating: profile.rating || 0,
-                  reviewCount: profile.review_count || 0,
-                  isSubscribed: profile.is_subscribed || false,
-                  subscriptionStatus: profile.subscription_status || 'pending',
-                  lat: profile.lat || -4.3276,
-                  lng: profile.lng || 15.3136,
-                  isAvailable: profile.is_available ?? true,
-                  specialty: profile.specialty || undefined,
-                  createdAt: profile.created_at,
-                  updatedAt: profile.updated_at,
-                };
-
-                setUser(loggedUser);
-                setIsAuthenticated(true);
-                AsyncStorage.setItem(`user_profile_${loggedUser.id}`, JSON.stringify(loggedUser)).catch(() => {});
-                return { error: null, user: loggedUser };
-              }
-            } catch (profileError) {
-              // En cas d'erreur, utiliser le cache ou un utilisateur basique
-              try {
-                const cachedUser = await AsyncStorage.getItem(`user_profile_${retryAuthData.user.id}`);
-                if (cachedUser) {
-                  const userProfile: User = JSON.parse(cachedUser);
-                  setUser(userProfile);
-                  setIsAuthenticated(true);
-                  // Sauvegarder la session pour persistance
-                  AsyncStorage.setItem('auth_session', JSON.stringify({ user: { id: userProfile.id } })).catch(() => {});
-                  loadUserProfile(retryAuthData.user.id).catch(() => {});
-                  return { error: null, user: userProfile };
-                }
-              } catch {}
-            }
-
-            // Utilisateur basique en dernier recours
-            const basicUser: User = {
-              id: retryAuthData.user.id,
-              email: retryAuthData.user.email || alternativeEmail,
-              phone: formattedPhone,
-              pseudo: retryAuthData.user.user_metadata?.pseudo || 'Utilisateur',
-              age: 25,
-              gender: 'female',
-              photo: getDefaultProfileImage('female'),
-              description: '',
-              rating: 0,
-              reviewCount: 0,
-              isSubscribed: false,
-              subscriptionStatus: 'pending',
-              lat: -4.3276,
-              lng: 15.3136,
-              isAvailable: true,
-              specialty: undefined,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            };
-
-            setUser(basicUser);
-            setIsAuthenticated(true);
-            // Sauvegarder dans le cache pour persistance
-            AsyncStorage.setItem(`user_profile_${basicUser.id}`, JSON.stringify(basicUser)).catch(() => {});
-            AsyncStorage.setItem('auth_session', JSON.stringify({ user: { id: basicUser.id } })).catch(() => {});
-            loadUserProfile(retryAuthData.user.id).catch(() => {});
-            return { error: null, user: basicUser };
+            const loggedUser = await finalizeSuccessfulLogin(retryAuthData.user, alternativeEmail);
+            return { error: null, user: loggedUser };
           }
         }
       }
 
-      // Toutes les tentatives ont échoué
-      return { 
-        error: { 
-          message: authError?.message?.includes('Invalid login credentials') 
-            ? 'Numéro de téléphone ou mot de passe incorrect' 
-            : authError?.message || 'Erreur de connexion'
-        }, 
-        user: null 
+      return {
+        error: {
+          message: authError?.message?.includes('Invalid login credentials')
+            ? 'Numéro de téléphone ou mot de passe incorrect'
+            : authError?.message || 'Erreur de connexion',
+        },
+        user: null,
       };
     } catch (error: any) {
-      // Gérer spécifiquement les erreurs réseau Supabase
-      const isNetworkErr = isNetworkError(error) || 
-                          error?.name === 'AuthRetryableFetchError' ||
-                          error?.name === 'AuthPKCEGrantCodeExchangeError';
-      
+      const isNetworkErr =
+        isNetworkError(error) ||
+        error?.name === 'AuthRetryableFetchError' ||
+        error?.name === 'AuthPKCEGrantCodeExchangeError';
+
       if (isNetworkErr) {
         return { error: { message: 'Erreur de connexion. Vérifiez votre connexion internet et réessayez.' }, user: null };
       }
-      
+
       return { error, user: null };
+    }
+  };
+
+  // Connexion via OTP de récupération (mot de passe oublié)
+  const loginWithOtpRecovery = async (phone: string, otp: string): Promise<{ error: any; user: User | null }> => {
+    try {
+      const formattedPhone = normalizePhoneNumber(phone);
+      if (!isValidPhoneNumber(formattedPhone)) {
+        return { error: { message: 'Numéro de téléphone invalide' }, user: null };
+      }
+
+      const sanitizedOtp = otp.replace(/\D/g, '').slice(0, 6);
+      if (sanitizedOtp.length !== 6) {
+        return { error: { message: 'Code OTP invalide' }, user: null };
+      }
+
+      const { data, error } = await withTimeout(
+        supabase.functions.invoke('login-with-phone-otp', {
+          body: {
+            phone: formattedPhone,
+            otp: sanitizedOtp,
+          },
+        }),
+        20000,
+        'La vérification OTP a pris trop de temps. Veuillez réessayer.'
+      );
+
+      if (error) {
+        let detailedMessage = error.message || 'Impossible de vous connecter avec le code OTP';
+
+        try {
+          const maybeContext = (error as any)?.context;
+          const status = maybeContext?.status;
+          if (status === 404) {
+            detailedMessage = 'Service OTP indisponible (fonction non déployée).';
+          } else if (typeof maybeContext?.json === 'function') {
+            const payload = await maybeContext.json();
+            if (payload?.error || payload?.message) {
+              detailedMessage = payload.error || payload.message;
+            }
+          } else if (typeof maybeContext?.text === 'function') {
+            const textPayload = await maybeContext.text();
+            if (textPayload) {
+              detailedMessage = textPayload;
+            }
+          }
+        } catch {
+          // Garder le message par défaut si on ne peut pas parser le détail
+        }
+
+        return { error: { message: detailedMessage }, user: null };
+      }
+
+      if (data?.success === false || data?.error) {
+        return {
+          error: { message: data?.error || data?.message || 'Impossible de vous connecter avec le code OTP' },
+          user: null,
+        };
+      }
+
+      const session = data?.session;
+      const responseUser = data?.user;
+      if (!session?.access_token || !session?.refresh_token || !responseUser?.id) {
+        return { error: { message: 'Réponse OTP invalide. Veuillez réessayer.' }, user: null };
+      }
+
+      const setSessionPromise = supabase.auth.setSession({
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+      });
+
+      let setSessionError: any = null;
+      try {
+        const setSessionResult: any = await withTimeout(
+          setSessionPromise,
+          3500,
+          '__SET_SESSION_TIMEOUT__'
+        );
+        setSessionError = setSessionResult?.error || null;
+      } catch (sessionSetupError: any) {
+        if (sessionSetupError?.message === '__SET_SESSION_TIMEOUT__') {
+          // Ne pas bloquer l'UI: la session finit souvent en arriere-plan.
+          setSessionPromise.catch((backgroundSessionError) => {
+            if (!isNetworkError(backgroundSessionError)) {
+              console.warn('setSession background error:', backgroundSessionError);
+            }
+          });
+        } else {
+          throw sessionSetupError;
+        }
+      }
+
+      if (setSessionError) {
+        return { error: { message: setSessionError.message || 'Impossible d’établir la session' }, user: null };
+      }
+
+      const fallbackUser: User = {
+        id: responseUser.id,
+        email: responseUser.email || generateTempEmail(formattedPhone),
+        phone: formattedPhone,
+        pseudo: responseUser.user_metadata?.pseudo || 'Utilisateur',
+        age: 25,
+        gender: 'female',
+        photo: getDefaultProfileImage('female'),
+        description: '',
+        rating: 0,
+        reviewCount: 0,
+        isSubscribed: false,
+        subscriptionStatus: 'pending',
+        lat: -4.3276,
+        lng: 15.3136,
+        isAvailable: true,
+        specialty: undefined,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      setUser(fallbackUser);
+      setIsAuthenticated(true);
+
+      AsyncStorage.setItem(`user_profile_${fallbackUser.id}`, JSON.stringify(fallbackUser)).catch(() => {});
+      AsyncStorage.setItem('auth_session', JSON.stringify({ user: { id: fallbackUser.id } })).catch(() => {});
+
+      loadUserProfile(fallbackUser.id, true).catch(() => {});
+
+      return { error: null, user: fallbackUser };
+    } catch (error: any) {
+      if (error?.message?.toLowerCase().includes('timeout') || error?.message?.toLowerCase().includes('trop de temps')) {
+        return { error: { message: error.message }, user: null };
+      }
+
+      if (!isNetworkError(error)) {
+        console.error('Error in loginWithOtpRecovery:', error);
+      }
+
+      if (isNetworkError(error)) {
+        return { error: { message: 'Erreur réseau pendant la vérification OTP. Vérifiez votre connexion et réessayez.' }, user: null };
+      }
+
+      return {
+        error: { message: error?.message || 'Impossible de vous connecter avec le code OTP' },
+        user: null,
+      };
     }
   };
 
@@ -1767,7 +1739,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Réinitialiser le mot de passe
   const resetPassword = async (phone: string): Promise<{ error: any }> => {
     try {
-      const formattedPhone = phone.startsWith('+') ? phone : `+${phone}`;
+      const formattedPhone = normalizePhoneNumber(phone);
+      if (!isValidPhoneNumber(formattedPhone)) {
+        return { error: { message: 'Numéro de téléphone invalide' } };
+      }
 
       // Trouver l'email associé au téléphone
       const { data: emailData, error: emailError } = await supabase.rpc('get_user_email_by_phone', {
@@ -1963,6 +1938,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         markOTPAsVerified,
         signUpWithPassword,
         loginWithPassword,
+        loginWithOtpRecovery,
         resetPassword,
         logout,
         checkAuth,

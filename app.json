@@ -46,7 +46,7 @@
       ],
       "config": {
         "mapbox": {
-          "accessToken": "pk.eyJ1IjoiZ2Joc2FybCIsImEiOiJjbWlvbWdvOTUwM2lqM2VxbzhlMnk3YmRnIn0.nroScN5w8bLu6OXHZgO_kw"
+          "accessToken": "SET_IN_APP_CONFIG_JS_VIA_ENV"
         }
       }
     },

@@ -1,7 +1,9 @@
+/* eslint-disable react-hooks/exhaustive-deps */
 import { Ionicons } from '@expo/vector-icons';
+import type { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Keyboard, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -13,35 +15,74 @@ import { colors } from '../../constants/colors';
 import { useAuth } from '../../context/AuthContext';
 import { useBooking } from '../../context/BookingContext';
 import { useUser } from '../../context/UserContext';
-import { isMapboxAvailable } from '../../lib/mapbox';
+import { isMapboxAvailable, MAPBOX_ACCESS_TOKEN } from '../../lib/mapbox';
+
+let DatePicker: any = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const dateTimePickerModule = require('@react-native-community/datetimepicker');
+  DatePicker = dateTimePickerModule.default;
+} catch {
+  DatePicker = null;
+}
 
 // Import conditionnel de Mapbox
 let Mapbox: any = null;
 let MapView: any = null;
-let PointAnnotation: any = null;
 let Camera: any = null;
 
 if (isMapboxAvailable) {
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const mapboxModule = require('@rnmapbox/maps');
     Mapbox = mapboxModule.default;
     MapView = mapboxModule.MapView;
-    PointAnnotation = mapboxModule.PointAnnotation;
     Camera = mapboxModule.Camera;
-  } catch (error) {
+  } catch {
     console.warn('Failed to load Mapbox components');
   }
 }
+
+const TIME_STEP_MINUTES = 15;
+const TIME_OPTIONS = Array.from({ length: (24 * 60) / TIME_STEP_MINUTES }, (_, index) => {
+  const totalMinutes = index * TIME_STEP_MINUTES;
+  const hours = String(Math.floor(totalMinutes / 60)).padStart(2, '0');
+  const minutes = String(totalMinutes % 60).padStart(2, '0');
+  return `${hours}:${minutes}`;
+});
+
+type AddressSuggestion = {
+  latitude: number;
+  longitude: number;
+  fullAddress: string;
+  name?: string;
+  street?: string;
+};
+
+const getRoundedTimeString = (date: Date) => {
+  const rounded = new Date(date);
+  rounded.setSeconds(0, 0);
+
+  const minute = rounded.getMinutes();
+  const remainder = minute % TIME_STEP_MINUTES;
+  const minutesToAdd = remainder === 0 ? 0 : TIME_STEP_MINUTES - remainder;
+  rounded.setMinutes(minute + minutesToAdd);
+
+  const hours = String(rounded.getHours()).padStart(2, '0');
+  const minutes = String(rounded.getMinutes()).padStart(2, '0');
+  return `${hours}:${minutes}`;
+};
 
 export default function BookingScreen() {
   const router = useRouter();
   const { selectedUser } = useUser();
   const { user: currentUser } = useAuth();
-  const { createBooking, getCompanionshipTopics, refreshBookings } = useBooking();
+  const { createBooking, getCompanionshipTopics } = useBooking();
   const [requestSent, setRequestSent] = useState(false);
-  const [requestAccepted, setRequestAccepted] = useState(false);
-  const [bookingDate, setBookingDate] = useState(new Date());
+  const [requestAccepted] = useState(false);
+  const [createdBookingId, setCreatedBookingId] = useState<string | null>(null);
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [dateInput, setDateInput] = useState('');
   const [timeInput, setTimeInput] = useState('');
@@ -55,34 +96,102 @@ export default function BookingScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [showMapPicker, setShowMapPicker] = useState(false);
   const [selectedLocation, setSelectedLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [mapAddressPreview, setMapAddressPreview] = useState('');
+  const [isResolvingMapAddress, setIsResolvingMapAddress] = useState(false);
   const [mapRegion, setMapRegion] = useState<{ latitude: number; longitude: number; latitudeDelta: number; longitudeDelta: number } | null>(null);
   const [isLoadingAddress, setIsLoadingAddress] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
-  const [searchResults, setSearchResults] = useState<any[]>([]);
-  // États pour l'autocomplete
-  const [locationSuggestions, setLocationSuggestions] = useState<any[]>([]);
+  const [searchResults, setSearchResults] = useState<AddressSuggestion[]>([]);
+  // Etats pour l'autocomplete
+  const [locationSuggestions, setLocationSuggestions] = useState<AddressSuggestion[]>([]);
   const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const searchTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const mapSearchTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mapAddressTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cameraRef = React.useRef<any>(null);
+  const mapCenterRef = React.useRef<{ lat: number; lng: number } | null>(null);
+  const mapAddressRequestIdRef = React.useRef(0);
   const mapInitializedRef = React.useRef(false);
   const isSearchingRef = React.useRef(false);
   const lastSearchQueryRef = React.useRef<string>('');
   const hasSearchResultsRef = React.useRef(false);
 
+  const formatTimeValue = useCallback((date: Date) => {
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    return `${hours}:${minutes}`;
+  }, []);
+
+  const timePickerValue = useMemo(() => {
+    const baseDate = dateInput ? new Date(`${dateInput}T00:00:00`) : selectedDate;
+    const safeBaseDate = Number.isNaN(baseDate.getTime()) ? new Date() : new Date(baseDate);
+    const [hours, minutes] = timeInput.split(':').map(Number);
+
+    if (!Number.isNaN(hours) && !Number.isNaN(minutes)) {
+      safeBaseDate.setHours(hours, minutes, 0, 0);
+    }
+
+    return safeBaseDate;
+  }, [dateInput, selectedDate, timeInput]);
+  const [iosTimeDraft, setIosTimeDraft] = useState<Date>(timePickerValue);
+  const timeOptions = useMemo(() => {
+    if (!timeInput || TIME_OPTIONS.includes(timeInput)) {
+      return TIME_OPTIONS;
+    }
+
+    return [...TIME_OPTIONS, timeInput].sort((a, b) => a.localeCompare(b));
+  }, [timeInput]);
+
+  useEffect(() => {
+    if (!showTimePicker) return;
+    setIosTimeDraft(timePickerValue);
+  }, [showTimePicker, timePickerValue]);
+
+  const handleTimePickerChange = (_event: DateTimePickerEvent, pickedDate?: Date) => {
+    if (!pickedDate) {
+      if (Platform.OS === 'android') {
+        setShowTimePicker(false);
+      }
+      return;
+    }
+
+    if (Platform.OS === 'ios') {
+      setIosTimeDraft(pickedDate);
+      return;
+    }
+
+    setTimeInput(formatTimeValue(pickedDate));
+    setShowTimePicker(false);
+  };
+
+  const handleTimeConfirm = () => {
+    const value = Platform.OS === 'ios' ? iosTimeDraft : timePickerValue;
+    setTimeInput(formatTimeValue(value));
+    setShowTimePicker(false);
+  };
+
+  const handleFallbackTimeSelect = (value: string) => {
+    setTimeInput(value);
+    setShowTimePicker(false);
+  };
+
   // Initialiser les inputs avec la date/heure actuelle
   React.useEffect(() => {
     const now = new Date();
     setSelectedDate(now);
-    setDateInput(now.toISOString().split('T')[0]); // Format YYYY-MM-DD
-    setTimeInput(now.toTimeString().slice(0, 5)); // Format HH:MM
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    setDateInput(`${year}-${month}-${day}`);
+    setTimeInput(getRoundedTimeString(now));
   }, []);
 
-  // Charger les sujets de compagnie disponibles (chargement immédiat au montage)
+  // Charger les sujets de compagnie disponibles (chargement immediat au montage)
   React.useEffect(() => {
     const loadTopics = async () => {
-      // Ne pas afficher le loading si on a déjà des sujets (cache)
+      // Ne pas afficher le loading si on ? deja des sujets (cache)
       if (topics.length === 0) {
         setIsLoadingTopics(true);
       }
@@ -100,9 +209,9 @@ export default function BookingScreen() {
     loadTopics();
   }, [getCompanionshipTopics]);
 
-  // Précharger les sujets quand on clique sur le bouton (avant d'ouvrir le modal)
+  // Precharger les sujets quand on clique sur le bouton (avant d'ouvrir le modal)
   const handleOpenTopicPicker = useCallback(async () => {
-    // Si les sujets ne sont pas encore chargés, les charger avant d'ouvrir le modal
+    // Si les sujets ne sont pas encore charges, les charger avant d'ouvrir le modal
     if (topics.length === 0 && !isLoadingTopics) {
       setIsLoadingTopics(true);
       try {
@@ -116,14 +225,14 @@ export default function BookingScreen() {
         setIsLoadingTopics(false);
       }
     }
-    // Ouvrir le modal (même si les sujets sont en cours de chargement, ils s'afficheront dès qu'ils sont prêts)
+    // Ouvrir le modal (meme si les sujets sont en cours de chargement, ils s'afficheront d?s qu'ils sont prets)
     setShowTopicPicker(true);
   }, [topics.length, isLoadingTopics, getCompanionshipTopics]);
 
-  // Initialiser la carte avec la position de l'utilisateur (optimisé pour performance)
+  // Initialiser la carte avec la position de l'utilisateur (optimis? pour performance)
   useEffect(() => {
     const initializeMap = async () => {
-      // Position par défaut (Kinshasa) - utilisée immédiatement pour un chargement instantané
+      // Position par defaut (Kinshasa) - utilisee immediatement pour un chargement instantan?
       const defaultRegion = {
         latitude: -4.3276,
         longitude: 15.3136,
@@ -144,31 +253,31 @@ export default function BookingScreen() {
           lat: currentUser.lat,
           lng: currentUser.lng,
         });
-        // Continuer en arrière-plan pour obtenir une position plus précise si possible
+        // Continuer en arriere-plan pour obtenir une position plus precise si possible
         updateLocationInBackground();
         return;
       }
 
-      // Sinon, définir la position par défaut immédiatement
+      // Sinon, definir la position par defaut immediatement
       setMapRegion(defaultRegion);
       setSelectedLocation({
         lat: defaultRegion.latitude,
         lng: defaultRegion.longitude,
       });
 
-      // Essayer d'obtenir la position GPS en arrière-plan (non bloquant)
+      // Essayer d'obtenir la position GPS en arriere-plan (non bloquant)
       updateLocationInBackground();
     };
 
-    // Fonction pour mettre à jour la position en arrière-plan
+    // Fonction pour mettre ? jour la position en arriere-plan
     const updateLocationInBackground = async () => {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== 'granted') {
-          return; // Garder la position par défaut ou celle de l'utilisateur
+          return; // Garder la position par defaut ou celle de l'utilisateur
         }
 
-        // Utiliser Promise.race avec un timeout pour éviter d'attendre trop longtemps
+        // Utiliser Promise.race avec un timeout pour eviter d'attendre trop longtemps
         const locationPromise = Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.Lowest, // Plus rapide que Balanced
         });
@@ -191,12 +300,12 @@ export default function BookingScreen() {
             lat: currentLocation.coords.latitude,
             lng: currentLocation.coords.longitude,
           });
-        } catch (locationError: any) {
-          // En cas d'erreur ou timeout, garder la position déjà définie (par défaut ou utilisateur)
-          // Ne pas afficher d'erreur, la carte est déjà chargée
+        } catch {
+          // En cas d'erreur ou timeout, garder la position deja definie (par defaut ou utilisateur)
+          // Ne pas afficher d'erreur, la carte est deja charg?e
         }
-      } catch (error: any) {
-        // En cas d'erreur générale, garder la position déjà définie
+      } catch {
+        // En cas d'erreur generale, garder la position deja definie
       }
     };
 
@@ -208,54 +317,160 @@ export default function BookingScreen() {
     }
   }, [showMapPicker, currentUser?.lat, currentUser?.lng]);
 
-  // Fonction pour obtenir l'adresse à partir des coordonnées (géocodage inverse)
-  const reverseGeocode = async (lat: number, lng: number) => {
+  useEffect(() => {
+    return () => {
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+      }
+
+      if (mapSearchTimeoutRef.current) {
+        clearTimeout(mapSearchTimeoutRef.current);
+      }
+
+      if (mapAddressTimeoutRef.current) {
+        clearTimeout(mapAddressTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Fonction pour obtenir l'adresse ? partir des coordonnees (g?ocodage inverse)
+  const resolveAddressFromCoordinates = useCallback(async (lat: number, lng: number) => {
+    const addresses = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
+
+    if (addresses && addresses.length > 0) {
+      const address = addresses[0];
+      const addressParts = [
+        address.street,
+        address.streetNumber,
+        address.district,
+        address.city,
+        address.region,
+        address.country,
+      ].filter(Boolean);
+
+      return addressParts.join(', ') || `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+    }
+
+    return `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+  }, []);
+
+  const reverseGeocode = useCallback(async (lat: number, lng: number) => {
     try {
       setIsLoadingAddress(true);
-      const addresses = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
-      
-      if (addresses && addresses.length > 0) {
-        const address = addresses[0];
-        // Construire l'adresse complète
-        const addressParts = [
-          address.street,
-          address.streetNumber,
-          address.district,
-          address.city,
-          address.region,
-          address.country,
-        ].filter(Boolean);
-        
-        const fullAddress = addressParts.join(', ') || `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
-        setLocation(fullAddress);
-        return fullAddress;
-      } else {
-        // Si pas d'adresse trouvée, utiliser les coordonnées
-        const coordAddress = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
-        setLocation(coordAddress);
-        return coordAddress;
-      }
+      const fullAddress = await resolveAddressFromCoordinates(lat, lng);
+      setLocation(fullAddress);
+      setMapAddressPreview(fullAddress);
+      return fullAddress;
     } catch (error) {
       console.error('Error reverse geocoding:', error);
-      // En cas d'erreur, utiliser les coordonnées
       const coordAddress = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
       setLocation(coordAddress);
+      setMapAddressPreview(coordAddress);
       return coordAddress;
     } finally {
       setIsLoadingAddress(false);
     }
-  };
+  }, [resolveAddressFromCoordinates]);
 
-  // Gérer le clic sur la carte (Mapbox)
-  const handleMapPress = (event: any) => {
-    const { geometry } = event;
-    if (geometry && geometry.coordinates) {
-      const [longitude, latitude] = geometry.coordinates;
-      setSelectedLocation({ lat: latitude, lng: longitude });
+  const extractCoordinatesFromMapEvent = useCallback((event: any): { lat: number; lng: number } | null => {
+    const coordinates = event?.properties?.center ?? event?.geometry?.coordinates ?? event?.coordinates;
+
+    if (!Array.isArray(coordinates) || coordinates.length < 2) {
+      return null;
     }
+
+    const [lng, lat] = coordinates;
+    if (typeof lat !== 'number' || typeof lng !== 'number' || !isFinite(lat) || !isFinite(lng)) {
+      return null;
+    }
+
+    return { lat, lng };
+  }, []);
+
+  const getZoomLevelFromLongitudeDelta = useCallback((longitudeDelta?: number) => {
+    const safeLongitudeDelta = Math.max(longitudeDelta ?? 0.05, 0.0001);
+    return Math.max(3, Math.min(18, Math.log2(360 / safeLongitudeDelta)));
+  }, []);
+
+  const focusMapOnCoordinates = useCallback((lat: number, lng: number, zoomLevel?: number) => {
+    if (!cameraRef.current?.setCamera) return;
+
+    const resolvedZoomLevel = typeof zoomLevel === 'number'
+      ? zoomLevel
+      : getZoomLevelFromLongitudeDelta(mapRegion?.longitudeDelta);
+
+    cameraRef.current.setCamera({
+      centerCoordinate: [lng, lat],
+      zoomLevel: resolvedZoomLevel,
+      animationDuration: 280,
+    });
+  }, [getZoomLevelFromLongitudeDelta, mapRegion?.longitudeDelta]);
+
+  const updateSelectedLocationFromMap = useCallback((lat: number, lng: number) => {
+    mapCenterRef.current = { lat, lng };
+    setSelectedLocation((prev) => {
+      if (prev && Math.abs(prev.lat - lat) < 0.000001 && Math.abs(prev.lng - lng) < 0.000001) {
+        return prev;
+      }
+      return { lat, lng };
+    });
+  }, []);
+
+  const resolveMapAddressPreview = useCallback(async (lat: number, lng: number) => {
+    const requestId = ++mapAddressRequestIdRef.current;
+    setIsResolvingMapAddress(true);
+
+    try {
+      const address = await resolveAddressFromCoordinates(lat, lng);
+      if (mapAddressRequestIdRef.current === requestId) {
+        setMapAddressPreview(address);
+      }
+    } catch {
+      if (mapAddressRequestIdRef.current === requestId) {
+        setMapAddressPreview(`${lat.toFixed(6)}, ${lng.toFixed(6)}`);
+      }
+    } finally {
+      if (mapAddressRequestIdRef.current === requestId) {
+        setIsResolvingMapAddress(false);
+      }
+    }
+  }, [resolveAddressFromCoordinates]);
+
+  const scheduleMapAddressPreview = useCallback((lat: number, lng: number) => {
+    if (mapAddressTimeoutRef.current) {
+      clearTimeout(mapAddressTimeoutRef.current);
+    }
+
+    mapAddressTimeoutRef.current = setTimeout(() => {
+      resolveMapAddressPreview(lat, lng);
+    }, 300);
+  }, [resolveMapAddressPreview]);
+
+  // Gerer le clic sur la carte (Mapbox)
+  const handleMapPress = (event: any) => {
+    const coordinates = extractCoordinatesFromMapEvent(event);
+    if (!coordinates) return;
+
+    updateSelectedLocationFromMap(coordinates.lat, coordinates.lng);
+    focusMapOnCoordinates(coordinates.lat, coordinates.lng);
+    scheduleMapAddressPreview(coordinates.lat, coordinates.lng);
   };
 
-  // Confirmer la sélection de la carte
+  const handleMapCameraChanged = (event: any) => {
+    const coordinates = extractCoordinatesFromMapEvent(event);
+    if (!coordinates) return;
+    mapCenterRef.current = coordinates;
+  };
+
+  const handleMapIdle = (event: any) => {
+    const coordinates = extractCoordinatesFromMapEvent(event) ?? mapCenterRef.current;
+    if (!coordinates) return;
+
+    updateSelectedLocationFromMap(coordinates.lat, coordinates.lng);
+    scheduleMapAddressPreview(coordinates.lat, coordinates.lng);
+  };
+
+  // Confirmer la selection de la carte
   const handleConfirmMapLocation = async () => {
     if (selectedLocation) {
       await reverseGeocode(selectedLocation.lat, selectedLocation.lng);
@@ -263,11 +478,25 @@ export default function BookingScreen() {
     }
   };
 
-  // Construire une adresse complète à partir d'un résultat de géocodage
+  useEffect(() => {
+    if (!showMapPicker) {
+      setIsResolvingMapAddress(false);
+      if (mapAddressTimeoutRef.current) {
+        clearTimeout(mapAddressTimeoutRef.current);
+      }
+      return;
+    }
+
+    if (selectedLocation) {
+      scheduleMapAddressPreview(selectedLocation.lat, selectedLocation.lng);
+    }
+  }, [showMapPicker, scheduleMapAddressPreview]);
+
+  // Construire une adresse complete ? partir d'un resultat de g?ocodage
   const buildFullAddress = (result: any): string => {
     const addressParts = [];
     
-    // Ajouter le numéro et la rue
+    // Ajouter le numero et la rue
     if (result.streetNumber && result.street) {
       addressParts.push(`${result.streetNumber} ${result.street}`);
     } else if (result.street) {
@@ -284,7 +513,7 @@ export default function BookingScreen() {
       addressParts.push(result.city);
     }
     
-    // Ajouter la région/province
+    // Ajouter la region/province
     if (result.region) {
       addressParts.push(result.region);
     }
@@ -299,24 +528,95 @@ export default function BookingScreen() {
       addressParts.push(result.country);
     }
     
-    // Si on a des parties, les joindre
+    // Si on ? des parties, les joindre
     if (addressParts.length > 0) {
       return addressParts.join(', ');
     }
     
     // Si aucune partie d'adresse, essayer de construire quelque chose de lisible
-    // ou retourner un message générique plutôt que les coordonnées
+    // ou retourner un message generique plutot que les coordonnees
     if (result.name) {
       return result.name;
     }
     
-    // Dernier recours : utiliser les coordonnées formatées de manière plus lisible
+    // Dernier recours : utiliser les coordonnees formatees de maniere plus lisible
     return `Lat: ${result.latitude.toFixed(4)}, Lng: ${result.longitude.toFixed(4)}`;
   };
 
   // Rechercher des suggestions d'adresse pendant la saisie (autocomplete)
+  const searchAddressCandidates = useCallback(async (rawQuery: string): Promise<AddressSuggestion[]> => {
+    const query = rawQuery.trim();
+    if (!query || query.length < 2) {
+      return [];
+    }
+
+    const fallbackToExpo = async (): Promise<AddressSuggestion[]> => {
+      const expoResults = await Location.geocodeAsync(query);
+
+      return expoResults.slice(0, 5).map((result) => {
+        const fullAddress = buildFullAddress(result);
+        return {
+          latitude: result.latitude,
+          longitude: result.longitude,
+          fullAddress,
+          name: fullAddress,
+        };
+      });
+    };
+
+    if (!MAPBOX_ACCESS_TOKEN) {
+      return fallbackToExpo();
+    }
+
+    try {
+      const endpoint = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?autocomplete=true&language=fr&limit=5&types=address,place,locality,neighborhood,poi&access_token=${MAPBOX_ACCESS_TOKEN}`;
+      const response = await fetch(endpoint);
+
+      if (!response.ok) {
+        throw new Error(`Mapbox geocoding status ${response.status}`);
+      }
+
+      const payload = await response.json();
+      const features = Array.isArray(payload?.features) ? payload.features : [];
+
+      const mapboxResults = features
+        .map((feature: any): AddressSuggestion | null => {
+          if (!Array.isArray(feature?.center) || feature.center.length < 2) {
+            return null;
+          }
+
+          const [longitude, latitude] = feature.center;
+          if (typeof latitude !== 'number' || typeof longitude !== 'number') {
+            return null;
+          }
+
+          const label = typeof feature.place_name === 'string' && feature.place_name.trim().length > 0
+            ? feature.place_name
+            : buildFullAddress({ latitude, longitude, name: feature.text });
+
+          return {
+            latitude,
+            longitude,
+            fullAddress: label,
+            name: feature.text || label,
+          };
+        })
+        .filter((item: AddressSuggestion | null): item is AddressSuggestion => item !== null);
+
+      if (mapboxResults.length > 0) {
+        return mapboxResults;
+      }
+
+      return fallbackToExpo();
+    } catch (error) {
+      console.log('Mapbox geocoding unavailable, fallback to Expo geocoder', error);
+      return fallbackToExpo();
+    }
+  }, []);
+
   const searchLocationSuggestions = async (query: string) => {
-    if (!query.trim() || query.length < 2) {
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery || trimmedQuery.length < 2) {
       setLocationSuggestions([]);
       setShowSuggestions(false);
       return;
@@ -324,21 +624,17 @@ export default function BookingScreen() {
 
     setIsLoadingSuggestions(true);
     try {
-      const results = await Location.geocodeAsync(query);
+      const results = await searchAddressCandidates(trimmedQuery);
       
-      if (results && results.length > 0) {
-        // Limiter à 5 suggestions
-        const limitedResults = results.slice(0, 5).map((result: any) => ({
-          ...result,
-          fullAddress: buildFullAddress(result),
-        }));
-        setLocationSuggestions(limitedResults);
+      if (results.length > 0) {
+        // Limiter ? 5 suggestions
+        setLocationSuggestions(results);
         setShowSuggestions(true);
       } else {
         setLocationSuggestions([]);
         setShowSuggestions(false);
       }
-    } catch (error: any) {
+    } catch (error) {
       console.log('Error searching location suggestions:', error);
       setLocationSuggestions([]);
       setShowSuggestions(false);
@@ -347,32 +643,36 @@ export default function BookingScreen() {
     }
   };
 
-  // Gérer le changement de texte dans le champ de lieu avec debounce
+  // Gerer le changement de texte dans le champ de lieu avec debounce
   const handleLocationChange = (text: string) => {
     setLocation(text);
-    setShowSuggestions(true);
+    setShowSuggestions(text.trim().length >= 2);
 
-    // Annuler le timeout précédent
+    // Annuler le timeout precedent
     if (searchTimeoutRef.current) {
       clearTimeout(searchTimeoutRef.current);
     }
 
-    // Débounce: attendre 500ms après la dernière frappe avant de rechercher
+    // Debounce: attendre 300ms apres la derniere frappe avant de rechercher
     searchTimeoutRef.current = setTimeout(() => {
       searchLocationSuggestions(text);
-    }, 500);
+    }, 300);
   };
 
-  // Sélectionner une suggestion d'autocomplete
-  const handleSelectSuggestion = async (suggestion: any) => {
+  // Selectionner une suggestion d'autocomplete
+  const handleSelectSuggestion = (suggestion: AddressSuggestion) => {
     const fullAddress = suggestion.fullAddress || buildFullAddress(suggestion);
     setLocation(fullAddress);
-    setSelectedLocation({
-      lat: suggestion.latitude,
-      lng: suggestion.longitude,
+    updateSelectedLocationFromMap(suggestion.latitude, suggestion.longitude);
+    setMapRegion({
+      latitude: suggestion.latitude,
+      longitude: suggestion.longitude,
+      latitudeDelta: 0.01,
+      longitudeDelta: 0.01,
     });
     setLocationSuggestions([]);
     setShowSuggestions(false);
+    Keyboard.dismiss();
   };
 
   // Rechercher des suggestions d'adresse pendant la saisie dans le modal (autocomplete)
@@ -386,13 +686,10 @@ export default function BookingScreen() {
       return;
     }
 
-    // Éviter les recherches multiples simultanées
     if (isSearchingRef.current) {
-      // Si une recherche est en cours, attendre qu'elle se termine
       return;
     }
 
-    // Si c'est la même requête que la dernière recherche réussie ET qu'on a déjà des résultats, ne pas relancer
     if (lastSearchQueryRef.current === trimmedQuery && hasSearchResultsRef.current) {
       return;
     }
@@ -400,105 +697,52 @@ export default function BookingScreen() {
     lastSearchQueryRef.current = trimmedQuery;
     isSearchingRef.current = true;
     setIsSearching(true);
-    
+
     try {
-      const results = await Location.geocodeAsync(trimmedQuery);
-      
-      // Vérifier que la requête n'a pas changé pendant la recherche
+      const results = await searchAddressCandidates(trimmedQuery);
+
       if (lastSearchQueryRef.current !== trimmedQuery) {
-        isSearchingRef.current = false;
-        setIsSearching(false);
         return;
       }
-      
-      if (results && results.length > 0) {
-        // Enrichir les résultats avec le géocodage inverse pour obtenir des adresses complètes
-        const enrichedResults = await Promise.all(
-          results.slice(0, 5).map(async (result: any) => {
-            try {
-              // Essayer d'obtenir l'adresse complète via géocodage inverse
-              const reverseResults = await Location.reverseGeocodeAsync({
-                latitude: result.latitude,
-                longitude: result.longitude,
-              });
-              
-              if (reverseResults && reverseResults.length > 0) {
-                const reverseResult = reverseResults[0];
-                const addressParts = [];
-                
-                if (reverseResult.streetNumber && reverseResult.street) {
-                  addressParts.push(`${reverseResult.streetNumber} ${reverseResult.street}`);
-                } else if (reverseResult.street) {
-                  addressParts.push(reverseResult.street);
-                }
-                
-                if (reverseResult.district) addressParts.push(reverseResult.district);
-                if (reverseResult.city) addressParts.push(reverseResult.city);
-                if (reverseResult.region) addressParts.push(reverseResult.region);
-                if (reverseResult.postalCode) addressParts.push(reverseResult.postalCode);
-                if (reverseResult.country) addressParts.push(reverseResult.country);
-                
-                return {
-                  ...result,
-                  fullAddress: addressParts.length > 0 
-                    ? addressParts.join(', ')
-                    : buildFullAddress(result),
-                };
-              }
-            } catch (reverseError) {
-              // Si le géocodage inverse échoue, utiliser la construction normale
-            }
-            
-            return {
-              ...result,
-              fullAddress: buildFullAddress(result),
-            };
-          })
-        );
-        
-        // Ne mettre à jour que si la requête n'a pas changé entre-temps
-        if (lastSearchQueryRef.current === trimmedQuery) {
-          setSearchResults(enrichedResults);
-          hasSearchResultsRef.current = true;
-        }
-      } else {
-        if (lastSearchQueryRef.current === trimmedQuery) {
-          setSearchResults([]);
-          hasSearchResultsRef.current = false;
-        }
-      }
-    } catch (error: any) {
+
+      const normalizedResults = results.map((result) => ({
+        ...result,
+        fullAddress: result.fullAddress || buildFullAddress(result),
+      }));
+
+      setSearchResults(normalizedResults);
+      hasSearchResultsRef.current = normalizedResults.length > 0;
+    } catch (error) {
       console.error('Error searching address suggestions:', error);
       if (lastSearchQueryRef.current === trimmedQuery) {
         setSearchResults([]);
         hasSearchResultsRef.current = false;
       }
     } finally {
-      // Toujours réinitialiser le flag de recherche
       isSearchingRef.current = false;
       setIsSearching(false);
     }
-  }, []);
-
-  // Gérer le changement de texte dans le champ de recherche du modal avec debounce
+  }, [searchAddressCandidates]);
+  // Gerer le changement de texte dans le champ de recherche du modal avec debounce
   const handleMapSearchChange = useCallback((text: string) => {
     setSearchQuery(text);
     
-    // Annuler le timeout précédent
+    // Annuler le timeout precedent
     if (mapSearchTimeoutRef.current) {
       clearTimeout(mapSearchTimeoutRef.current);
       mapSearchTimeoutRef.current = null;
     }
 
-    // Si le texte est vide ou trop court, vider les résultats immédiatement
+    // Si le texte est vide ou trop court, vider les resultats immediatement
     if (!text.trim() || text.length < 2) {
       setSearchResults([]);
       lastSearchQueryRef.current = '';
       hasSearchResultsRef.current = false;
+      isSearchingRef.current = false;
       return;
     }
 
-    // Débounce: attendre 300ms après la dernière frappe avant de rechercher (plus rapide)
+    // Debounce: attendre 300ms apres la derniere frappe avant de rechercher (plus rapide)
     mapSearchTimeoutRef.current = setTimeout(() => {
       const trimmedText = text.trim();
       if (trimmedText && trimmedText.length >= 2) {
@@ -510,101 +754,55 @@ export default function BookingScreen() {
 
   // Rechercher une adresse (bouton recherche)
   const handleSearchAddress = async () => {
-    if (!searchQuery.trim()) {
-      Alert.alert('Erreur', 'Veuillez entrer une adresse à rechercher');
+    const trimmedQuery = searchQuery.trim();
+    if (!trimmedQuery) {
+      Alert.alert('Erreur', 'Veuillez entrer une adresse a rechercher');
       return;
     }
 
     setIsSearching(true);
     setSearchResults([]);
+    lastSearchQueryRef.current = trimmedQuery;
 
     try {
-      // Utiliser le géocodage pour rechercher l'adresse
-      const results = await Location.geocodeAsync(searchQuery);
-      
-      if (results && results.length > 0) {
-        // Enrichir les résultats avec l'adresse complète (comme dans searchMapAddressSuggestions)
-        const enrichedResults = await Promise.all(
-          results.slice(0, 5).map(async (result: any) => {
-            try {
-              // Essayer d'obtenir l'adresse complète via géocodage inverse
-              const reverseResults = await Location.reverseGeocodeAsync({
-                latitude: result.latitude,
-                longitude: result.longitude,
-              });
-              
-              if (reverseResults && reverseResults.length > 0) {
-                const reverseResult = reverseResults[0];
-                const addressParts = [];
-                
-                if (reverseResult.streetNumber && reverseResult.street) {
-                  addressParts.push(`${reverseResult.streetNumber} ${reverseResult.street}`);
-                } else if (reverseResult.street) {
-                  addressParts.push(reverseResult.street);
-                }
-                
-                if (reverseResult.district) addressParts.push(reverseResult.district);
-                if (reverseResult.city) addressParts.push(reverseResult.city);
-                if (reverseResult.region) addressParts.push(reverseResult.region);
-                if (reverseResult.postalCode) addressParts.push(reverseResult.postalCode);
-                if (reverseResult.country) addressParts.push(reverseResult.country);
-                
-                return {
-                  ...result,
-                  fullAddress: addressParts.length > 0 
-                    ? addressParts.join(', ')
-                    : buildFullAddress(result),
-                };
-              }
-            } catch (reverseError) {
-              // Si le géocodage inverse échoue, utiliser la construction normale
-            }
-            
-            return {
-              ...result,
-              fullAddress: buildFullAddress(result),
-            };
-          })
-        );
-        
-        setSearchResults(enrichedResults);
-        
-        // Centrer la carte sur le premier résultat avec animation
-        const firstResult = enrichedResults[0];
-        if (firstResult) {
-          const region = {
-            latitude: firstResult.latitude,
-            longitude: firstResult.longitude,
-            latitudeDelta: 0.01,
-            longitudeDelta: 0.01,
-          };
-          setMapRegion(region);
-          setSelectedLocation({
-            lat: firstResult.latitude,
-            lng: firstResult.longitude,
-          });
-          
-          // Mettre à jour le champ de recherche avec l'adresse complète
-          const fullAddress = firstResult.fullAddress || buildFullAddress(firstResult);
-          setSearchQuery(fullAddress);
-          
-          // Mettre à jour le champ lieu dans le formulaire principal
-          setLocation(fullAddress);
-        }
-      } else {
-        Alert.alert('Aucun résultat', 'Aucune adresse trouvée pour cette recherche');
+      const results = await searchAddressCandidates(trimmedQuery);
+      const normalizedResults = results.map((result) => ({
+        ...result,
+        fullAddress: result.fullAddress || buildFullAddress(result),
+      }));
+
+      if (normalizedResults.length === 0) {
+        Alert.alert('Aucun resultat', 'Aucune adresse trouvee pour cette recherche');
+        hasSearchResultsRef.current = false;
+        return;
       }
-    } catch (error: any) {
+
+      setSearchResults(normalizedResults);
+      hasSearchResultsRef.current = true;
+
+      const firstResult = normalizedResults[0];
+      setMapRegion({
+        latitude: firstResult.latitude,
+        longitude: firstResult.longitude,
+        latitudeDelta: 0.01,
+        longitudeDelta: 0.01,
+      });
+      updateSelectedLocationFromMap(firstResult.latitude, firstResult.longitude);
+      focusMapOnCoordinates(firstResult.latitude, firstResult.longitude, getZoomLevelFromLongitudeDelta(0.01));
+      setSearchQuery(firstResult.fullAddress);
+      setLocation(firstResult.fullAddress);
+      setMapAddressPreview(firstResult.fullAddress);
+    } catch (error) {
       console.error('Error searching address:', error);
-      Alert.alert('Erreur', 'Impossible de rechercher l\'adresse. Veuillez réessayer.');
+      Alert.alert('Erreur', 'Impossible de rechercher l\'adresse. Veuillez reessayer.');
+      hasSearchResultsRef.current = false;
     } finally {
       setIsSearching(false);
     }
   };
 
-  // Sélectionner un résultat de recherche
-  const handleSelectSearchResult = async (result: any) => {
-    // Centrer la carte sur l'adresse sélectionnée avec animation
+  // Selectionner un resultat de recherche
+  const handleSelectSearchResult = (result: AddressSuggestion) => {
     const region = {
       latitude: result.latitude,
       longitude: result.longitude,
@@ -612,54 +810,39 @@ export default function BookingScreen() {
       longitudeDelta: 0.01,
     };
     setMapRegion(region);
-    setSelectedLocation({
-      lat: result.latitude,
-      lng: result.longitude,
-    });
-    
-    // Fermer les résultats de recherche et mettre l'adresse dans le champ
+    updateSelectedLocationFromMap(result.latitude, result.longitude);
+    focusMapOnCoordinates(result.latitude, result.longitude, getZoomLevelFromLongitudeDelta(region.longitudeDelta));
+
     const fullAddress = result.fullAddress || buildFullAddress(result);
     setSearchQuery(fullAddress);
+    setLocation(fullAddress);
+    setMapAddressPreview(fullAddress);
     setSearchResults([]);
     hasSearchResultsRef.current = false;
-    
-    // Récupérer l'adresse complète via géocodage inverse pour s'assurer d'avoir toutes les informations
-    try {
-      const addresses = await Location.reverseGeocodeAsync({
-        latitude: result.latitude,
-        longitude: result.longitude,
-      });
-      
-      if (addresses && addresses.length > 0) {
-        const completeAddress = buildFullAddress(addresses[0]);
-        setLocation(completeAddress);
-      } else {
-        setLocation(fullAddress);
-      }
-    } catch (error) {
-      setLocation(fullAddress);
-    }
+    Keyboard.dismiss();
   };
 
+  React.useEffect(() => {
+    if (selectedUser) return;
+
+    const timer = setTimeout(() => {
+      try {
+        router.back();
+      } catch (error) {
+        console.error('Error navigating back:', error);
+        router.replace('/(screens)/dashboard');
+      }
+    }, 100);
+
+    return () => clearTimeout(timer);
+  }, [selectedUser, router]);
+
   if (!selectedUser) {
-    // Utiliser setTimeout pour s'assurer que le composant est monté avant la navigation
-    React.useEffect(() => {
-      const timer = setTimeout(() => {
-        try {
-          router.back();
-        } catch (error) {
-          console.error('Error navigating back:', error);
-          // En cas d'erreur, utiliser router.replace pour forcer la navigation
-          router.replace('/(screens)/dashboard');
-        }
-      }, 100);
-      return () => clearTimeout(timer);
-    }, []);
     return null;
   }
 
   const handleDateSelect = (date: Date) => {
-    // Normaliser la date à minuit dans le fuseau horaire local pour éviter les problèmes de conversion
+    // Normaliser la date ? minuit dans le fuseau horaire local pour eviter les problemes de conversion
     const normalizedDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
     setSelectedDate(normalizedDate);
     
@@ -670,17 +853,17 @@ export default function BookingScreen() {
     const dateStr = `${year}-${month}-${day}`;
     
     setDateInput(dateStr);
-    console.log('📅 Date sélectionnée dans le calendrier:', dateStr, 'Date originale:', normalizedDate);
+    console.log('Date selectionnee dans le calendrier:', dateStr, 'Date originale:', normalizedDate);
   };
 
   const handleDateConfirm = () => {
-    // Utiliser selectedDate au lieu de dateInput pour garantir qu'on utilise la date sélectionnée
+    // Utiliser selectedDate au lieu de dateInput pour garantir qu'on utilise la date selectionnee
     if (!selectedDate) {
-      Alert.alert('Erreur', 'Veuillez sélectionner une date');
+      Alert.alert('Erreur', 'Veuillez selectionner une date');
       return;
     }
 
-    // Normaliser la date à minuit dans le fuseau horaire local
+    // Normaliser la date ? minuit dans le fuseau horaire local
     const normalizedDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
     
     // Formater la date en YYYY-MM-DD en utilisant le fuseau horaire local
@@ -694,20 +877,14 @@ export default function BookingScreen() {
     normalizedDate.setHours(0, 0, 0, 0);
 
     if (normalizedDate < today) {
-      Alert.alert('Erreur', 'Vous ne pouvez sélectionner que la date actuelle ou une date à venir');
+      Alert.alert('Erreur', 'Vous ne pouvez selectionner que la date actuelle ou une date a venir');
       return;
     }
 
-    // Mettre à jour dateInput avec la date sélectionnée
+    // Mettre ? jour dateInput avec la date selectionnee
     setDateInput(dateStr);
-    console.log('✅ Date confirmée:', dateStr, 'Date normalisée:', normalizedDate);
+    console.log('Date confirmee:', dateStr, 'Date normalisee:', normalizedDate);
 
-    // Combiner avec l'heure actuelle pour setBookingDate (sera mis à jour avec l'heure saisie)
-    const timeStr = timeInput || '00:00';
-    const combinedDateTime = new Date(normalizedDate);
-    const [hours, minutes] = timeStr.split(':').map(Number);
-    combinedDateTime.setHours(hours || 0, minutes || 0, 0, 0);
-    setBookingDate(combinedDateTime);
     setShowDatePicker(false);
   };
 
@@ -716,7 +893,7 @@ export default function BookingScreen() {
 
     // Valider la date et l'heure
     if (!dateInput || !timeInput) {
-      Alert.alert('Erreur', 'Veuillez sélectionner une date et saisir une heure');
+      Alert.alert('Erreur', 'Veuillez selectionner une date et une heure');
       return;
     }
 
@@ -725,59 +902,62 @@ export default function BookingScreen() {
     const combinedDateTime = new Date(`${dateStr}T${timeStr}:00`);
     
     if (isNaN(combinedDateTime.getTime())) {
-      Alert.alert('Erreur', 'Veuillez sélectionner une date et une heure valides');
+      Alert.alert('Erreur', 'Veuillez selectionner une date et une heure valides');
       return;
     }
 
-    // Vérifier que la date n'est pas dans le passé
+    // V?rifier que la date n'est pas dans le pass?
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const selectedDate = new Date(`${dateStr}T00:00:00`);
     selectedDate.setHours(0, 0, 0, 0);
 
     if (selectedDate < today) {
-      Alert.alert('Erreur', 'Vous ne pouvez sélectionner que la date actuelle ou une date à venir');
+      Alert.alert('Erreur', 'Vous ne pouvez selectionner que la date actuelle ou une date a venir');
       return;
     }
 
-    // Vérifier que l'heure est dans le futur si la date est aujourd'hui
+    // V?rifier que l'heure est dans le futur si la date est aujourd'hui
     const validation = validateTime();
     if (!validation.isValid) {
       Alert.alert('Erreur', validation.errorMessage);
       return;
     }
 
-    // Afficher immédiatement le feedback visuel (optimiste)
+    // Afficher immediatement le feedback visuel (optimiste)
     setRequestSent(true);
     setIsLoading(true);
     
-    // Lancer la création en arrière-plan (non bloquant pour l'UI)
+    // Lancer la creation en arriere-plan (non bloquant pour l'UI)
     createBooking(
       selectedUser.id,
       combinedDateTime.toISOString(),
       parseInt(durationHours) || 1,
       location || undefined,
-      selectedUser.lat,
-      selectedUser.lng,
+      selectedLocation?.lat ?? selectedUser.lat,
+      selectedLocation?.lng ?? selectedUser.lng,
       notes || undefined,
       selectedTopicId || undefined
     )
       .then(({ error, booking }) => {
         if (error) {
-          setRequestSent(false); // Réinitialiser en cas d'erreur
+          setRequestSent(false); // R?initialiser en cas d'erreur
+          setCreatedBookingId(null);
           setIsLoading(false);
-          Alert.alert('Erreur', error.message || 'Impossible de créer la demande');
+          Alert.alert('Erreur', error.message || 'Impossible de creer la demande');
           return;
         }
 
-        // Succès - le feedback visuel est déjà affiché
+        // Succes - le feedback visuel est deja affich?
+        setCreatedBookingId(booking?.id || null);
         setIsLoading(false);
         
-        // Afficher la confirmation (optionnel, car le feedback visuel est déjà là)
-        // Alert.alert('Succès', 'Votre demande a été envoyée');
+        // Afficher la confirmation (optionnel, car le feedback visuel est deja l?)
+        // Alert.alert('Succes', 'Votre demande a ete envoyee');
       })
       .catch((error: any) => {
         setRequestSent(false);
+        setCreatedBookingId(null);
         setIsLoading(false);
         console.error('Error creating booking:', error);
         Alert.alert('Erreur', 'Une erreur est survenue lors de l\'envoi de la demande');
@@ -785,7 +965,7 @@ export default function BookingScreen() {
   };
 
   const formatDate = (dateStr: string) => {
-    if (!dateStr) return 'Sélectionner une date';
+    if (!dateStr) return 'Selectionner une date';
     const date = new Date(`${dateStr}T00:00:00`);
     return date.toLocaleDateString('fr-FR', {
       weekday: 'long',
@@ -793,11 +973,6 @@ export default function BookingScreen() {
       month: 'long',
       day: 'numeric',
     });
-  };
-
-  const formatTime = (timeStr: string) => {
-    if (!timeStr) return 'Sélectionner une heure';
-    return timeStr;
   };
 
   // Valider si l'heure est dans le futur (si la date est aujourd'hui)
@@ -813,12 +988,12 @@ export default function BookingScreen() {
     const selectedDate = new Date(`${dateInput}T00:00:00`);
     selectedDate.setHours(0, 0, 0, 0);
 
-    // Si la date sélectionnée est aujourd'hui
+    // Si la date selectionnee est aujourd'hui
     if (selectedDate.getTime() === today.getTime()) {
-      // Vérifier si l'heure est dans le futur
+      // V?rifier si l'heure est dans le futur
       const [hours, minutes] = timeInput.split(':').map(Number);
       if (isNaN(hours) || isNaN(minutes)) {
-        // Format invalide, mais on ne bloque pas (sera validé lors de l'envoi)
+        // Format invalide, mais on ne bloque pas (sera valid? lors de l'envoi)
         return { isValid: true, errorMessage: '' };
       }
 
@@ -829,7 +1004,7 @@ export default function BookingScreen() {
       if (selectedTime <= now) {
         return {
           isValid: false,
-          errorMessage: 'Vous devez choisir une heure à venir'
+          errorMessage: 'Vous devez choisir une heure a venir'
         };
       }
     }
@@ -853,7 +1028,7 @@ export default function BookingScreen() {
       <KeyboardAvoidingView
         style={styles.keyboardAvoidingView}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 16}
       >
         <ScrollView
           style={styles.scrollView}
@@ -874,7 +1049,7 @@ export default function BookingScreen() {
 
         {!requestSent ? (
           <Animated.View entering={FadeIn} exiting={FadeOut} style={styles.content}>
-            <Text style={styles.sectionTitle}>Détails de la demande</Text>
+            <Text style={styles.sectionTitle}>Details de la demande</Text>
             <View style={styles.detailsCard}>
               <TouchableOpacity
                 style={styles.detailRow}
@@ -890,29 +1065,26 @@ export default function BookingScreen() {
                 <Ionicons name="chevron-forward" size={20} color={colors.textTertiary} />
               </TouchableOpacity>
               <View style={styles.separator} />
-              <View style={styles.detailRow}>
+              <TouchableOpacity
+                style={styles.detailRow}
+                onPress={() => setShowTimePicker(true)}
+              >
                 <Ionicons name="time-outline" size={20} color={colors.pink400} />
                 <View style={styles.detailInfo}>
                   <Text style={styles.detailLabel}>Heure</Text>
-                  <Input
-                    value={timeInput}
-                    onChangeText={setTimeInput}
-                    placeholder="HH:MM"
-                    keyboardType="default"
-                    style={styles.durationInput}
-                    containerStyle={{ marginTop: 8 }}
-                  />
-                  <Text style={styles.inputHint}>Format: HH:MM (ex: 20:00)</Text>
+                  <Text style={styles.detailValue}>{timeInput || 'Selectionner une heure'}</Text>
+                  <Text style={styles.inputHint}>Choisissez l&apos;heure et les minutes</Text>
                   {timeValidation.errorMessage ? (
                     <Text style={styles.errorText}>{timeValidation.errorMessage}</Text>
                   ) : null}
                 </View>
-              </View>
+                <Ionicons name="chevron-forward" size={20} color={colors.textTertiary} />
+              </TouchableOpacity>
               <View style={styles.separator} />
               <View style={styles.detailRow}>
                 <Ionicons name="hourglass-outline" size={20} color={colors.pink400} />
                 <View style={styles.detailInfo}>
-                  <Text style={styles.detailLabel}>Durée (heures)</Text>
+                  <Text style={styles.detailLabel}>Duree (heures)</Text>
                   <Input
                     value={durationHours}
                     onChangeText={setDurationHours}
@@ -938,7 +1110,7 @@ export default function BookingScreen() {
                           }
                         }}
                         onBlur={() => {
-                          // Délai pour permettre le clic sur une suggestion
+                          // Delai pour permettre le clic sur une suggestion
                           setTimeout(() => setShowSuggestions(false), 200);
                         }}
                         placeholder="Rechercher un lieu..."
@@ -1000,8 +1172,8 @@ export default function BookingScreen() {
                   <Text style={styles.detailLabel}>Sujet de compagnie (optionnel)</Text>
                   <Text style={styles.detailValue}>
                     {selectedTopicId 
-                      ? topics.find(t => t.id === selectedTopicId)?.name || 'Sélectionner un sujet'
-                      : 'Sélectionner un sujet'}
+                      ? topics.find(t => t.id === selectedTopicId)?.name || 'Selectionner un sujet'
+                      : 'Selectionner un sujet'}
                   </Text>
                 </View>
                 <Ionicons name="chevron-forward" size={20} color={colors.textTertiary} />
@@ -1014,7 +1186,7 @@ export default function BookingScreen() {
                   <Input
                     value={notes}
                     onChangeText={setNotes}
-                    placeholder="Ajoutez des détails..."
+                    placeholder="Ajoutez des details..."
                     multiline
                     numberOfLines={4}
                     style={styles.notesInput}
@@ -1027,7 +1199,7 @@ export default function BookingScreen() {
 
             <View style={styles.infoCard}>
               <Text style={styles.infoText}>
-                Votre demande sera envoyée à {selectedUser.pseudo}. Une notification lui sera envoyée immédiatement.
+                Votre demande sera envoyee a {selectedUser.pseudo}. Une notification lui sera envoyee immediatement.
               </Text>
             </View>
 
@@ -1045,8 +1217,24 @@ export default function BookingScreen() {
             <View style={styles.pendingIcon}>
               <Ionicons name="time-outline" size={40} color={colors.pink400} />
             </View>
-            <Text style={styles.pendingTitle}>Demande envoyée</Text>
-            <Text style={styles.pendingSubtitle}>En attente de la réponse de {selectedUser.pseudo}</Text>
+            <Text style={styles.pendingTitle}>Demande envoyee</Text>
+            <Text style={styles.pendingSubtitle}>En attente de la reponse de {selectedUser.pseudo}</Text>
+            <View style={{ marginTop: 20, gap: 12, width: '100%' }}>
+              {createdBookingId ? (
+                <Button
+                  title="Voir les details"
+                  onPress={() => router.replace(`/(screens)/booking-details?bookingId=${createdBookingId}`)}
+                  icon={<Ionicons name="information-circle-outline" size={20} color="#ffffff" />}
+                  style={styles.button}
+                />
+              ) : null}
+              <Button
+                title="Retour au profil"
+                variant="outline"
+                onPress={() => router.back()}
+                style={styles.button}
+              />
+            </View>
           </Animated.View>
         ) : (
           <Animated.View entering={FadeIn} style={styles.content}>
@@ -1054,9 +1242,9 @@ export default function BookingScreen() {
               <View style={styles.successIcon}>
                 <Ionicons name="checkmark-circle" size={40} color={colors.green500} />
               </View>
-              <Text style={styles.successTitle}>Demande acceptée !</Text>
+              <Text style={styles.successTitle}>Demande acceptee !</Text>
               <Text style={styles.successSubtitle}>
-                {selectedUser.pseudo} a accepté votre demande de compagnie
+                {selectedUser.pseudo} a accepte votre demande de compagnie
               </Text>
             </View>
 
@@ -1064,16 +1252,16 @@ export default function BookingScreen() {
               <Ionicons name="shield-checkmark" size={20} color={colors.yellow400} />
               <View style={styles.kycText}>
                 <Text style={styles.kycTitle}>
-                  Pour votre sécurité, nous recommandons une vérification d'identité instantanée.
+                  Pour votre securite, nous recommandons une verification d&apos;identite instantanee.
                 </Text>
                 <Text style={styles.kycSubtitle}>
-                  Prenez un selfie avec le signe ✌️ pour confirmer votre identité.
+                  Prenez un selfie avec le signe OK pour confirmer votre identité.
                 </Text>
               </View>
             </View>
 
             <Button
-              title="Vérification instantanée (KYC)"
+              title="Verification instantanee (KYC)"
               onPress={() => router.push('/(screens)/kyc')}
               icon={<Ionicons name="shield-checkmark" size={20} color="#ffffff" />}
               style={styles.button}
@@ -1104,11 +1292,11 @@ export default function BookingScreen() {
           />
           <KeyboardAvoidingView
             behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
             style={styles.modalKeyboardView}
           >
             <View style={styles.modalContent} onStartShouldSetResponder={() => true}>
-              <Text style={styles.modalTitle}>Sélectionner la date</Text>
+              <Text style={styles.modalTitle}>Selectionner la date</Text>
               
               <ScrollView
                 style={styles.modalScrollView}
@@ -1146,6 +1334,94 @@ export default function BookingScreen() {
         </View>
       </Modal>
 
+      {DatePicker ? (
+        Platform.OS === 'ios' ? (
+          <Modal
+            visible={showTimePicker}
+            transparent
+            animationType="slide"
+            onRequestClose={() => setShowTimePicker(false)}
+          >
+            <View style={styles.modalOverlay}>
+              <View style={styles.modalContent}>
+                <Text style={styles.modalTitle}>Selectionner l&apos;heure</Text>
+                <DatePicker
+                  value={iosTimeDraft}
+                  mode="time"
+                  display="spinner"
+                  is24Hour
+                  minuteInterval={5}
+                  onChange={handleTimePickerChange}
+                  style={styles.timePicker}
+                />
+                <View style={styles.modalActions}>
+                  <Button
+                    title="Annuler"
+                    onPress={() => setShowTimePicker(false)}
+                    variant="outline"
+                    style={styles.modalButton}
+                  />
+                  <Button
+                    title="Confirmer"
+                    onPress={handleTimeConfirm}
+                    style={styles.modalButton}
+                  />
+                </View>
+              </View>
+            </View>
+          </Modal>
+        ) : (
+          showTimePicker ? (
+            <DatePicker
+              value={timePickerValue}
+              mode="time"
+              display="default"
+              is24Hour
+              minuteInterval={5}
+              onChange={handleTimePickerChange}
+            />
+          ) : null
+        )
+      ) : (
+        <Modal
+          visible={showTimePicker}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowTimePicker(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Selectionner l&apos;heure</Text>
+              <ScrollView style={styles.timeOptionsList} showsVerticalScrollIndicator={false}>
+                {timeOptions.map((timeOption) => {
+                  const isSelected = timeInput === timeOption;
+                  return (
+                    <TouchableOpacity
+                      key={timeOption}
+                      style={[styles.timeOptionItem, isSelected && styles.timeOptionItemSelected]}
+                      onPress={() => handleFallbackTimeSelect(timeOption)}
+                    >
+                      <Text style={[styles.timeOptionText, isSelected && styles.timeOptionTextSelected]}>
+                        {timeOption}
+                      </Text>
+                      {isSelected ? <Ionicons name="checkmark-circle" size={18} color={colors.pink500} /> : null}
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+              <View style={styles.modalActions}>
+                <Button
+                  title="Fermer"
+                  onPress={() => setShowTimePicker(false)}
+                  variant="outline"
+                  style={styles.modalButton}
+                />
+              </View>
+            </View>
+          </View>
+        </Modal>
+      )}
+
       {/* Map Picker Modal */}
       <Modal
         visible={showMapPicker}
@@ -1158,7 +1434,7 @@ export default function BookingScreen() {
             <TouchableOpacity onPress={() => setShowMapPicker(false)}>
               <Ionicons name="arrow-back" size={24} color={colors.text} />
             </TouchableOpacity>
-            <Text style={styles.mapHeaderTitle}>Sélectionner un lieu</Text>
+            <Text style={styles.mapHeaderTitle}>Selectionner un lieu</Text>
             <View style={{ width: 24 }} />
           </View>
 
@@ -1246,51 +1522,40 @@ export default function BookingScreen() {
           {mapRegion && Mapbox && Mapbox.StyleURL ? (
             <View style={styles.mapContainer}>
               <MapView
-                styleURL={Mapbox.StyleURL.Street}
+                styleURL={Mapbox?.StyleURL?.Street || 'mapbox://styles/mapbox/streets-v12'}
                 style={styles.map}
                 logoEnabled={false}
                 attributionEnabled={false}
                 onPress={handleMapPress}
+                onCameraChanged={handleMapCameraChanged}
+                onMapIdle={handleMapIdle}
               >
                 <Camera
-                  centerCoordinate={[mapRegion.longitude, mapRegion.latitude]}
-                  zoomLevel={Math.log2(360 / mapRegion.longitudeDelta)}
-                  animationMode="flyTo"
-                  animationDuration={500}
+                  ref={cameraRef}
+                  defaultSettings={{
+                    centerCoordinate: [mapRegion.longitude, mapRegion.latitude],
+                    zoomLevel: getZoomLevelFromLongitudeDelta(mapRegion.longitudeDelta),
+                  }}
                 />
-                
-                {selectedLocation && (
-                  <PointAnnotation
-                    id="selected-location"
-                    coordinate={[selectedLocation.lng, selectedLocation.lat]}
-                    draggable
-                    onDragEnd={(feature: any) => {
-                      const [longitude, latitude] = feature.geometry.coordinates;
-                      setSelectedLocation({
-                        lat: latitude,
-                        lng: longitude,
-                      });
-                    }}
-                    anchor={{ x: 0.5, y: 0.5 }}
-                  >
-                    <View style={styles.selectedLocationMarker}>
-                      <Ionicons name="location" size={24} color={colors.pink500} />
-                    </View>
-                  </PointAnnotation>
-                )}
               </MapView>
+              <View pointerEvents="none" style={styles.mapCenterMarkerOverlay}>
+                <View style={styles.selectedLocationMarker}>
+                  <Ionicons name="location" size={24} color={colors.pink500} />
+                </View>
+              </View>
 
               <View style={styles.mapFooter}>
                 <View style={styles.mapInfo}>
-                  {isLoadingAddress ? (
+                  {(isResolvingMapAddress || isLoadingAddress) ? (
                     <ActivityIndicator size="small" color={colors.pink500} />
                   ) : (
                     <Ionicons name="location" size={20} color={colors.pink500} />
                   )}
-                  <Text style={styles.mapInfoText}>
-                    {selectedLocation
-                      ? `${selectedLocation.lat.toFixed(6)}, ${selectedLocation.lng.toFixed(6)}`
-                      : 'Appuyez sur la carte pour sélectionner un lieu'}
+                  <Text style={styles.mapInfoText} numberOfLines={2}>
+                    {mapAddressPreview ||
+                      (selectedLocation
+                        ? `${selectedLocation.lat.toFixed(6)}, ${selectedLocation.lng.toFixed(6)}`
+                        : 'Deplacez la carte ou appuyez pour selectionner un lieu')}
                   </Text>
                 </View>
                 <Button
@@ -1444,7 +1709,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: 24,
-    paddingBottom: 100, // Espace supplémentaire en bas pour permettre le scroll avec le clavier
+    paddingBottom: 128,
     gap: 24,
   },
   userCard: {
@@ -1490,6 +1755,7 @@ const styles = StyleSheet.create({
   detailRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    minHeight: 52,
     gap: 12,
   },
   detailInfo: {
@@ -1629,6 +1895,9 @@ const styles = StyleSheet.create({
     minHeight: 600,
     width: '100%',
   },
+  timePicker: {
+    marginTop: 8,
+  },
   modalTitle: {
     fontSize: 20,
     fontWeight: '600',
@@ -1661,6 +1930,29 @@ const styles = StyleSheet.create({
   },
   modalScrollView: {
     maxHeight: 400,
+  },
+  timeOptionsList: {
+    maxHeight: 360,
+  },
+  timeOptionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderSecondary,
+  },
+  timeOptionItemSelected: {
+    backgroundColor: colors.background,
+  },
+  timeOptionText: {
+    fontSize: 16,
+    color: colors.text,
+  },
+  timeOptionTextSelected: {
+    color: colors.pink500,
+    fontWeight: '600',
   },
   modalScrollContent: {
     paddingBottom: 20,
@@ -1761,6 +2053,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 3,
     borderColor: colors.pink500,
+  },
+  mapCenterMarkerOverlay: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    transform: [{ translateX: -20 }, { translateY: -20 }],
   },
   mapFooter: {
     backgroundColor: colors.backgroundSecondary,
@@ -1928,4 +2226,7 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
 });
+
+
+
 

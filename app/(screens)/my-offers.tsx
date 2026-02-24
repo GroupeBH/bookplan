@@ -1,8 +1,9 @@
+/* eslint-disable react-hooks/exhaustive-deps */
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
-import { Alert, Modal, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Modal, Platform, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
@@ -33,7 +34,7 @@ type Tab = 'my-offers' | 'my-applications';
 export default function MyOffersScreen() {
   const router = useRouter();
   const { user } = useAuth();
-  const { myOffers, isLoading, getOfferApplications, selectApplication, rejectApplication, cancelSelectedApplication, cancelOffer, refreshMyOffers } = useOffer();
+  const { myOffers, getOfferApplications, selectApplication, rejectApplication, cancelSelectedApplication, cancelOffer, refreshMyOffers } = useOffer();
   const [activeTab, setActiveTab] = useState<Tab>('my-offers');
   const [refreshing, setRefreshing] = useState(false);
   const [selectedOffer, setSelectedOffer] = useState<Offer | null>(null);
@@ -121,7 +122,7 @@ export default function MyOffersScreen() {
                 await refreshMyOffers();
                 await loadMyApplications();
               }
-            } catch (error) {
+            } catch {
               Alert.alert('Erreur', 'Une erreur est survenue');
             } finally {
               setIsProcessing(false);
@@ -154,7 +155,7 @@ export default function MyOffersScreen() {
           setApplications(apps);
         }
       }
-    } catch (error) {
+    } catch {
       Alert.alert('Erreur', 'Une erreur est survenue');
     } finally {
       setIsProcessing(false);
@@ -179,7 +180,7 @@ export default function MyOffersScreen() {
         setSelectedOffer(null);
         await refreshMyOffers();
       }
-    } catch (error) {
+    } catch {
       Alert.alert('Erreur', 'Une erreur est survenue');
     } finally {
       setIsProcessing(false);
@@ -280,7 +281,7 @@ export default function MyOffersScreen() {
               <Ionicons name="gift-outline" size={64} color={colors.textTertiary} />
               <Text style={styles.emptyTitle}>Aucune offre</Text>
               <Text style={styles.emptySubtitle}>
-                Vous n'avez pas encore créé d'offre. Créez-en une maintenant !
+                Vous n&apos;avez pas encore créé d&apos;offre. Créez-en une maintenant !
               </Text>
               <Button
                 title="Créer une offre"
@@ -376,7 +377,7 @@ export default function MyOffersScreen() {
               <Ionicons name="document-text-outline" size={64} color={colors.textTertiary} />
               <Text style={styles.emptyTitle}>Aucune candidature</Text>
               <Text style={styles.emptySubtitle}>
-                Vous n'avez pas encore candidaté à une offre.
+                Vous n&apos;avez pas encore candidaté à une offre.
               </Text>
             </View>
           ) : (
@@ -516,7 +517,7 @@ export default function MyOffersScreen() {
                                           setApplications(apps);
                                           await refreshMyOffers();
                                         }
-                                      } catch (error) {
+                                      } catch {
                                         Alert.alert('Erreur', 'Une erreur est survenue');
                                       } finally {
                                         setIsProcessing(false);
@@ -548,8 +549,17 @@ export default function MyOffersScreen() {
         animationType="slide"
         onRequestClose={() => setShowRejectModal(false)}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
+        >
+          <ScrollView
+            contentContainerStyle={styles.modalScrollContent}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+          >
+            <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Refuser la candidature</Text>
               <TouchableOpacity onPress={() => setShowRejectModal(false)}>
@@ -589,8 +599,9 @@ export default function MyOffersScreen() {
                 disabled={isProcessing || !rejectionMessage.trim()}
               />
             </View>
-          </View>
-        </View>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Cancel Offer Modal */}
@@ -600,8 +611,17 @@ export default function MyOffersScreen() {
         animationType="slide"
         onRequestClose={() => setShowCancelModal(false)}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
+        >
+          <ScrollView
+            contentContainerStyle={styles.modalScrollContent}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+          >
+            <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>{selectedOffer?.status === 'expired' ? 'Supprimer l\'offre' : 'Annuler l\'offre'}</Text>
               <TouchableOpacity onPress={() => setShowCancelModal(false)}>
@@ -645,8 +665,9 @@ export default function MyOffersScreen() {
                 disabled={isProcessing}
               />
             </View>
-          </View>
-        </View>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -859,6 +880,9 @@ const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
+  },
+  modalScrollContent: {
+    flexGrow: 1,
     justifyContent: 'flex-end',
   },
   modalContent: {
@@ -957,4 +981,3 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
 });
-

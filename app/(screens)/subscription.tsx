@@ -26,17 +26,14 @@ const features = [
 
 export default function SubscriptionScreen() {
   const router = useRouter();
-  const { user, login } = useAuth();
+  const { user, updateUser } = useAuth();
 
   const handleSubscribe = async () => {
     if (user) {
-      const updatedUser = {
-        ...user,
+      await updateUser({
         isSubscribed: true,
         subscriptionStatus: 'active' as const,
-      };
-      // Sauvegarder l'abonnement dans AsyncStorage
-      await login(updatedUser);
+      });
     }
     router.replace('/(screens)/dashboard');
   };
@@ -114,7 +111,7 @@ export default function SubscriptionScreen() {
 
           {/* Status badges */}
           <Animated.View entering={FadeInDown.delay(500)} style={styles.badgesContainer}>
-            <Text style={styles.badgesTitle}>Statut d'abonnement</Text>
+            <Text style={styles.badgesTitle}>Statut d&apos;abonnement</Text>
             <View style={styles.badges}>
               <Badge variant="success">Actif</Badge>
               <Badge variant="error">Expiré</Badge>
@@ -261,4 +258,3 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
   },
 });
-

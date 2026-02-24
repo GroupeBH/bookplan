@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/exhaustive-deps */
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
@@ -212,7 +213,7 @@ export default function EditProfileScreen() {
         pseudo: pseudo.trim(),
         age: Number(age),
         description: description.trim(),
-        specialty: specialty.trim() || null,
+        specialty: specialty.trim() || undefined,
         photo: photoUrl,
         gender: gender,
       };
@@ -271,7 +272,7 @@ export default function EditProfileScreen() {
       <KeyboardAvoidingView
         style={styles.keyboardAvoidingView}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 0}
         enabled={Platform.OS === 'ios'} // Désactiver sur Android pour éviter les problèmes
       >
         <ScrollView
@@ -638,4 +639,3 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
-

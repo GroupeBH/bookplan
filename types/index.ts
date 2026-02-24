@@ -35,6 +35,7 @@ export interface User {
   id: string;
   pseudo: string;
   age: number;
+  email?: string;
   phone?: string;
   photo: string;
   description: string;
@@ -44,12 +45,14 @@ export interface User {
   reviewCount: number;
   isSubscribed: boolean;
   subscriptionStatus: 'active' | 'expired' | 'pending';
-  lastSeen: string;
+  lastSeen?: string;
   gender: 'male' | 'female';
   lat?: number;
   lng?: number;
   isAvailable?: boolean;
   currentBookingId?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface AlbumPhoto {
@@ -139,6 +142,7 @@ export interface Booking {
   provider?: User;
   extensionRequestedHours?: number;
   extensionRequestedAt?: string;
+  extensionRequestedBy?: string;
 }
 
 export interface InfoAccessRequest {
@@ -203,4 +207,3 @@ export interface OfferApplication {
   applicant?: User;
   offer?: Offer;
 }
-

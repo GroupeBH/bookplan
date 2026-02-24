@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/exhaustive-deps */
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -20,7 +21,7 @@ export default function RequestsScreen() {
   const { user } = useAuth();
   const { setSelectedUser } = useUser();
   const { bookings, updateBookingStatus, refreshBookings } = useBooking();
-  const { pendingRequests, accessRequests, updateAccessRequest, refreshRequests } = useAccessRequest();
+  const { accessRequests, updateAccessRequest, refreshRequests } = useAccessRequest();
   const [activeTab, setActiveTab] = useState<RequestTab>('bookings');
   const [statusFilter, setStatusFilter] = useState<'pending' | 'accepted' | 'rejected' | 'all'>('all');
   const [isLoading, setIsLoading] = useState(false);
@@ -62,7 +63,7 @@ export default function RequestsScreen() {
     const interval = setInterval(checkCompletedBookings, 60000);
     
     return () => clearInterval(interval);
-  }, [receivedBookings, user, updateBookingStatus]);
+  }, [bookings, statusFilter, user, updateBookingStatus]);
 
   // Filtrer les bookings où l'utilisateur est le provider (demandes reçues)
   const allReceivedBookings = useMemo(() => 
@@ -178,7 +179,7 @@ export default function RequestsScreen() {
         Alert.alert('Succès', 'Demande acceptée');
         refreshBookings();
       }
-    } catch (error) {
+    } catch {
       Alert.alert('Erreur', 'Une erreur est survenue');
     } finally {
       setIsLoading(false);
@@ -204,7 +205,7 @@ export default function RequestsScreen() {
                 Alert.alert('Succès', 'Demande refusée');
                 refreshBookings();
               }
-            } catch (error) {
+            } catch {
               Alert.alert('Erreur', 'Une erreur est survenue');
             } finally {
               setIsLoading(false);
@@ -225,7 +226,7 @@ export default function RequestsScreen() {
         Alert.alert('Succès', 'Accès accordé');
         refreshRequests();
       }
-    } catch (error) {
+    } catch {
       Alert.alert('Erreur', 'Une erreur est survenue');
     } finally {
       setIsLoading(false);
@@ -251,7 +252,7 @@ export default function RequestsScreen() {
                 Alert.alert('Succès', 'Demande refusée');
                 refreshRequests();
               }
-            } catch (error) {
+            } catch {
               Alert.alert('Erreur', 'Une erreur est survenue');
             } finally {
               setIsLoading(false);
@@ -846,5 +847,3 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
 });
-
-

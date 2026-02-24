@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, RefreshControl, Modal, TextInput, Switch, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, RefreshControl, Modal, Switch, ActivityIndicator, KeyboardAvoidingView, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
@@ -11,6 +11,7 @@ import { ImageWithFallback } from '../../components/ImageWithFallback';
 import { useBlock } from '../../context/BlockContext';
 import { useUser } from '../../context/UserContext';
 import { useAuth } from '../../context/AuthContext';
+import { isValidPhoneNumber, normalizePhoneNumber } from '../../lib/phone';
 import { supabase } from '../../lib/supabase';
 import Animated, { FadeIn } from 'react-native-reanimated';
 
@@ -202,14 +203,16 @@ export default function SettingsScreen() {
 
   // Envoyer l'OTP pour le nouveau numéro
   const handleSendOTPForPhone = async () => {
-    if (!newPhone.trim()) {
+    const normalizedPhone = normalizePhoneNumber(newPhone);
+    if (!isValidPhoneNumber(normalizedPhone)) {
       Alert.alert('Erreur', 'Veuillez entrer un numéro de téléphone');
       return;
     }
 
     setIsChangingPhone(true);
     try {
-      const { error, otpCode } = await sendOTP(newPhone);
+      setNewPhone(normalizedPhone);
+      const { error } = await sendOTP(normalizedPhone);
       if (error) {
         Alert.alert('Erreur', error.message || 'Impossible d\'envoyer le code OTP');
       } else {
@@ -232,15 +235,22 @@ export default function SettingsScreen() {
 
     setIsChangingPhone(true);
     try {
+      const normalizedPhone = normalizePhoneNumber(newPhone);
+      if (!isValidPhoneNumber(normalizedPhone)) {
+        Alert.alert('Erreur', 'Veuillez entrer un numéro de téléphone valide');
+        setIsChangingPhone(false);
+        return;
+      }
+
       // Vérifier l'OTP avec la fonction simple
-      const { error: verifyError } = await verifyOTPSimple(newPhone, otpCode);
+      const { error: verifyError } = await verifyOTPSimple(normalizedPhone, otpCode);
       if (verifyError) {
         Alert.alert('Erreur', verifyError.message || 'Code OTP incorrect');
         setIsChangingPhone(false);
         return;
       }
 
-      const formattedNewPhone = newPhone.startsWith('+') ? newPhone : `+${newPhone}`;
+      const formattedNewPhone = normalizedPhone;
       
       // Générer le nouvel email basé sur le nouveau numéro (même logique que dans AuthContext)
       const phoneDigits = formattedNewPhone.replace(/[^0-9]/g, '');
@@ -420,7 +430,7 @@ export default function SettingsScreen() {
               <Ionicons name="lock-open-outline" size={48} color={colors.textTertiary} />
               <Text style={styles.emptyTitle}>Aucun profil bloqué</Text>
               <Text style={styles.emptySubtitle}>
-                Vous n'avez bloqué aucun utilisateur pour le moment.
+                Vous n&apos;avez bloqué aucun utilisateur pour le moment.
               </Text>
             </View>
           ) : (
@@ -471,8 +481,17 @@ export default function SettingsScreen() {
         animationType="slide"
         onRequestClose={() => setShowPasswordModal(false)}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
+        >
+          <ScrollView
+            contentContainerStyle={styles.modalScrollContent}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+          >
+            <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Modifier le mot de passe</Text>
               <TouchableOpacity onPress={() => setShowPasswordModal(false)}>
@@ -527,8 +546,9 @@ export default function SettingsScreen() {
                 style={styles.modalButton}
               />
             </View>
-          </View>
-        </View>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Modal Modifier le numéro de téléphone */}
@@ -538,8 +558,17 @@ export default function SettingsScreen() {
         animationType="slide"
         onRequestClose={() => setShowPhoneModal(false)}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
+        >
+          <ScrollView
+            contentContainerStyle={styles.modalScrollContent}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+          >
+            <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Modifier le numéro de téléphone</Text>
               <TouchableOpacity onPress={() => {
@@ -585,7 +614,7 @@ export default function SettingsScreen() {
                     title="Envoyer le code OTP"
                     onPress={handleSendOTPForPhone}
                     loading={isChangingPhone}
-                    disabled={isChangingPhone || !newPhone.trim()}
+                    disabled={isChangingPhone || !isValidPhoneNumber(newPhone)}
                     style={styles.modalButton}
                   />
                 </View>
@@ -631,8 +660,9 @@ export default function SettingsScreen() {
                 </View>
               </>
             )}
-          </View>
-        </View>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -777,6 +807,9 @@ const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
+  },
+  modalScrollContent: {
+    flexGrow: 1,
     justifyContent: 'flex-end',
   },
   modalContent: {
@@ -825,4 +858,3 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 });
-

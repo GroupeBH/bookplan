@@ -1,3 +1,5 @@
+const mapboxAccessToken = process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN || '';
+
 export default {
   expo: {
     name: "kutana",
@@ -25,6 +27,7 @@ export default {
     android: {
       googleServicesFile: './google-services.json',
       package: "com.kuntana",  // Doit correspondre à google-services.json
+      softwareKeyboardLayoutMode: "resize",
       adaptiveIcon: {
         backgroundColor: "#E6F4FE",
         foregroundImage: "./assets/images/android-icon-foreground.png",
@@ -76,10 +79,10 @@ export default {
         {
             RNMapboxMapsImpl: 'mapbox',
             android: {
-              accessToken: process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN || "pk.eyJ1IjoiZ2Joc2FybCIsImEiOiJjbWlvbWdvOTUwM2lqM2VxbzhlMnk3YmRnIn0.nroScN5w8bLu6OXHZgO_kw",
+              accessToken: mapboxAccessToken,
             },
             ios: {
-                accessToken: process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN || "pk.eyJ1IjoiZ2Joc2FybCIsImEiOiJjbWlvbWdvOTUwM2lqM2VxbzhlMnk3YmRnIn0.nroScN5w8bLu6OXHZgO_kw",
+                accessToken: mapboxAccessToken,
             }
         },
       ],
@@ -109,8 +112,7 @@ export default {
       eas: {
         projectId: "df84af22-016e-434a-b1c0-3bd9ea1bc992"
       },
-      mapboxAccessToken: process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN || "pk.eyJ1IjoiZ2Joc2FybCIsImEiOiJjbWlvbWdvOTUwM2lqM2VxbzhlMnk3YmRnIn0.nroScN5w8bLu6OXHZgO_kw"
+      mapboxAccessToken
     },
   }
 };
-

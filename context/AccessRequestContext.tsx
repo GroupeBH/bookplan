@@ -28,7 +28,7 @@ const AccessRequestContext = createContext<AccessRequestContextType | undefined>
 
 export function AccessRequestProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
-  const { showNotification } = useNotification();
+  const { createNotification } = useNotification();
   const [accessRequests, setAccessRequests] = useState<InfoAccessRequest[]>([]);
   const [pendingRequests, setPendingRequests] = useState<InfoAccessRequest[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -335,7 +335,7 @@ export function AccessRequestProvider({ children }: { children: ReactNode }) {
         setPendingRequests(pendingRequests.filter(r => r.id !== requestId));
         
         // Envoyer une notification au requester si la demande est acceptée
-        if (status === 'accepted' && currentRequest?.requester_id) {
+        if (currentRequest?.requester_id) {
           // Récupérer les informations du target (utilisateur actuel) pour la notification
           const { data: targetProfile } = await supabase
             .from('profiles')
@@ -343,11 +343,14 @@ export function AccessRequestProvider({ children }: { children: ReactNode }) {
             .eq('id', user.id)
             .single();
           
-          await showNotification(
-            'access',
-            'Demande d\'accès acceptée',
-            `${targetProfile?.pseudo || 'Un utilisateur'} a accepté votre demande d'accès à ses informations. Vous pouvez maintenant voir son profil complet.`,
-            { requestId: requestId, targetId: user.id }
+          await createNotification(
+            currentRequest.requester_id,
+            status === 'accepted' ? 'access_request_accepted' : 'access_request_rejected',
+            status === 'accepted' ? 'Demande d\'accès acceptée' : 'Demande d\'accès refusée',
+            status === 'accepted'
+              ? `${targetProfile?.pseudo || 'Un utilisateur'} a accepté votre demande d'accès à ses informations.`
+              : `${targetProfile?.pseudo || 'Un utilisateur'} a refusé votre demande d'accès à ses informations.`,
+            { requestId, targetId: user.id, userId: user.id }
           );
         }
         

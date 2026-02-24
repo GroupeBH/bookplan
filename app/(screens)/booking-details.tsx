@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/exhaustive-deps */
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -21,21 +22,22 @@ export default function BookingDetailsScreen() {
   const params = useLocalSearchParams<{ bookingId: string }>();
   const { user: currentUser } = useAuth();
   const { setSelectedUser } = useUser();
-  const { bookings, updateBookingStatus, cancelBooking, refreshBookings } = useBooking();
+  const { updateBookingStatus, cancelBooking } = useBooking();
   const { createRating, updateRating, getUserRatings, getUserAverageRating } = useRating();
-  const { showNotification } = useNotification();
+  const { createNotification } = useNotification();
 
   const [booking, setBooking] = useState<any>(null);
   const [otherUser, setOtherUser] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [showRatingModal, setShowRatingModal] = useState(false);
   const [showExtensionModal, setShowExtensionModal] = useState(false);
-  const [showExtensionConfirmationModal, setShowExtensionConfirmationModal] = useState(false);
+  const [, setShowExtensionConfirmationModal] = useState(false);
   const [rating, setRating] = useState(0);
   const [comment, setComment] = useState('');
   const [extensionHours, setExtensionHours] = useState(1);
   const [existingRating, setExistingRating] = useState<any>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [actionLoading, setActionLoading] = useState<'accept' | 'reject' | 'cancel' | 'extension_request' | 'extension_confirm' | 'extension_reject' | null>(null);
   const [otherUserRating, setOtherUserRating] = useState({ average: 0, count: 0 });
   const [ratingModalDismissed, setRatingModalDismissed] = useState(false);
 
@@ -98,15 +100,21 @@ export default function BookingDetailsScreen() {
         }
       }
 
-      // Vérifier s'il y a déjà un avis que l'utilisateur actuel a donné à l'autre utilisateur pour cette compagnie
+      // Vérifier s'il y a déjà un avis que l'utilisateur actuel a donné à l'autre utilisateur
       try {
-        const { data: existingRatingData } = await supabase
+        const { data: existingRatingData, error: existingRatingError } = await supabase
           .from('ratings')
           .select('*')
           .eq('rater_id', currentUser.id)
           .eq('rated_id', otherUserId)
-          .eq('booking_id', params.bookingId)
-          .single();
+          .order('updated_at', { ascending: false, nullsFirst: false })
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (existingRatingError && existingRatingError.code !== 'PGRST116') {
+          console.error('Error loading existing rating:', existingRatingError);
+        }
 
         if (existingRatingData) {
           setExistingRating({
@@ -117,6 +125,10 @@ export default function BookingDetailsScreen() {
           });
           setRating(parseFloat(existingRatingData.rating));
           setComment(existingRatingData.comment || '');
+        } else {
+          setExistingRating(null);
+          setRating(0);
+          setComment('');
         }
       } catch (error) {
         // Pas d'avis existant ou erreur
@@ -165,9 +177,10 @@ export default function BookingDetailsScreen() {
 
   const isRequester = booking?.requester_id === currentUser?.id;
   const isProvider = booking?.provider_id === currentUser?.id;
+  const isActionBusy = actionLoading !== null || isSubmitting;
 
   const handleCancel = async () => {
-    if (!booking) return;
+    if (!booking || isActionBusy) return;
 
     Alert.alert(
       'Annuler la compagnie',
@@ -178,22 +191,25 @@ export default function BookingDetailsScreen() {
           text: 'Oui, annuler',
           style: 'destructive',
           onPress: async () => {
-            setIsSubmitting(true);
+            const previousBooking = { ...booking };
+            setActionLoading('cancel');
+            setBooking({ ...previousBooking, status: 'cancelled' }); // Optimiste
             const { error } = await cancelBooking(booking.id);
-            setIsSubmitting(false);
+            setActionLoading(null);
 
             if (error) {
+              setBooking(previousBooking);
               Alert.alert('Erreur', 'Impossible d\'annuler la compagnie');
             } else {
               // Envoyer une notification à l'autre utilisateur
               const otherUserId = isRequester ? booking.provider_id : booking.requester_id;
-              await showNotification(
-                'booking_cancelled',
+              await createNotification(
+                otherUserId,
+                'booking_request_rejected',
                 'Compagnie annulée',
                 `${currentUser?.pseudo || 'L\'utilisateur'} a annulé la compagnie.`,
                 { bookingId: booking.id, userId: currentUser?.id }
               );
-              
               Alert.alert('Succès', 'Compagnie annulée avec succès', [
                 { text: 'OK', onPress: () => router.back() }
               ]);
@@ -204,6 +220,56 @@ export default function BookingDetailsScreen() {
     );
   };
 
+  const handleAcceptPendingBooking = async () => {
+    if (!booking || booking.status !== 'pending' || !isProvider || isActionBusy) return;
+
+    const previousBooking = { ...booking };
+    setActionLoading('accept');
+    setBooking({ ...previousBooking, status: 'accepted' }); // Optimiste
+
+    try {
+      const { error } = await updateBookingStatus(previousBooking.id, 'accepted');
+      if (error) {
+        setBooking(previousBooking);
+        Alert.alert('Erreur', error.message || 'Impossible d\'accepter la demande');
+      } else {
+        Alert.alert('Succès', 'Demande acceptée');
+        loadBookingDetails();
+      }
+    } catch (error) {
+      setBooking(previousBooking);
+      console.error('Error accepting pending booking:', error);
+      Alert.alert('Erreur', 'Impossible d\'accepter la demande');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleRejectPendingBooking = async () => {
+    if (!booking || booking.status !== 'pending' || !isProvider || isActionBusy) return;
+
+    const previousBooking = { ...booking };
+    setActionLoading('reject');
+    setBooking({ ...previousBooking, status: 'rejected' }); // Optimiste
+
+    try {
+      const { error } = await updateBookingStatus(previousBooking.id, 'rejected');
+      if (error) {
+        setBooking(previousBooking);
+        Alert.alert('Erreur', error.message || 'Impossible de rejeter la demande');
+      } else {
+        Alert.alert('Succès', 'Demande rejetée');
+        loadBookingDetails();
+      }
+    } catch (error) {
+      setBooking(previousBooking);
+      console.error('Error rejecting pending booking:', error);
+      Alert.alert('Erreur', 'Impossible de rejeter la demande');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const handleSubmitRating = async () => {
     if (!booking || !otherUser || rating === 0) {
       Alert.alert('Erreur', 'Veuillez donner une note');
@@ -212,10 +278,21 @@ export default function BookingDetailsScreen() {
 
     setIsSubmitting(true);
     try {
+      let submitError: any = null;
+      let persistedRatingId: string | undefined = existingRating?.id;
+
       if (existingRating) {
-        await updateRating(existingRating.id, rating, comment);
+        const result = await updateRating(existingRating.id, rating, comment);
+        submitError = result.error;
       } else {
-        await createRating(otherUser.id, rating, comment, booking.id);
+        const result = await createRating(otherUser.id, rating, comment, booking.id);
+        submitError = result.error;
+        persistedRatingId = result.rating?.id;
+      }
+
+      if (submitError) {
+        Alert.alert('Erreur', submitError.message || 'Impossible d\'enregistrer l\'avis');
+        return;
       }
 
       // Marquer la compagnie comme complétée si ce n'est pas déjà fait
@@ -223,6 +300,12 @@ export default function BookingDetailsScreen() {
         await updateBookingStatus(booking.id, 'completed');
       }
 
+      setExistingRating({
+        id: persistedRatingId || existingRating?.id || `local-${currentUser?.id}-${otherUser.id}`,
+        rating,
+        comment: comment || '',
+        bookingId: existingRating?.bookingId || booking.id,
+      });
       setShowRatingModal(false);
       setRatingModalDismissed(true);
       Alert.alert('Succès', 'Avis enregistré avec succès');
@@ -236,12 +319,20 @@ export default function BookingDetailsScreen() {
   };
 
   const handleRequestExtension = async () => {
-    if (!booking || extensionHours <= 0) {
+    if (!booking || extensionHours <= 0 || isActionBusy) {
       Alert.alert('Erreur', 'Veuillez entrer un nombre d\'heures valide');
       return;
     }
 
-    setIsSubmitting(true);
+    setActionLoading('extension_request');
+    const previousBooking = { ...booking };
+    setBooking({
+      ...previousBooking,
+      extension_requested_hours: extensionHours,
+      extension_requested_at: new Date().toISOString(),
+      extension_requested_by: currentUser?.id,
+    });
+
     try {
       const { data, error } = await supabase.rpc('request_booking_extension', {
         p_booking_id: booking.id,
@@ -249,92 +340,138 @@ export default function BookingDetailsScreen() {
       });
 
       if (error) {
+        setBooking(previousBooking);
         Alert.alert('Erreur', error.message || 'Impossible de demander la prolongation');
         return;
       }
 
+      const payload = Array.isArray(data) ? data[0] : data;
+      if (payload?.success === false) {
+        setBooking(previousBooking);
+        Alert.alert('Erreur', payload.error || 'Impossible de demander la prolongation');
+        return;
+      }
+      if (payload?.booking) {
+        setBooking(payload.booking);
+      }
+
       // Envoyer une notification au provider
-      await showNotification(
-        'booking_extension',
-        'Demande de prolongation',
-        `${currentUser?.pseudo || 'L\'utilisateur'} demande de prolonger la compagnie de ${extensionHours} heure(s).`,
-        { bookingId: booking.id, extensionHours }
-      );
+      const extensionRecipientId = isRequester ? booking.provider_id : booking.requester_id;
+      if (extensionRecipientId) {
+        await createNotification(
+          extensionRecipientId,
+          'booking_request_received',
+          'Demande de prolongation',
+          `${currentUser?.pseudo || 'L\'utilisateur'} demande de prolonger la compagnie de ${extensionHours} heure(s).`,
+          { bookingId: booking.id, extensionHours }
+        );
+      }
 
       setShowExtensionModal(false);
       Alert.alert('Succès', 'Demande de prolongation envoyée');
       loadBookingDetails();
     } catch (error) {
+      setBooking(previousBooking);
       console.error('Error requesting extension:', error);
       Alert.alert('Erreur', 'Impossible de demander la prolongation');
     } finally {
-      setIsSubmitting(false);
+      setActionLoading(null);
     }
   };
 
   const handleConfirmExtension = async () => {
-    if (!booking) return;
+    if (!booking || isActionBusy) return;
 
-    setIsSubmitting(true);
+    setActionLoading('extension_confirm');
+    const previousBooking = { ...booking };
     try {
       const { data, error } = await supabase.rpc('confirm_booking_extension', {
         p_booking_id: booking.id,
       });
 
       if (error) {
+        setBooking(previousBooking);
         Alert.alert('Erreur', error.message || 'Impossible de confirmer la prolongation');
         return;
       }
 
-      // Envoyer une notification au requester
-      await showNotification(
-        'booking_extension_confirmed',
-        'Prolongation confirmée',
-        `La prolongation de ${booking.extension_requested_hours} heure(s) a été confirmée.`,
-        { bookingId: booking.id }
-      );
-
+      const payload = Array.isArray(data) ? data[0] : data;
+      if (payload?.success === false) {
+        setBooking(previousBooking);
+        Alert.alert('Erreur', payload.error || 'Impossible de confirmer la prolongation');
+        return;
+      }
+      if (payload?.booking) {
+        setBooking(payload.booking);
+      }
+      // Envoyer une notification à l'autre utilisateur
+      const confirmRecipientId = isRequester ? booking.provider_id : booking.requester_id;
+      if (confirmRecipientId) {
+        await createNotification(
+          confirmRecipientId,
+          'booking_request_accepted',
+          'Prolongation confirmée',
+          `La prolongation de ${booking.extension_requested_hours} heure(s) a été confirmée.`,
+          { bookingId: booking.id }
+        );
+      }
       setShowExtensionConfirmationModal(false);
       Alert.alert('Succès', 'Prolongation confirmée');
       loadBookingDetails();
     } catch (error) {
+      setBooking(previousBooking);
       console.error('Error confirming extension:', error);
       Alert.alert('Erreur', 'Impossible de confirmer la prolongation');
     } finally {
-      setIsSubmitting(false);
+      setActionLoading(null);
     }
   };
 
   const handleRejectExtension = async () => {
-    if (!booking) return;
+    if (!booking || isActionBusy) return;
 
-    setIsSubmitting(true);
+    setActionLoading('extension_reject');
+    const previousBooking = { ...booking };
     try {
       const { data, error } = await supabase.rpc('reject_booking_extension', {
         p_booking_id: booking.id,
       });
 
       if (error) {
+        setBooking(previousBooking);
         Alert.alert('Erreur', error.message || 'Impossible de refuser la prolongation');
         return;
       }
 
-      // Envoyer une notification au requester
-      await showNotification(
-        'booking_extension_rejected',
-        'Prolongation refusée',
-        'La demande de prolongation a été refusée.',
-        { bookingId: booking.id }
-      );
-
+      const payload = Array.isArray(data) ? data[0] : data;
+      if (payload?.success === false) {
+        setBooking(previousBooking);
+        Alert.alert('Erreur', payload.error || 'Impossible de refuser la prolongation');
+        return;
+      }
+      if (payload?.booking) {
+        setBooking(payload.booking);
+      }
+      // Envoyer une notification à l'autre utilisateur
+      const rejectRecipientId = isRequester ? booking.provider_id : booking.requester_id;
+      if (rejectRecipientId) {
+        await createNotification(
+          rejectRecipientId,
+          'booking_request_rejected',
+          'Prolongation refusée',
+          'La demande de prolongation a été refusée.',
+          { bookingId: booking.id }
+        );
+      }
       setShowExtensionConfirmationModal(false);
       Alert.alert('Succès', 'Prolongation refusée');
       loadBookingDetails();
     } catch (error) {
+      setBooking(previousBooking);
       console.error('Error rejecting extension:', error);
       Alert.alert('Erreur', 'Impossible de refuser la prolongation');
     } finally {
-      setIsSubmitting(false);
+      setActionLoading(null);
     }
   };
 
@@ -377,6 +514,13 @@ export default function BookingDetailsScreen() {
   const now = new Date();
   const isEnded = now >= endTime;
   const timeRemaining = isEnded ? 0 : Math.max(0, endTime.getTime() - now.getTime());
+  const extensionRequesterId = booking.extension_requested_by || booking.requester_id;
+  const extensionRequestedByCurrentUser = extensionRequesterId === currentUser?.id;
+  const canRespondToExtensionRequest = Boolean(
+    booking.extension_requested_hours &&
+    extensionRequesterId &&
+    extensionRequesterId !== currentUser?.id
+  );
 
   const getStatusBadge = () => {
     switch (booking.status) {
@@ -577,27 +721,28 @@ export default function BookingDetailsScreen() {
               <Ionicons name="time-outline" size={24} color={colors.yellow500} />
               <View style={styles.extensionInfo}>
                 <Text style={styles.extensionTitle}>
-                  {isRequester ? 'Votre demande de prolongation' : 'Demande de prolongation'}
+                  {extensionRequestedByCurrentUser ? 'Votre demande de prolongation' : 'Demande de prolongation reçue'}
                 </Text>
                 <Text style={styles.extensionText}>
-                  {isRequester 
+                  {extensionRequestedByCurrentUser
                     ? `En attente de confirmation pour ${booking.extension_requested_hours} heure(s) supplémentaire(s)`
                     : `${otherUser?.pseudo || 'L\'utilisateur'} demande de prolonger de ${booking.extension_requested_hours} heure(s)`}
                 </Text>
-                {isProvider && (
+                {canRespondToExtensionRequest && (
                   <View style={styles.extensionActions}>
                     <Button
                       title="Confirmer"
                       onPress={handleConfirmExtension}
-                      disabled={isSubmitting}
-                      loading={isSubmitting}
+                      disabled={isActionBusy}
+                      loading={actionLoading === 'extension_confirm'}
                       style={styles.extensionButton}
                     />
                     <Button
                       title="Refuser"
                       variant="outline"
                       onPress={handleRejectExtension}
-                      disabled={isSubmitting}
+                      disabled={isActionBusy}
+                      loading={actionLoading === 'extension_reject'}
                       style={styles.extensionButton}
                     />
                   </View>
@@ -614,8 +759,32 @@ export default function BookingDetailsScreen() {
               title="Annuler la demande"
               variant="outline"
               onPress={handleCancel}
-              disabled={isSubmitting}
-              loading={isSubmitting}
+              disabled={isActionBusy}
+              loading={actionLoading === 'cancel'}
+              icon={<Ionicons name="close-circle-outline" size={20} color={colors.red500} />}
+              style={[styles.actionButton, { borderColor: colors.red500 }]}
+              textStyle={{ color: colors.red500 }}
+            />
+          </View>
+        )}
+
+        {/* Actions provider si demande pending */}
+        {isProvider && booking.status === 'pending' && (
+          <View style={styles.actions}>
+            <Button
+              title="Accepter la demande"
+              onPress={handleAcceptPendingBooking}
+              disabled={isActionBusy}
+              loading={actionLoading === 'accept'}
+              icon={<Ionicons name="checkmark-circle-outline" size={20} color="#ffffff" />}
+              style={styles.actionButton}
+            />
+            <Button
+              title="Rejeter la demande"
+              variant="outline"
+              onPress={handleRejectPendingBooking}
+              disabled={isActionBusy}
+              loading={actionLoading === 'reject'}
               icon={<Ionicons name="close-circle-outline" size={20} color={colors.red500} />}
               style={[styles.actionButton, { borderColor: colors.red500 }]}
               textStyle={{ color: colors.red500 }}
@@ -637,7 +806,7 @@ export default function BookingDetailsScreen() {
                 style={styles.actionButton}
               />
             )}
-            {isRequester && !isEnded && (
+            {(isRequester || isProvider) && !booking.extension_requested_hours && (
               <Button
                 title="Demander une prolongation"
                 variant="outline"
@@ -651,7 +820,8 @@ export default function BookingDetailsScreen() {
                 title="Annuler la compagnie"
                 variant="outline"
                 onPress={handleCancel}
-                disabled={isSubmitting}
+                disabled={isActionBusy}
+                loading={actionLoading === 'cancel'}
                 icon={<Ionicons name="close-circle-outline" size={20} color={colors.red500} />}
                 style={[styles.actionButton, styles.cancelButton]}
                 textStyle={{ color: colors.red500 }}
@@ -714,7 +884,7 @@ export default function BookingDetailsScreen() {
         <KeyboardAvoidingView
           style={styles.modalOverlay}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
         >
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>
@@ -794,11 +964,15 @@ export default function BookingDetailsScreen() {
         animationType="fade"
         onRequestClose={() => setShowExtensionModal(false)}
       >
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
+        >
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Demander une prolongation</Text>
             <Text style={styles.modalDescription}>
-              Combien d'heures supplémentaires souhaitez-vous ajouter ?
+              Combien d&apos;heures supplémentaires souhaitez-vous ajouter ?
             </Text>
 
             <View style={styles.extensionInputContainer}>
@@ -827,13 +1001,13 @@ export default function BookingDetailsScreen() {
               <Button
                 title="Demander"
                 onPress={handleRequestExtension}
-                disabled={extensionHours <= 0 || isSubmitting}
-                loading={isSubmitting}
+                disabled={extensionHours <= 0 || isActionBusy}
+                loading={actionLoading === 'extension_request'}
                 style={styles.modalButton}
               />
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -1155,4 +1329,5 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 });
+
 

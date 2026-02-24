@@ -68,7 +68,7 @@ export default function KYCScreen() {
                     <Text style={styles.instructionNumberText}>1</Text>
                   </View>
                   <Text style={styles.instructionText}>
-                    Assurez-vous d'être dans un endroit bien éclairé
+                    Assurez-vous d&apos;être dans un endroit bien éclairé
                   </Text>
                 </View>
                 <View style={styles.instructionItem}>

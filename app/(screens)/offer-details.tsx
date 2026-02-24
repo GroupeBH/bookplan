@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/exhaustive-deps */
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -67,7 +68,7 @@ export default function OfferDetailsScreen() {
   const router = useRouter();
   const { offerId } = useLocalSearchParams<{ offerId: string }>();
   const { user } = useAuth();
-  const { getOfferById, applyToOffer, getOfferApplications, cancelMyApplication, selectApplication, rejectApplication, cancelOffer, deleteOffer, reactivateOffer, refreshMyOffers } = useOffer();
+  const { getOfferById, applyToOffer, getOfferApplications, cancelMyApplication, selectApplication, rejectApplication, cancelOffer, deleteOffer, reactivateOffer } = useOffer();
   const { getUserAverageRating } = useRating();
   const [offer, setOffer] = useState<Offer | null>(null);
   const [applications, setApplications] = useState<OfferApplication[]>([]);
@@ -176,7 +177,7 @@ export default function OfferDetailsScreen() {
 
     setIsApplying(true);
     try {
-      const { error, application } = await applyToOffer(offerId, applicationMessage.trim());
+      const { error } = await applyToOffer(offerId, applicationMessage.trim());
 
       if (error) {
         Alert.alert('Erreur', error.message || 'Impossible de candidater');
@@ -261,7 +262,7 @@ export default function OfferDetailsScreen() {
                 await loadOffer();
                 setShowApplicationsModal(false);
               }
-            } catch (error) {
+            } catch {
               Alert.alert('Erreur', 'Une erreur est survenue');
             } finally {
               setIsProcessing(false);
@@ -294,7 +295,7 @@ export default function OfferDetailsScreen() {
           setApplications(apps);
         }
       }
-    } catch (error) {
+    } catch {
       Alert.alert('Erreur', 'Une erreur est survenue');
     } finally {
       setIsProcessing(false);
@@ -322,7 +323,7 @@ export default function OfferDetailsScreen() {
                 Alert.alert('Succès', 'Offre supprimée définitivement');
                 router.back();
               }
-            } catch (error) {
+            } catch {
               Alert.alert('Erreur', 'Une erreur est survenue');
             } finally {
               setIsProcessing(false);
@@ -354,7 +355,7 @@ export default function OfferDetailsScreen() {
                 Alert.alert('Succès', 'Offre annulée');
                 await loadOffer();
               }
-            } catch (error) {
+            } catch {
               Alert.alert('Erreur', 'Une erreur est survenue');
             } finally {
               setIsProcessing(false);
@@ -385,7 +386,7 @@ export default function OfferDetailsScreen() {
                 Alert.alert('Succès', 'Offre réactivée');
                 await loadOffer();
               }
-            } catch (error) {
+            } catch {
               Alert.alert('Erreur', 'Une erreur est survenue');
             } finally {
               setIsProcessing(false);
@@ -403,7 +404,7 @@ export default function OfferDetailsScreen() {
           <TouchableOpacity onPress={() => router.back()}>
             <Ionicons name="arrow-back" size={24} color={colors.textSecondary} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Détails de l'offre</Text>
+          <Text style={styles.headerTitle}>Détails de l&apos;offre</Text>
           <View style={{ width: 24 }} />
         </View>
         <View style={styles.loadingContainer}>
@@ -420,13 +421,13 @@ export default function OfferDetailsScreen() {
           <TouchableOpacity onPress={() => router.back()}>
             <Ionicons name="arrow-back" size={24} color={colors.textSecondary} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Détails de l'offre</Text>
+          <Text style={styles.headerTitle}>Détails de l&apos;offre</Text>
           <View style={{ width: 24 }} />
         </View>
         <View style={styles.emptyContainer}>
           <Ionicons name="alert-circle-outline" size={64} color={colors.textTertiary} />
           <Text style={styles.emptyTitle}>Offre introuvable</Text>
-          <Text style={styles.emptySubtitle}>Cette offre n'existe pas ou a été supprimée</Text>
+          <Text style={styles.emptySubtitle}>Cette offre n&apos;existe pas ou a été supprimée</Text>
         </View>
       </SafeAreaView>
     );
@@ -442,7 +443,7 @@ export default function OfferDetailsScreen() {
         <TouchableOpacity onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={24} color={colors.textSecondary} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Détails de l'offre</Text>
+        <Text style={styles.headerTitle}>Détails de l&apos;offre</Text>
         <View style={{ width: 24 }} />
       </View>
 
@@ -606,7 +607,7 @@ export default function OfferDetailsScreen() {
                                     Alert.alert('Succès', 'Candidature annulée');
                                     await loadOffer();
                                   }
-                                } catch (error) {
+                                } catch {
                                   Alert.alert('Erreur', 'Une erreur est survenue');
                                 } finally {
                                   setIsApplying(false);
@@ -659,7 +660,7 @@ export default function OfferDetailsScreen() {
                                     Alert.alert('Succès', 'Candidature annulée');
                                     await loadOffer();
                                   }
-                                } catch (error) {
+                                } catch {
                                   Alert.alert('Erreur', 'Une erreur est survenue');
                                 } finally {
                                   setIsApplying(false);
@@ -879,11 +880,11 @@ export default function OfferDetailsScreen() {
         <KeyboardAvoidingView
           style={styles.modalOverlay}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
         >
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Candidater à l'offre</Text>
+              <Text style={styles.modalTitle}>Candidater à l&apos;offre</Text>
               <TouchableOpacity onPress={() => setShowApplicationModal(false)}>
                 <Ionicons name="close" size={24} color={colors.text} />
               </TouchableOpacity>
@@ -1102,6 +1103,11 @@ const styles = StyleSheet.create({
     color: colors.green500,
     fontWeight: '500',
   },
+  appliedActions: {
+    width: '100%',
+    marginTop: 12,
+    gap: 8,
+  },
   emptyContainer: {
     flex: 1,
     alignItems: 'center',
@@ -1233,7 +1239,3 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
 });
-
-
-
-

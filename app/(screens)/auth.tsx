@@ -8,23 +8,26 @@ import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
 import { colors } from '../../constants/colors';
 import { useAuth } from '../../context/AuthContext';
+import { isValidPhoneNumber, normalizePhoneNumber } from '../../lib/phone';
 
 // Import pour la récupération automatique de l'OTP (Android uniquement)
 let OtpVerify: any = null;
 if (Platform.OS === 'android') {
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     OtpVerify = require('react-native-otp-verify');
-  } catch (e) {
+  } catch {
     console.log('react-native-otp-verify non disponible');
   }
 }
 
 type AuthMode = 'signup' | 'login';
 type AuthStep = 'phone' | 'otp' | 'pseudo' | 'age' | 'gender' | 'specialty' | 'password';
+type OtpFlow = 'signup' | 'login-recovery';
 
 export default function AuthScreen() {
   const router = useRouter();
-  const { sendOTP, verifyOTP, markOTPAsVerified, updateUser, signUpWithPassword, loginWithPassword, resetPassword, user, isAuthenticated } = useAuth();
+  const { verifyOTP, markOTPAsVerified, signUpWithPassword, loginWithPassword, loginWithOtpRecovery, user, isAuthenticated } = useAuth();
   const [mode, setMode] = useState<AuthMode>('signup'); // 'signup' ou 'login'
   const [step, setStep] = useState<AuthStep>('phone');
   const [phone, setPhone] = useState('');
@@ -35,35 +38,32 @@ export default function AuthScreen() {
   const [specialty, setSpecialty] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [isPasswordVisible, setIsPasswordVisible] = useState(false);
+  const [isConfirmPasswordVisible, setIsConfirmPasswordVisible] = useState(false);
+  const [otpFlow, setOtpFlow] = useState<OtpFlow>('signup');
   const [isLoading, setIsLoading] = useState(false);
   const otpAutoVerifyRef = useRef<boolean>(false); // Pour éviter les vérifications multiples
   const scrollViewRef = useRef<ScrollView>(null);
 
   // Rediriger si déjà authentifié (mais pas immédiatement après déconnexion)
   React.useEffect(() => {
-    // Ne rediriger que si on est vraiment authentifié et qu'on a un utilisateur
-    // Attendre un peu pour éviter les redirections immédiates après déconnexion
-    const timer = setTimeout(() => {
-      // Vérifier à nouveau l'état avant de rediriger
-      if (isAuthenticated && user && user.id) {
-        console.log('🔄 Redirection vers dashboard (authentifié)');
-        if (user.pseudo && user.pseudo !== 'Utilisateur') {
-          router.replace('/(screens)/dashboard');
-        } else {
-          setStep('pseudo');
-        }
+    if (isAuthenticated && user && user.id) {
+      console.log('🔄 Redirection vers dashboard (authentifié)');
+      if (user.pseudo && user.pseudo !== 'Utilisateur') {
+        router.replace('/(screens)/dashboard');
       } else {
-        console.log('🚫 Pas de redirection (non authentifié ou pas d\'utilisateur)');
+        setStep('pseudo');
       }
-    }, 1000); // Délai plus long pour s'assurer que la déconnexion est terminée
-
-    return () => clearTimeout(timer);
+    } else {
+      console.log('🚫 Pas de redirection (non authentifié ou pas d\'utilisateur)');
+    }
   }, [isAuthenticated, user, router]);
 
   const handlePhoneSubmit = async () => {
     console.log("📱 handlePhoneSubmit appelé, phone:", phone, "mode:", mode);
-    
-    if (phone.length < 9) {
+
+    const normalizedPhone = normalizePhoneNumber(phone);
+    if (!isValidPhoneNumber(normalizedPhone)) {
       Alert.alert('Erreur', 'Veuillez entrer un numéro de téléphone valide');
       return;
     }
@@ -71,16 +71,20 @@ export default function AuthScreen() {
     if (mode === 'login') {
       // En mode login, passer directement à l'étape mot de passe
       console.log("🔐 Mode login, passage à l'étape password");
+      setPhone(normalizedPhone);
+      setOtpFlow('signup');
       setStep('password');
       return;
     }
 
     // En mode signup, envoyer l'OTP via l'API Keccel
+    setOtpFlow('signup');
     setIsLoading(true);
     try {
       const API_TOKEN = "F42KARA4ES95FWH";
       const FROM_NAME = "BISOTECH";
-      const PHONE_NUMBER = phone.startsWith("+243") ? phone : `+243${phone}`;
+      const PHONE_NUMBER = normalizedPhone;
+      setPhone(PHONE_NUMBER);
 
       console.log("📤 Envoi de l'OTP à:", PHONE_NUMBER);
 
@@ -131,7 +135,7 @@ export default function AuthScreen() {
       try {
         data = JSON.parse(responseText);
         console.log("✅ Réponse parsée comme JSON:", JSON.stringify(data, null, 2));
-      } catch (jsonError) {
+      } catch {
         console.log("⚠️ Réponse n'est pas du JSON, traitement comme texte");
         // Si ce n'est pas du JSON, considérer comme succès si le texte contient certains mots-clés
         const lowerText = responseText.toLowerCase();
@@ -364,23 +368,56 @@ export default function AuthScreen() {
     try {
       const API_TOKEN = "F42KARA4ES95FWH";
       const FROM_NAME = "BISOTECH";
-      const PHONE_NUMBER = phone.startsWith("+243") ? phone : `+243${phone}`;
+      const PHONE_NUMBER = normalizePhoneNumber(phone);
+      if (!isValidPhoneNumber(PHONE_NUMBER)) {
+        Alert.alert('Erreur', 'Numéro de téléphone invalide');
+        setIsLoading(false);
+        otpAutoVerifyRef.current = false;
+        return;
+      }
 
-      const res = await fetch(
-        "https://api.keccel.com/otp/validate.asp",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            token: API_TOKEN,
-            from: FROM_NAME,
-            to: PHONE_NUMBER,
-            otp: otpCode,
-          }),
+      // Flow "mot de passe oublié" : l'OTP connecte directement l'utilisateur
+      if (mode === 'login' && otpFlow === 'login-recovery') {
+        const { error, user: loggedUser } = await loginWithOtpRecovery(PHONE_NUMBER, otpCode);
+
+        if (error || !loggedUser) {
+          Alert.alert('Erreur', error?.message || 'Impossible de vous connecter avec ce code OTP');
+          otpAutoVerifyRef.current = false;
+          return;
         }
-      );
+
+        stopOTPListener();
+        Alert.alert(
+          'Connexion réussie',
+          'Vous êtes connecté via OTP. Après la connexion, allez dans Paramètres et utilisez ce code OTP comme mot de passe actuel pour définir un nouveau mot de passe.'
+        );
+        router.replace('/(screens)/dashboard');
+        return;
+      }
+
+      const validationController = new AbortController();
+      const validationTimeoutId = setTimeout(() => validationController.abort(), 15000);
+      let res: Response;
+      try {
+        res = await fetch(
+          "https://api.keccel.com/otp/validate.asp",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              token: API_TOKEN,
+              from: FROM_NAME,
+              to: PHONE_NUMBER,
+              otp: otpCode,
+            }),
+            signal: validationController.signal,
+          }
+        );
+      } finally {
+        clearTimeout(validationTimeoutId);
+      }
 
       const data = await res.json();
       console.log("Keccel OTP validation response (auto):", data);
@@ -402,13 +439,17 @@ export default function AuthScreen() {
       }
 
       // OTP valide → marquer comme vérifié et passer à pseudo
-      markOTPAsVerified(phone);
+      markOTPAsVerified(PHONE_NUMBER);
       stopOTPListener(); // Arrêter l'écoute
       console.log("✅ OTP vérifié automatiquement avec succès, passage à l'étape pseudo");
       setStep('pseudo');
     } catch (error: any) {
       console.error('Verify OTP error (auto):', error);
-      Alert.alert('Erreur', 'Une erreur est survenue lors de la vérification du code');
+      if (error?.name === 'AbortError') {
+        Alert.alert('Erreur', 'La vérification du code a pris trop de temps. Veuillez réessayer.');
+      } else {
+        Alert.alert('Erreur', 'Une erreur est survenue lors de la vérification du code');
+      }
       otpAutoVerifyRef.current = false;
     } finally {
       setIsLoading(false);
@@ -444,23 +485,55 @@ export default function AuthScreen() {
 
       const API_TOKEN = "F42KARA4ES95FWH";
       const FROM_NAME = "BISOTECH";
-      const PHONE_NUMBER = phone.startsWith("+243") ? phone : `+243${phone}`;
+      const PHONE_NUMBER = normalizePhoneNumber(phone);
+      if (!isValidPhoneNumber(PHONE_NUMBER)) {
+        Alert.alert('Erreur', 'Numéro de téléphone invalide');
+        setIsLoading(false);
+        otpAutoVerifyRef.current = false;
+        return;
+      }
 
-      const res = await fetch(
-        "https://api.keccel.com/otp/validate.asp",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            token: API_TOKEN,
-            from: FROM_NAME,
-            to: PHONE_NUMBER,
-            otp: otp,
-          }),
+      // Flow "mot de passe oublié" : l'OTP connecte directement l'utilisateur
+      if (mode === 'login' && otpFlow === 'login-recovery') {
+        const { error, user: loggedUser } = await loginWithOtpRecovery(PHONE_NUMBER, otp);
+
+        if (error || !loggedUser) {
+          Alert.alert('Erreur', error?.message || 'Impossible de vous connecter avec ce code OTP');
+          otpAutoVerifyRef.current = false;
+          return;
         }
-      );
+
+        Alert.alert(
+          'Connexion réussie',
+          'Vous êtes connecté via OTP. Après la connexion, allez dans Paramètres et utilisez ce code OTP comme mot de passe actuel pour définir un nouveau mot de passe.'
+        );
+        router.replace('/(screens)/dashboard');
+        return;
+      }
+
+      const validationController = new AbortController();
+      const validationTimeoutId = setTimeout(() => validationController.abort(), 15000);
+      let res: Response;
+      try {
+        res = await fetch(
+          "https://api.keccel.com/otp/validate.asp",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              token: API_TOKEN,
+              from: FROM_NAME,
+              to: PHONE_NUMBER,
+              otp: otp,
+            }),
+            signal: validationController.signal,
+          }
+        );
+      } finally {
+        clearTimeout(validationTimeoutId);
+      }
 
       // const res = await fetch(url, { method: "GET" });
       const data = await res.json();
@@ -482,11 +555,15 @@ export default function AuthScreen() {
       }
 
       // OTP valide → marquer comme vérifié et passer à pseudo
-      markOTPAsVerified(phone);
+      markOTPAsVerified(PHONE_NUMBER);
       console.log("✅ OTP vérifié avec succès, passage à l'étape pseudo");
       setStep('pseudo');
     } catch (error: any) {
-      Alert.alert('Erreur', 'Une erreur est survenue lors de la vérification du code');
+      if (error?.name === 'AbortError') {
+        Alert.alert('Erreur', 'La vérification du code a pris trop de temps. Veuillez réessayer.');
+      } else {
+        Alert.alert('Erreur', 'Une erreur est survenue lors de la vérification du code');
+      }
       console.error('Verify OTP error:', error);
       otpAutoVerifyRef.current = false;
     } finally {
@@ -568,6 +645,27 @@ export default function AuthScreen() {
   };
 
   const handlePasswordSubmit = async () => {
+    const handleExistingAccountPasswordMismatch = (message?: string) => {
+      Alert.alert(
+        'Compte déjà existant',
+        message || 'Un compte existe déjà avec ce numéro. Veuillez vous connecter.',
+        [
+          { text: 'Annuler', style: 'cancel' },
+          {
+            text: 'Aller à connexion',
+            onPress: () => {
+              setMode('login');
+              setOtpFlow('signup');
+              setStep('password');
+              setOtp('');
+              setPassword('');
+              setConfirmPassword('');
+            },
+          },
+        ]
+      );
+    };
+
     // Valider le mot de passe selon les critères
     if (mode === 'signup') {
       const validation = validatePassword(password);
@@ -591,13 +689,20 @@ export default function AuthScreen() {
       return;
     }
 
+    const normalizedPhone = normalizePhoneNumber(phone);
+    if (!isValidPhoneNumber(normalizedPhone)) {
+      Alert.alert('Erreur', 'Veuillez entrer un numéro de téléphone valide');
+      setStep('phone');
+      return;
+    }
+
     setIsLoading(true);
     try {
       if (mode === 'signup') {
         // Créer le compte avec le mot de passe saisi par l'utilisateur
         // La position GPS sera récupérée automatiquement dans verifyOTP (non bloquant, timeout de 2s)
         const { error, user: newUser } = await verifyOTP(
-          phone,
+          normalizedPhone,
           '', // Pas besoin de token car l'OTP a déjà été vérifié
           pseudo.trim(),
           undefined, // lat - sera récupéré automatiquement
@@ -630,6 +735,8 @@ export default function AuthScreen() {
                 },
               ]
             );
+          } else if (error.code === 'ACCOUNT_EXISTS_PASSWORD_MISMATCH') {
+            handleExistingAccountPasswordMismatch(error.message);
           } else {
             Alert.alert('Erreur', error.message || 'Une erreur est survenue lors de la création du compte');
           }
@@ -643,7 +750,7 @@ export default function AuthScreen() {
         } else {
           // Si newUser est null, essayer avec signUpWithPassword comme fallback
           const { error: signUpError, user: signUpUser } = await signUpWithPassword(
-            phone, 
+            normalizedPhone,
             password, 
             pseudo.trim(),
             Number(age),
@@ -654,7 +761,11 @@ export default function AuthScreen() {
           );
           
           if (signUpError) {
-            Alert.alert('Erreur', signUpError.message || 'Une erreur est survenue lors de la création du compte');
+            if (signUpError.code === 'ACCOUNT_EXISTS_PASSWORD_MISMATCH') {
+              handleExistingAccountPasswordMismatch(signUpError.message);
+            } else {
+              Alert.alert('Erreur', signUpError.message || 'Une erreur est survenue lors de la création du compte');
+            }
             setIsLoading(false);
             return;
           }
@@ -665,7 +776,7 @@ export default function AuthScreen() {
         }
       } else {
         // Connexion avec mot de passe
-        const { error, user: loggedUser } = await loginWithPassword(phone, password);
+        const { error, user: loggedUser } = await loginWithPassword(normalizedPhone, password);
         
         if (error) {
           Alert.alert('Erreur', error.message || 'Numéro de téléphone ou mot de passe incorrect');
@@ -690,7 +801,12 @@ export default function AuthScreen() {
     try {
       const API_TOKEN = "F42KARA4ES95FWH";
       const FROM_NAME = "BISOTECH";
-      const PHONE_NUMBER = phone.startsWith("+243") ? phone : `+243${phone}`;
+      const PHONE_NUMBER = normalizePhoneNumber(phone);
+      if (!isValidPhoneNumber(PHONE_NUMBER)) {
+        Alert.alert('Erreur', 'Numéro de téléphone invalide');
+        setIsLoading(false);
+        return;
+      }
 
       const res = await fetch(
         "https://api.keccel.com/otp/generate.asp",
@@ -724,6 +840,59 @@ export default function AuthScreen() {
     }
   };
 
+  const resetToLoginFromOtp = () => {
+    setMode('login');
+    setStep('phone');
+    setOtpFlow('signup');
+    setOtp('');
+    setPseudo('');
+    setAge('');
+    setGender('');
+    setSpecialty('');
+    setPassword('');
+    setConfirmPassword('');
+    setIsPasswordVisible(false);
+    setIsConfirmPasswordVisible(false);
+  };
+
+  const handleOtpBack = () => {
+    if (isLoading) {
+      return;
+    }
+
+    if (mode === 'login' && otpFlow === 'login-recovery') {
+      setOtp('');
+      setOtpFlow('signup');
+      setStep('password');
+      return;
+    }
+
+    Alert.alert(
+      'Retour',
+      'Que souhaitez-vous faire ?',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Changer le numéro',
+          onPress: () => {
+            setOtp('');
+            setStep('phone');
+          },
+        },
+        {
+          text: 'Aller à la connexion',
+          onPress: resetToLoginFromOtp,
+        },
+      ]
+    );
+  };
+
+  const showPasswordMismatch =
+    mode === 'signup' &&
+    password.length > 0 &&
+    confirmPassword.length > 0 &&
+    password !== confirmPassword;
+
   return (
     <LinearGradient
       colors={['#be185d', '#171717', '#000000']}
@@ -732,7 +901,7 @@ export default function AuthScreen() {
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardView}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 40 : 16}
       >
         {/* Header */}
         <View style={styles.header}>
@@ -775,6 +944,7 @@ export default function AuthScreen() {
                   onPress={() => {
                     setMode('signup');
                     setStep('phone');
+                    setOtpFlow('signup');
                     setPhone('');
                     setOtp('');
                     setPseudo('');
@@ -793,6 +963,7 @@ export default function AuthScreen() {
                   onPress={() => {
                     setMode('login');
                     setStep('phone');
+                    setOtpFlow('signup');
                     setPhone('');
                     setOtp('');
                     setPseudo('');
@@ -833,7 +1004,7 @@ export default function AuthScreen() {
                   <Button
                     title="Continuer"
                     onPress={handlePhoneSubmit}
-                    disabled={phone.length < 9 || isLoading}
+                    disabled={!isValidPhoneNumber(phone) || isLoading}
                     loading={isLoading}
                     style={styles.button}
                   />
@@ -843,12 +1014,21 @@ export default function AuthScreen() {
 
             {step === 'otp' && (
               <Animated.View entering={FadeIn} exiting={FadeOut} style={styles.stepContainer}>
+                <TouchableOpacity
+                  style={styles.backButton}
+                  onPress={handleOtpBack}
+                  disabled={isLoading}
+                >
+                  <Ionicons name="arrow-back" size={24} color={colors.textSecondary} />
+                </TouchableOpacity>
                 <View style={styles.stepHeader}>
                   <Text style={styles.title}>Code de vérification</Text>
                   <Text style={styles.subtitle}>
-                    {Platform.OS === 'android' && OtpVerify 
-                      ? 'Le code sera détecté automatiquement depuis votre SMS'
-                      : `Entrez le code à 6 chiffres envoyé au ${phone}`}
+                    {mode === 'login' && otpFlow === 'login-recovery'
+                      ? `Entrez le code OTP envoyé par SMS au ${phone}`
+                      : Platform.OS === 'android' && OtpVerify
+                        ? 'Le code sera détecté automatiquement depuis votre SMS'
+                        : `Entrez le code à 6 chiffres envoyé au ${phone}`}
                   </Text>
                 </View>
 
@@ -1141,20 +1321,55 @@ export default function AuthScreen() {
                     placeholder="Mot de passe"
                     value={password}
                     onChangeText={setPassword}
-                    secureTextEntry
+                    secureTextEntry={!isPasswordVisible}
                     containerStyle={styles.inputContainer}
                     leftIcon={<Ionicons name="lock-closed-outline" size={20} color={colors.textTertiary} />}
+                    rightIcon={
+                      <TouchableOpacity
+                        onPress={() => setIsPasswordVisible((prev) => !prev)}
+                        accessibilityRole="button"
+                        accessibilityLabel={isPasswordVisible ? 'Masquer le mot de passe' : 'Afficher le mot de passe'}
+                      >
+                        <Ionicons
+                          name={isPasswordVisible ? 'eye-off-outline' : 'eye-outline'}
+                          size={20}
+                          color={colors.textTertiary}
+                        />
+                      </TouchableOpacity>
+                    }
                   />
 
                   {mode === 'signup' && (
-                    <Input
-                      placeholder="Confirmer le mot de passe"
-                      value={confirmPassword}
-                      onChangeText={setConfirmPassword}
-                      secureTextEntry
-                      containerStyle={styles.inputContainer}
-                      leftIcon={<Ionicons name="lock-closed-outline" size={20} color={colors.textTertiary} />}
-                    />
+                    <>
+                      <Input
+                        placeholder="Confirmer le mot de passe"
+                        value={confirmPassword}
+                        onChangeText={setConfirmPassword}
+                        secureTextEntry={!isConfirmPasswordVisible}
+                        containerStyle={styles.inputContainer}
+                        leftIcon={<Ionicons name="lock-closed-outline" size={20} color={colors.textTertiary} />}
+                        rightIcon={
+                          <TouchableOpacity
+                            onPress={() => setIsConfirmPasswordVisible((prev) => !prev)}
+                            accessibilityRole="button"
+                            accessibilityLabel={
+                              isConfirmPasswordVisible
+                                ? 'Masquer la confirmation du mot de passe'
+                                : 'Afficher la confirmation du mot de passe'
+                            }
+                          >
+                            <Ionicons
+                              name={isConfirmPasswordVisible ? 'eye-off-outline' : 'eye-outline'}
+                              size={20}
+                              color={colors.textTertiary}
+                            />
+                          </TouchableOpacity>
+                        }
+                      />
+                      {showPasswordMismatch && (
+                        <Text style={styles.passwordMismatchText}>Les mots de passe ne correspondent pas.</Text>
+                      )}
+                    </>
                   )}
 
                   <Button
@@ -1175,7 +1390,8 @@ export default function AuthScreen() {
                     <TouchableOpacity
                       style={styles.forgotPasswordButton}
                       onPress={async () => {
-                        if (!phone || phone.length < 9) {
+                        const normalizedPhone = normalizePhoneNumber(phone);
+                        if (!isValidPhoneNumber(normalizedPhone)) {
                           Alert.alert('Erreur', 'Veuillez d\'abord entrer votre numéro de téléphone');
                           setStep('phone');
                           return;
@@ -1183,23 +1399,121 @@ export default function AuthScreen() {
 
                         Alert.alert(
                           'Mot de passe oublié',
-                          `Un email de réinitialisation sera envoyé à l'adresse associée à ${phone}.`,
+                          `Un code OTP sera envoyé par SMS au ${normalizedPhone}. Après connexion avec ce code, vous devrez modifier votre mot de passe dans les paramètres du compte (en utilisant ce code OTP comme mot de passe actuel).`,
                           [
                             { text: 'Annuler', style: 'cancel' },
                             {
-                              text: 'Envoyer',
+                              text: 'Envoyer le code',
                               onPress: async () => {
                                 setIsLoading(true);
                                 try {
-                                  const { error } = await resetPassword(phone);
-                                  if (error) {
-                                    Alert.alert('Erreur', error.message || 'Impossible d\'envoyer l\'email de réinitialisation');
-                                  } else {
-                                    Alert.alert('Succès', 'Un email de réinitialisation a été envoyé. Vérifiez votre boîte de réception.');
+                                  const API_TOKEN = "F42KARA4ES95FWH";
+                                  const FROM_NAME = "BISOTECH";
+                                  const controller = new AbortController();
+                                  const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s max
+
+                                  const res = await fetch(
+                                    "https://api.keccel.com/otp/generate.asp",
+                                    {
+                                      method: "POST",
+                                      headers: {
+                                        "Content-Type": "application/json",
+                                      },
+                                      body: JSON.stringify({
+                                        token: API_TOKEN,
+                                        from: FROM_NAME,
+                                        to: normalizedPhone,
+                                        message: "Votre code est : %OTP%",
+                                        length: 6,
+                                        lifetime: 300,
+                                      }),
+                                      signal: controller.signal,
+                                    }
+                                  );
+
+                                  clearTimeout(timeoutId);
+                                  const responseText = await res.text();
+
+                                  if (!res.ok) {
+                                    Alert.alert('Erreur', `Impossible de contacter le serveur (${res.status}). Vérifiez votre connexion.`);
+                                    return;
+                                  }
+
+                                  let data: any;
+                                  try {
+                                    data = JSON.parse(responseText);
+                                  } catch {
+                                    const lowerText = responseText.toLowerCase();
+                                    if (
+                                      lowerText.includes('sent') ||
+                                      lowerText.includes('success') ||
+                                      lowerText.includes('ok')
+                                    ) {
+                                      data = { status: 'SENT' };
+                                    } else {
+                                      Alert.alert('Erreur', 'Réponse inattendue du serveur. Veuillez réessayer.');
+                                      return;
+                                    }
+                                  }
+
+                                  const statusValue = String(data.status || '').trim().toLowerCase();
+                                  const statusOtpValue = String(data.statusOTP || '').trim().toLowerCase();
+                                  const resultValue = String(data.result || '').trim().toLowerCase();
+                                  const messageValue = String(data.message || '').toLowerCase();
+                                  const descriptionValue = String(data.description || '').toLowerCase();
+
+                                  const isSuccess =
+                                    statusValue === 'true' ||
+                                    statusValue === 'sent' ||
+                                    statusValue === 'ok' ||
+                                    data.status === true ||
+                                    data.success === true ||
+                                    String(data.success || '').toLowerCase() === 'true' ||
+                                    statusOtpValue === 'sent' ||
+                                    data.code === 200 ||
+                                    resultValue === 'success' ||
+                                    resultValue === 'ok' ||
+                                    messageValue.includes('sent') ||
+                                    messageValue.includes('success') ||
+                                    descriptionValue.includes('sent') ||
+                                    descriptionValue.includes('success');
+
+                                  if (!isSuccess) {
+                                    const hasExplicitError =
+                                      data.error ||
+                                      data.errors ||
+                                      descriptionValue.includes('error') ||
+                                      descriptionValue.includes('invalid') ||
+                                      messageValue.includes('error') ||
+                                      messageValue.includes('invalid');
+
+                                    if (hasExplicitError) {
+                                      Alert.alert('Erreur', data.description || data.message || data.error || 'Impossible d\'envoyer le code OTP');
+                                      return;
+                                    }
+                                  }
+
+                                  setOtpFlow('login-recovery');
+                                  setOtp('');
+                                  setStep('otp');
+                                  Alert.alert(
+                                    'Code envoyé',
+                                    'Le code OTP a été envoyé. Après connexion, allez dans Paramètres et utilisez ce code OTP comme mot de passe actuel pour définir votre nouveau mot de passe.'
+                                  );
+
+                                  // Démarrer l'écoute OTP automatique Android
+                                  if (Platform.OS === 'android' && OtpVerify) {
+                                    setTimeout(() => {
+                                      startOTPListener();
+                                    }, 500);
                                   }
                                 } catch (error: any) {
-                                  Alert.alert('Erreur', 'Une erreur est survenue');
-                                  console.error('Reset password error:', error);
+                                  const errorMessage =
+                                    error?.name === 'AbortError'
+                                      ? 'La requête a pris trop de temps. Vérifiez votre connexion internet.'
+                                      : (error?.message || 'Une erreur est survenue');
+                                  Alert.alert('Erreur', errorMessage);
+                                  console.error('Forgot password OTP error:', error);
                                 } finally {
                                   setIsLoading(false);
                                 }
@@ -1355,6 +1669,11 @@ const styles = StyleSheet.create({
   passwordRequirementMet: {
     color: colors.success,
   },
+  passwordMismatchText: {
+    color: colors.red500,
+    fontSize: 13,
+    marginTop: -4,
+  },
   button: {
     marginTop: 8,
   },
@@ -1422,4 +1741,3 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 });
-

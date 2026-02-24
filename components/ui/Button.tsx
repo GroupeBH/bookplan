@@ -1,15 +1,15 @@
 import React from 'react';
-import { TouchableOpacity, Text, StyleSheet, ActivityIndicator, ViewStyle, TextStyle } from 'react-native';
+import { TouchableOpacity, Text, StyleSheet, ActivityIndicator, ViewStyle, TextStyle, StyleProp } from 'react-native';
 import { colors } from '../../constants/colors';
 
 interface ButtonProps {
   title: string;
-  onPress: () => void;
+  onPress: (event?: any) => void;
   variant?: 'primary' | 'outline' | 'ghost';
   disabled?: boolean;
   loading?: boolean;
-  style?: ViewStyle;
-  textStyle?: TextStyle;
+  style?: StyleProp<ViewStyle>;
+  textStyle?: StyleProp<TextStyle>;
   icon?: React.ReactNode;
 }
 
@@ -102,4 +102,3 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
 });
-

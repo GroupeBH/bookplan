@@ -18,15 +18,18 @@ export const colors = {
   violet600: '#7c3aed',
   
   // Pink/Rose gradient (for chat)
+  pink50: '#fdf2f8',
   pink400: '#f472b6',
   pink500: '#ec4899',
   pink600: '#db2777',
   pink700: '#be185d',
   
   // Status colors
+  green400: '#4ade80',
   green500: '#22c55e',
   green600: '#16a34a',
   success: '#22c55e', // Alias pour green500
+  orange500: '#f97316',
   red500: '#ef4444',
   red600: '#dc2626',
   yellow400: '#facc15',

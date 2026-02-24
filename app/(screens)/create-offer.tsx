@@ -1,7 +1,9 @@
+/* eslint-disable react-hooks/exhaustive-deps */
 import { Ionicons } from '@expo/vector-icons';
+import type { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Keyboard, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -11,23 +13,31 @@ import { Input } from '../../components/ui/Input';
 import { colors } from '../../constants/colors';
 import { useAuth } from '../../context/AuthContext';
 import { useOffer } from '../../context/OfferContext';
-import { isMapboxAvailable } from '../../lib/mapbox';
+import { isMapboxAvailable, MAPBOX_ACCESS_TOKEN } from '../../lib/mapbox';
 import { OfferType } from '../../types';
+
+let DatePicker: any = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const dateTimePickerModule = require('@react-native-community/datetimepicker');
+  DatePicker = dateTimePickerModule.default;
+} catch {
+  DatePicker = null;
+}
 
 // Import conditionnel de Mapbox
 let Mapbox: any = null;
 let MapView: any = null;
-let PointAnnotation: any = null;
 let Camera: any = null;
 
 if (isMapboxAvailable) {
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const mapboxModule = require('@rnmapbox/maps');
     Mapbox = mapboxModule.default;
     MapView = mapboxModule.MapView;
-    PointAnnotation = mapboxModule.PointAnnotation;
     Camera = mapboxModule.Camera;
-  } catch (error) {
+  } catch {
     console.warn('Failed to load Mapbox components');
   }
 }
@@ -38,6 +48,36 @@ const OFFER_TYPES: { value: OfferType; label: string; icon: string }[] = [
   { value: 'transport', label: 'Remboursement transport', icon: 'car-outline' },
   { value: 'gift', label: 'Présent', icon: 'gift-outline' },
 ];
+
+const TIME_STEP_MINUTES = 15;
+const TIME_OPTIONS = Array.from({ length: (24 * 60) / TIME_STEP_MINUTES }, (_, index) => {
+  const totalMinutes = index * TIME_STEP_MINUTES;
+  const hours = String(Math.floor(totalMinutes / 60)).padStart(2, '0');
+  const minutes = String(totalMinutes % 60).padStart(2, '0');
+  return `${hours}:${minutes}`;
+});
+
+type AddressSuggestion = {
+  latitude: number;
+  longitude: number;
+  fullAddress: string;
+  name?: string;
+  street?: string;
+};
+
+const getRoundedTimeString = (date: Date) => {
+  const rounded = new Date(date);
+  rounded.setSeconds(0, 0);
+
+  const minute = rounded.getMinutes();
+  const remainder = minute % TIME_STEP_MINUTES;
+  const minutesToAdd = remainder === 0 ? 0 : TIME_STEP_MINUTES - remainder;
+  rounded.setMinutes(minute + minutesToAdd);
+
+  const hours = String(rounded.getHours()).padStart(2, '0');
+  const minutes = String(rounded.getMinutes()).padStart(2, '0');
+  return `${hours}:${minutes}`;
+};
 
 export default function CreateOfferScreen() {
   const router = useRouter();
@@ -58,28 +98,94 @@ export default function CreateOfferScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [showMapPicker, setShowMapPicker] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
   const [selectedLocation, setSelectedLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [mapAddressPreview, setMapAddressPreview] = useState('');
+  const [isResolvingMapAddress, setIsResolvingMapAddress] = useState(false);
   const [mapRegion, setMapRegion] = useState<{ latitude: number; longitude: number; latitudeDelta: number; longitudeDelta: number } | null>(null);
   const [isLoadingAddress, setIsLoadingAddress] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
-  const [searchResults, setSearchResults] = useState<any[]>([]);
-  // États pour l'autocomplete
-  const [locationSuggestions, setLocationSuggestions] = useState<any[]>([]);
+  const [searchResults, setSearchResults] = useState<AddressSuggestion[]>([]);
+  // Etats pour l'autocomplete
+  const [locationSuggestions, setLocationSuggestions] = useState<AddressSuggestion[]>([]);
   const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const searchTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const mapSearchTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mapAddressTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cameraRef = React.useRef<any>(null);
+  const mapCenterRef = React.useRef<{ lat: number; lng: number } | null>(null);
+  const mapAddressRequestIdRef = React.useRef(0);
   const mapInitializedRef = React.useRef(false);
   const isSearchingRef = React.useRef(false);
   const lastSearchQueryRef = React.useRef<string>('');
   const hasSearchResultsRef = React.useRef(false);
 
-  // Charger l'offre existante si on est en mode édition
+  const formatTimeValue = useCallback((date: Date) => {
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    return `${hours}:${minutes}`;
+  }, []);
+
+  const timePickerValue = useMemo(() => {
+    const baseDate = dateInput ? new Date(`${dateInput}T00:00:00`) : selectedDate;
+    const safeBaseDate = Number.isNaN(baseDate.getTime()) ? new Date() : new Date(baseDate);
+    const [hours, minutes] = timeInput.split(':').map(Number);
+
+    if (!Number.isNaN(hours) && !Number.isNaN(minutes)) {
+      safeBaseDate.setHours(hours, minutes, 0, 0);
+    }
+
+    return safeBaseDate;
+  }, [dateInput, selectedDate, timeInput]);
+  const [iosTimeDraft, setIosTimeDraft] = useState<Date>(timePickerValue);
+  const timeOptions = useMemo(() => {
+    if (!timeInput || TIME_OPTIONS.includes(timeInput)) {
+      return TIME_OPTIONS;
+    }
+
+    return [...TIME_OPTIONS, timeInput].sort((a, b) => a.localeCompare(b));
+  }, [timeInput]);
+
+  useEffect(() => {
+    if (!showTimePicker) return;
+    setIosTimeDraft(timePickerValue);
+  }, [showTimePicker, timePickerValue]);
+
+  const handleTimePickerChange = (_event: DateTimePickerEvent, pickedDate?: Date) => {
+    if (!pickedDate) {
+      if (Platform.OS === 'android') {
+        setShowTimePicker(false);
+      }
+      return;
+    }
+
+    if (Platform.OS === 'ios') {
+      setIosTimeDraft(pickedDate);
+      return;
+    }
+
+    setTimeInput(formatTimeValue(pickedDate));
+    setShowTimePicker(false);
+  };
+
+  const handleTimeConfirm = () => {
+    const value = Platform.OS === 'ios' ? iosTimeDraft : timePickerValue;
+    setTimeInput(formatTimeValue(value));
+    setShowTimePicker(false);
+  };
+
+  const handleFallbackTimeSelect = (value: string) => {
+    setTimeInput(value);
+    setShowTimePicker(false);
+  };
+
+  // Charger l'offre existante si on est en mode ?dition
   useEffect(() => {
     const loadOffer = async () => {
       if (!offerId) {
-        // Mode création : initialiser avec la date/heure actuelle
+        // Mode creation : initialiser avec la date/heure actuelle
         const now = new Date();
         setSelectedDate(now);
         // Formater la date en YYYY-MM-DD en utilisant le fuseau horaire local
@@ -87,29 +193,29 @@ export default function CreateOfferScreen() {
         const month = String(now.getMonth() + 1).padStart(2, '0');
         const day = String(now.getDate()).padStart(2, '0');
         setDateInput(`${year}-${month}-${day}`);
-        setTimeInput(now.toTimeString().slice(0, 5));
+        setTimeInput(getRoundedTimeString(now));
         return;
       }
 
-      // Mode édition : charger l'offre existante
+      // Mode ?dition : charger l'offre existante
       setIsLoadingOffer(true);
       setIsEditMode(true);
       try {
         const offer = await getOfferById(offerId);
         if (offer) {
-          // Pré-remplir tous les champs
+          // Pr?-remplir tous les champs
           setTitle(offer.title || '');
           setDescription(offer.description || '');
           setNotes(offer.notes || '');
           
-          // Pré-remplir les types d'offre
+          // Pr?-remplir les types d'offre
           if (offer.offerTypes && offer.offerTypes.length > 0) {
             setSelectedOfferTypes(offer.offerTypes);
           } else if (offer.offerType) {
             setSelectedOfferTypes([offer.offerType]);
           }
           
-          // Pré-remplir la date et l'heure
+          // Pr?-remplir la date et l'heure
           const offerDate = new Date(offer.offerDate);
           setSelectedDate(offerDate);
           // Formater la date en YYYY-MM-DD en utilisant le fuseau horaire local
@@ -121,13 +227,13 @@ export default function CreateOfferScreen() {
           const minutes = offerDate.getMinutes().toString().padStart(2, '0');
           setTimeInput(`${hours}:${minutes}`);
           
-          // Pré-remplir la durée
+          // Pr?-remplir la duree
           setDurationHours(offer.durationHours?.toString() || '1');
           
-          // Pré-remplir le lieu
+          // Pr?-remplir le lieu
           setLocation(offer.location || '');
           
-          // Pré-remplir la position sur la carte si disponible
+          // Pr?-remplir la position sur la carte si disponible
           if (offer.lat && offer.lng) {
             setSelectedLocation({
               lat: offer.lat,
@@ -152,10 +258,10 @@ export default function CreateOfferScreen() {
     loadOffer();
   }, [offerId, getOfferById]);
 
-  // Initialiser la carte avec la position de l'utilisateur (optimisé pour performance)
+  // Initialiser la carte avec la position de l'utilisateur (optimis? pour performance)
   useEffect(() => {
     const initializeMap = async () => {
-      // Position par défaut (Kinshasa) - utilisée immédiatement pour un chargement instantané
+      // Position par defaut (Kinshasa) - utilisee immediatement pour un chargement instantan?
       const defaultRegion = {
         latitude: -4.3276,
         longitude: 15.3136,
@@ -176,31 +282,31 @@ export default function CreateOfferScreen() {
           lat: user.lat,
           lng: user.lng,
         });
-        // Continuer en arrière-plan pour obtenir une position plus précise si possible
+        // Continuer en arriere-plan pour obtenir une position plus precise si possible
         updateLocationInBackground();
         return;
       }
 
-      // Sinon, définir la position par défaut immédiatement
+      // Sinon, definir la position par defaut immediatement
       setMapRegion(defaultRegion);
       setSelectedLocation({
         lat: defaultRegion.latitude,
         lng: defaultRegion.longitude,
       });
 
-      // Essayer d'obtenir la position GPS en arrière-plan (non bloquant)
+      // Essayer d'obtenir la position GPS en arriere-plan (non bloquant)
       updateLocationInBackground();
     };
 
-    // Fonction pour mettre à jour la position en arrière-plan
+    // Fonction pour mettre ? jour la position en arriere-plan
     const updateLocationInBackground = async () => {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== 'granted') {
-          return; // Garder la position par défaut ou celle de l'utilisateur
+          return; // Garder la position par defaut ou celle de l'utilisateur
         }
 
-        // Utiliser Promise.race avec un timeout pour éviter d'attendre trop longtemps
+        // Utiliser Promise.race avec un timeout pour eviter d'attendre trop longtemps
         const locationPromise = Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.Lowest, // Plus rapide que Balanced
         });
@@ -223,17 +329,17 @@ export default function CreateOfferScreen() {
             lat: currentLocation.coords.latitude,
             lng: currentLocation.coords.longitude,
           });
-        } catch (locationError: any) {
-          // En cas d'erreur ou timeout, garder la position déjà définie (par défaut ou utilisateur)
-          // Ne pas afficher d'erreur, la carte est déjà chargée
+        } catch {
+          // En cas d'erreur ou timeout, garder la position deja definie (par defaut ou utilisateur)
+          // Ne pas afficher d'erreur, la carte est deja charg?e
         }
-      } catch (error: any) {
-        // En cas d'erreur générale, garder la position déjà définie
+      } catch {
+        // En cas d'erreur generale, garder la position deja definie
       }
     };
 
     if (showMapPicker) {
-      // S'assurer que mapRegion est défini immédiatement pour afficher la carte
+      // S'assurer que mapRegion est defini immediatement pour afficher la carte
       if (!mapRegion) {
         const defaultRegion = {
           latitude: -4.3276,
@@ -257,47 +363,156 @@ export default function CreateOfferScreen() {
     }
   }, [showMapPicker, user]);
 
-  const reverseGeocode = async (lat: number, lng: number) => {
+  useEffect(() => {
+    return () => {
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+      }
+
+      if (mapSearchTimeoutRef.current) {
+        clearTimeout(mapSearchTimeoutRef.current);
+      }
+
+      if (mapAddressTimeoutRef.current) {
+        clearTimeout(mapAddressTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const resolveAddressFromCoordinates = useCallback(async (lat: number, lng: number) => {
+    const addresses = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
+
+    if (addresses && addresses.length > 0) {
+      const address = addresses[0];
+      const addressParts = [
+        address.street,
+        address.streetNumber,
+        address.district,
+        address.city,
+        address.region,
+        address.country,
+      ].filter(Boolean);
+
+      return addressParts.join(', ') || `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+    }
+
+    return `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+  }, []);
+
+  const reverseGeocode = useCallback(async (lat: number, lng: number) => {
     try {
       setIsLoadingAddress(true);
-      const addresses = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
-      
-      if (addresses && addresses.length > 0) {
-        const address = addresses[0];
-        const addressParts = [
-          address.street,
-          address.streetNumber,
-          address.district,
-          address.city,
-          address.region,
-          address.country,
-        ].filter(Boolean);
-        
-        const fullAddress = addressParts.join(', ') || `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
-        setLocation(fullAddress);
-        return fullAddress;
-      } else {
-        const coordAddress = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
-        setLocation(coordAddress);
-        return coordAddress;
-      }
+      const fullAddress = await resolveAddressFromCoordinates(lat, lng);
+      setLocation(fullAddress);
+      setMapAddressPreview(fullAddress);
+      return fullAddress;
     } catch (error) {
       console.error('Error reverse geocoding:', error);
       const coordAddress = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
       setLocation(coordAddress);
+      setMapAddressPreview(coordAddress);
       return coordAddress;
     } finally {
       setIsLoadingAddress(false);
     }
+  }, [resolveAddressFromCoordinates]);
+
+  const extractCoordinatesFromMapEvent = useCallback((event: any): { lat: number; lng: number } | null => {
+    const coordinates = event?.properties?.center ?? event?.geometry?.coordinates ?? event?.coordinates;
+
+    if (!Array.isArray(coordinates) || coordinates.length < 2) {
+      return null;
+    }
+
+    const [lng, lat] = coordinates;
+    if (typeof lat !== 'number' || typeof lng !== 'number' || !isFinite(lat) || !isFinite(lng)) {
+      return null;
+    }
+
+    return { lat, lng };
+  }, []);
+
+  const getZoomLevelFromLongitudeDelta = useCallback((longitudeDelta?: number) => {
+    const safeLongitudeDelta = Math.max(longitudeDelta ?? 0.05, 0.0001);
+    return Math.max(3, Math.min(18, Math.log2(360 / safeLongitudeDelta)));
+  }, []);
+
+  const focusMapOnCoordinates = useCallback((lat: number, lng: number, zoomLevel?: number) => {
+    if (!cameraRef.current?.setCamera) return;
+
+    const resolvedZoomLevel = typeof zoomLevel === 'number'
+      ? zoomLevel
+      : getZoomLevelFromLongitudeDelta(mapRegion?.longitudeDelta);
+
+    cameraRef.current.setCamera({
+      centerCoordinate: [lng, lat],
+      zoomLevel: resolvedZoomLevel,
+      animationDuration: 280,
+    });
+  }, [getZoomLevelFromLongitudeDelta, mapRegion?.longitudeDelta]);
+
+  const updateSelectedLocationFromMap = useCallback((lat: number, lng: number) => {
+    mapCenterRef.current = { lat, lng };
+    setSelectedLocation((prev) => {
+      if (prev && Math.abs(prev.lat - lat) < 0.000001 && Math.abs(prev.lng - lng) < 0.000001) {
+        return prev;
+      }
+      return { lat, lng };
+    });
+  }, []);
+
+  const resolveMapAddressPreview = useCallback(async (lat: number, lng: number) => {
+    const requestId = ++mapAddressRequestIdRef.current;
+    setIsResolvingMapAddress(true);
+
+    try {
+      const address = await resolveAddressFromCoordinates(lat, lng);
+      if (mapAddressRequestIdRef.current === requestId) {
+        setMapAddressPreview(address);
+      }
+    } catch {
+      if (mapAddressRequestIdRef.current === requestId) {
+        setMapAddressPreview(`${lat.toFixed(6)}, ${lng.toFixed(6)}`);
+      }
+    } finally {
+      if (mapAddressRequestIdRef.current === requestId) {
+        setIsResolvingMapAddress(false);
+      }
+    }
+  }, [resolveAddressFromCoordinates]);
+
+  const scheduleMapAddressPreview = useCallback((lat: number, lng: number) => {
+    if (mapAddressTimeoutRef.current) {
+      clearTimeout(mapAddressTimeoutRef.current);
+    }
+
+    mapAddressTimeoutRef.current = setTimeout(() => {
+      resolveMapAddressPreview(lat, lng);
+    }, 300);
+  }, [resolveMapAddressPreview]);
+
+  // Gerer le clic sur la carte (Mapbox)
+  const handleMapPress = (event: any) => {
+    const coordinates = extractCoordinatesFromMapEvent(event);
+    if (!coordinates) return;
+
+    updateSelectedLocationFromMap(coordinates.lat, coordinates.lng);
+    focusMapOnCoordinates(coordinates.lat, coordinates.lng);
+    scheduleMapAddressPreview(coordinates.lat, coordinates.lng);
   };
 
-  // Gérer le clic sur la carte (Mapbox)
-  const handleMapPress = (event: any) => {
-    const { geometry } = event;
-    if (geometry && geometry.coordinates) {
-      const [longitude, latitude] = geometry.coordinates;
-      setSelectedLocation({ lat: latitude, lng: longitude });
-    }
+  const handleMapCameraChanged = (event: any) => {
+    const coordinates = extractCoordinatesFromMapEvent(event);
+    if (!coordinates) return;
+    mapCenterRef.current = coordinates;
+  };
+
+  const handleMapIdle = (event: any) => {
+    const coordinates = extractCoordinatesFromMapEvent(event) ?? mapCenterRef.current;
+    if (!coordinates) return;
+
+    updateSelectedLocationFromMap(coordinates.lat, coordinates.lng);
+    scheduleMapAddressPreview(coordinates.lat, coordinates.lng);
   };
 
   const handleConfirmMapLocation = async () => {
@@ -306,6 +521,20 @@ export default function CreateOfferScreen() {
       setShowMapPicker(false);
     }
   };
+
+  useEffect(() => {
+    if (!showMapPicker) {
+      setIsResolvingMapAddress(false);
+      if (mapAddressTimeoutRef.current) {
+        clearTimeout(mapAddressTimeoutRef.current);
+      }
+      return;
+    }
+
+    if (selectedLocation) {
+      scheduleMapAddressPreview(selectedLocation.lat, selectedLocation.lng);
+    }
+  }, [showMapPicker, scheduleMapAddressPreview]);
 
   const buildFullAddress = (result: any): string => {
     const addressParts = [];
@@ -322,7 +551,7 @@ export default function CreateOfferScreen() {
     if (result.postalCode) addressParts.push(result.postalCode);
     if (result.country) addressParts.push(result.country);
     
-    // Si on a des parties, les joindre
+    // Si on ? des parties, les joindre
     if (addressParts.length > 0) {
       return addressParts.join(', ');
     }
@@ -332,13 +561,84 @@ export default function CreateOfferScreen() {
       return result.name;
     }
     
-    // Dernier recours : utiliser les coordonnées formatées de manière plus lisible
+    // Dernier recours : utiliser les coordonnees formatees de maniere plus lisible
     return `Lat: ${result.latitude.toFixed(4)}, Lng: ${result.longitude.toFixed(4)}`;
   };
 
+  const searchAddressCandidates = useCallback(async (rawQuery: string): Promise<AddressSuggestion[]> => {
+    const query = rawQuery.trim();
+    if (!query || query.length < 2) {
+      return [];
+    }
+
+    const fallbackToExpo = async (): Promise<AddressSuggestion[]> => {
+      const expoResults = await Location.geocodeAsync(query);
+
+      return expoResults.slice(0, 5).map((result) => {
+        const fullAddress = buildFullAddress(result);
+        return {
+          latitude: result.latitude,
+          longitude: result.longitude,
+          fullAddress,
+          name: fullAddress,
+        };
+      });
+    };
+
+    if (!MAPBOX_ACCESS_TOKEN) {
+      return fallbackToExpo();
+    }
+
+    try {
+      const endpoint = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?autocomplete=true&language=fr&limit=5&types=address,place,locality,neighborhood,poi&access_token=${MAPBOX_ACCESS_TOKEN}`;
+      const response = await fetch(endpoint);
+
+      if (!response.ok) {
+        throw new Error(`Mapbox geocoding status ${response.status}`);
+      }
+
+      const payload = await response.json();
+      const features = Array.isArray(payload?.features) ? payload.features : [];
+
+      const mapboxResults = features
+        .map((feature: any): AddressSuggestion | null => {
+          if (!Array.isArray(feature?.center) || feature.center.length < 2) {
+            return null;
+          }
+
+          const [longitude, latitude] = feature.center;
+          if (typeof latitude !== 'number' || typeof longitude !== 'number') {
+            return null;
+          }
+
+          const label = typeof feature.place_name === 'string' && feature.place_name.trim().length > 0
+            ? feature.place_name
+            : buildFullAddress({ latitude, longitude, name: feature.text });
+
+          return {
+            latitude,
+            longitude,
+            fullAddress: label,
+            name: feature.text || label,
+          };
+        })
+        .filter((item: AddressSuggestion | null): item is AddressSuggestion => item !== null);
+
+      if (mapboxResults.length > 0) {
+        return mapboxResults;
+      }
+
+      return fallbackToExpo();
+    } catch (error) {
+      console.log('Mapbox geocoding unavailable, fallback to Expo geocoder', error);
+      return fallbackToExpo();
+    }
+  }, []);
+
   // Rechercher des suggestions d'adresse pendant la saisie (autocomplete)
   const searchLocationSuggestions = async (query: string) => {
-    if (!query.trim() || query.length < 2) {
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery || trimmedQuery.length < 2) {
       setLocationSuggestions([]);
       setShowSuggestions(false);
       return;
@@ -346,21 +646,17 @@ export default function CreateOfferScreen() {
 
     setIsLoadingSuggestions(true);
     try {
-      const results = await Location.geocodeAsync(query);
+      const results = await searchAddressCandidates(trimmedQuery);
       
-      if (results && results.length > 0) {
-        // Limiter à 5 suggestions
-        const limitedResults = results.slice(0, 5).map((result: any) => ({
-          ...result,
-          fullAddress: buildFullAddress(result),
-        }));
-        setLocationSuggestions(limitedResults);
+      if (results.length > 0) {
+        // Limiter ? 5 suggestions
+        setLocationSuggestions(results);
         setShowSuggestions(true);
       } else {
         setLocationSuggestions([]);
         setShowSuggestions(false);
       }
-    } catch (error: any) {
+    } catch (error) {
       console.log('Error searching location suggestions:', error);
       setLocationSuggestions([]);
       setShowSuggestions(false);
@@ -369,32 +665,36 @@ export default function CreateOfferScreen() {
     }
   };
 
-  // Gérer le changement de texte dans le champ de lieu avec debounce
+  // Gerer le changement de texte dans le champ de lieu avec debounce
   const handleLocationChange = (text: string) => {
     setLocation(text);
-    setShowSuggestions(true);
+    setShowSuggestions(text.trim().length >= 2);
 
-    // Annuler le timeout précédent
+    // Annuler le timeout precedent
     if (searchTimeoutRef.current) {
       clearTimeout(searchTimeoutRef.current);
     }
 
-    // Débounce: attendre 500ms après la dernière frappe avant de rechercher
+    // Debounce: attendre 300ms apres la derniere frappe avant de rechercher
     searchTimeoutRef.current = setTimeout(() => {
       searchLocationSuggestions(text);
-    }, 500);
+    }, 300);
   };
 
-  // Sélectionner une suggestion d'autocomplete
-  const handleSelectSuggestion = async (suggestion: any) => {
+  // Selectionner une suggestion d'autocomplete
+  const handleSelectSuggestion = (suggestion: AddressSuggestion) => {
     const fullAddress = suggestion.fullAddress || buildFullAddress(suggestion);
     setLocation(fullAddress);
-    setSelectedLocation({
-      lat: suggestion.latitude,
-      lng: suggestion.longitude,
+    updateSelectedLocationFromMap(suggestion.latitude, suggestion.longitude);
+    setMapRegion({
+      latitude: suggestion.latitude,
+      longitude: suggestion.longitude,
+      latitudeDelta: 0.01,
+      longitudeDelta: 0.01,
     });
     setLocationSuggestions([]);
     setShowSuggestions(false);
+    Keyboard.dismiss();
   };
 
   // Rechercher des suggestions d'adresse pendant la saisie dans le modal (autocomplete)
@@ -408,13 +708,10 @@ export default function CreateOfferScreen() {
       return;
     }
 
-    // Éviter les recherches multiples simultanées
     if (isSearchingRef.current) {
-      // Si une recherche est en cours, attendre qu'elle se termine
       return;
     }
 
-    // Si c'est la même requête que la dernière recherche réussie ET qu'on a déjà des résultats, ne pas relancer
     if (lastSearchQueryRef.current === trimmedQuery && hasSearchResultsRef.current) {
       return;
     }
@@ -422,105 +719,52 @@ export default function CreateOfferScreen() {
     lastSearchQueryRef.current = trimmedQuery;
     isSearchingRef.current = true;
     setIsSearching(true);
-    
+
     try {
-      const results = await Location.geocodeAsync(trimmedQuery);
-      
-      // Vérifier que la requête n'a pas changé pendant la recherche
+      const results = await searchAddressCandidates(trimmedQuery);
+
       if (lastSearchQueryRef.current !== trimmedQuery) {
-        isSearchingRef.current = false;
-        setIsSearching(false);
         return;
       }
-      
-      if (results && results.length > 0) {
-        // Enrichir les résultats avec le géocodage inverse pour obtenir des adresses complètes
-        const enrichedResults = await Promise.all(
-          results.slice(0, 5).map(async (result: any) => {
-            try {
-              // Essayer d'obtenir l'adresse complète via géocodage inverse
-              const reverseResults = await Location.reverseGeocodeAsync({
-                latitude: result.latitude,
-                longitude: result.longitude,
-              });
-              
-              if (reverseResults && reverseResults.length > 0) {
-                const reverseResult = reverseResults[0];
-                const addressParts = [];
-                
-                if (reverseResult.streetNumber && reverseResult.street) {
-                  addressParts.push(`${reverseResult.streetNumber} ${reverseResult.street}`);
-                } else if (reverseResult.street) {
-                  addressParts.push(reverseResult.street);
-                }
-                
-                if (reverseResult.district) addressParts.push(reverseResult.district);
-                if (reverseResult.city) addressParts.push(reverseResult.city);
-                if (reverseResult.region) addressParts.push(reverseResult.region);
-                if (reverseResult.postalCode) addressParts.push(reverseResult.postalCode);
-                if (reverseResult.country) addressParts.push(reverseResult.country);
-                
-                return {
-                  ...result,
-                  fullAddress: addressParts.length > 0 
-                    ? addressParts.join(', ')
-                    : buildFullAddress(result),
-                };
-              }
-            } catch (reverseError) {
-              // Si le géocodage inverse échoue, utiliser la construction normale
-            }
-            
-            return {
-              ...result,
-              fullAddress: buildFullAddress(result),
-            };
-          })
-        );
-        
-        // Ne mettre à jour que si la requête n'a pas changé entre-temps
-        if (lastSearchQueryRef.current === trimmedQuery) {
-          setSearchResults(enrichedResults);
-          hasSearchResultsRef.current = true;
-        }
-      } else {
-        if (lastSearchQueryRef.current === trimmedQuery) {
-          setSearchResults([]);
-          hasSearchResultsRef.current = false;
-        }
-      }
-    } catch (error: any) {
+
+      const normalizedResults = results.map((result) => ({
+        ...result,
+        fullAddress: result.fullAddress || buildFullAddress(result),
+      }));
+
+      setSearchResults(normalizedResults);
+      hasSearchResultsRef.current = normalizedResults.length > 0;
+    } catch (error) {
       console.error('Error searching address suggestions:', error);
       if (lastSearchQueryRef.current === trimmedQuery) {
         setSearchResults([]);
         hasSearchResultsRef.current = false;
       }
     } finally {
-      // Toujours réinitialiser le flag de recherche
       isSearchingRef.current = false;
       setIsSearching(false);
     }
-  }, []);
-
-  // Gérer le changement de texte dans le champ de recherche du modal avec debounce
+  }, [searchAddressCandidates]);
+  // Gerer le changement de texte dans le champ de recherche du modal avec debounce
   const handleMapSearchChange = useCallback((text: string) => {
     setSearchQuery(text);
     
-    // Annuler le timeout précédent
+    // Annuler le timeout precedent
     if (mapSearchTimeoutRef.current) {
       clearTimeout(mapSearchTimeoutRef.current);
       mapSearchTimeoutRef.current = null;
     }
 
-    // Si le texte est vide ou trop court, vider les résultats immédiatement
+    // Si le texte est vide ou trop court, vider les resultats immediatement
     if (!text.trim() || text.length < 2) {
       setSearchResults([]);
       lastSearchQueryRef.current = '';
       hasSearchResultsRef.current = false;
+      isSearchingRef.current = false;
       return;
     }
 
-    // Débounce: attendre 300ms après la dernière frappe avant de rechercher (plus rapide)
+    // Debounce: attendre 300ms apres la derniere frappe avant de rechercher (plus rapide)
     mapSearchTimeoutRef.current = setTimeout(() => {
       const trimmedText = text.trim();
       if (trimmedText && trimmedText.length >= 2) {
@@ -531,90 +775,45 @@ export default function CreateOfferScreen() {
   }, [searchMapAddressSuggestions]);
 
   const handleSearchAddress = async () => {
-    if (!searchQuery.trim()) {
-      Alert.alert('Erreur', 'Veuillez entrer une adresse à rechercher');
+    const trimmedQuery = searchQuery.trim();
+    if (!trimmedQuery) {
+      Alert.alert('Erreur', 'Veuillez entrer une adresse a rechercher');
       return;
     }
 
     setIsSearching(true);
     setSearchResults([]);
+    lastSearchQueryRef.current = trimmedQuery;
 
     try {
-      // Utiliser le géocodage pour rechercher l'adresse
-      const results = await Location.geocodeAsync(searchQuery.trim());
-      
-      if (results && results.length > 0) {
-        // Enrichir les résultats avec l'adresse complète (comme dans searchMapAddressSuggestions)
-        const enrichedResults = await Promise.all(
-          results.slice(0, 5).map(async (result: any) => {
-            try {
-              // Essayer d'obtenir l'adresse complète via géocodage inverse
-              const reverseResults = await Location.reverseGeocodeAsync({
-                latitude: result.latitude,
-                longitude: result.longitude,
-              });
-              
-              if (reverseResults && reverseResults.length > 0) {
-                const reverseResult = reverseResults[0];
-                const addressParts = [];
-                
-                if (reverseResult.streetNumber && reverseResult.street) {
-                  addressParts.push(`${reverseResult.streetNumber} ${reverseResult.street}`);
-                } else if (reverseResult.street) {
-                  addressParts.push(reverseResult.street);
-                }
-                
-                if (reverseResult.district) addressParts.push(reverseResult.district);
-                if (reverseResult.city) addressParts.push(reverseResult.city);
-                if (reverseResult.region) addressParts.push(reverseResult.region);
-                if (reverseResult.postalCode) addressParts.push(reverseResult.postalCode);
-                if (reverseResult.country) addressParts.push(reverseResult.country);
-                
-                return {
-                  ...result,
-                  fullAddress: addressParts.length > 0 
-                    ? addressParts.join(', ')
-                    : buildFullAddress(result),
-                };
-              }
-            } catch (reverseError) {
-              // Si le géocodage inverse échoue, utiliser la construction normale
-            }
-            
-            return {
-              ...result,
-              fullAddress: buildFullAddress(result),
-            };
-          })
-        );
-        
-        setSearchResults(enrichedResults);
-        hasSearchResultsRef.current = true;
-        
-        // Centrer la carte sur le premier résultat
-        if (enrichedResults.length > 0) {
-          const firstResult = enrichedResults[0];
-          const region = {
-            latitude: firstResult.latitude,
-            longitude: firstResult.longitude,
-            latitudeDelta: 0.01,
-            longitudeDelta: 0.01,
-          };
-          setMapRegion(region);
-          setSelectedLocation({
-            lat: firstResult.latitude,
-            lng: firstResult.longitude,
-          });
-          
-          // Mettre à jour le champ lieu avec l'adresse complète
-          const fullAddress = firstResult.fullAddress || buildFullAddress(firstResult);
-          setLocation(fullAddress);
-        }
-      } else {
-        Alert.alert('Aucun résultat', 'Aucune adresse trouvée pour cette recherche');
+      const results = await searchAddressCandidates(trimmedQuery);
+      const normalizedResults = results.map((result) => ({
+        ...result,
+        fullAddress: result.fullAddress || buildFullAddress(result),
+      }));
+
+      if (normalizedResults.length === 0) {
+        Alert.alert('Aucun resultat', 'Aucune adresse trouvee pour cette recherche');
         hasSearchResultsRef.current = false;
+        return;
       }
-    } catch (error: any) {
+
+      setSearchResults(normalizedResults);
+      hasSearchResultsRef.current = true;
+
+      const firstResult = normalizedResults[0];
+      setMapRegion({
+        latitude: firstResult.latitude,
+        longitude: firstResult.longitude,
+        latitudeDelta: 0.01,
+        longitudeDelta: 0.01,
+      });
+      updateSelectedLocationFromMap(firstResult.latitude, firstResult.longitude);
+      focusMapOnCoordinates(firstResult.latitude, firstResult.longitude, getZoomLevelFromLongitudeDelta(0.01));
+      setSearchQuery(firstResult.fullAddress);
+      setLocation(firstResult.fullAddress);
+      setMapAddressPreview(firstResult.fullAddress);
+    } catch (error) {
       console.error('Error searching address:', error);
       Alert.alert('Erreur', 'Impossible de rechercher l\'adresse');
       hasSearchResultsRef.current = false;
@@ -623,8 +822,7 @@ export default function CreateOfferScreen() {
     }
   };
 
-  const handleSelectSearchResult = async (result: any) => {
-    // Centrer la carte sur l'adresse sélectionnée avec animation
+  const handleSelectSearchResult = (result: AddressSuggestion) => {
     const region = {
       latitude: result.latitude,
       longitude: result.longitude,
@@ -632,37 +830,20 @@ export default function CreateOfferScreen() {
       longitudeDelta: 0.01,
     };
     setMapRegion(region);
-    setSelectedLocation({
-      lat: result.latitude,
-      lng: result.longitude,
-    });
-    
-    // Fermer les résultats de recherche et mettre l'adresse dans le champ
+    updateSelectedLocationFromMap(result.latitude, result.longitude);
+    focusMapOnCoordinates(result.latitude, result.longitude, getZoomLevelFromLongitudeDelta(region.longitudeDelta));
+
     const fullAddress = result.fullAddress || buildFullAddress(result);
     setSearchQuery(fullAddress);
+    setLocation(fullAddress);
+    setMapAddressPreview(fullAddress);
     setSearchResults([]);
     hasSearchResultsRef.current = false;
-    
-    // Récupérer l'adresse complète via géocodage inverse pour s'assurer d'avoir toutes les informations
-    try {
-      const addresses = await Location.reverseGeocodeAsync({
-        latitude: result.latitude,
-        longitude: result.longitude,
-      });
-      
-      if (addresses && addresses.length > 0) {
-        const completeAddress = buildFullAddress(addresses[0]);
-        setLocation(completeAddress);
-      } else {
-        setLocation(fullAddress);
-      }
-    } catch (error) {
-      setLocation(fullAddress);
-    }
+    Keyboard.dismiss();
   };
 
   const handleDateSelect = (date: Date) => {
-    // Normaliser la date à minuit dans le fuseau horaire local pour éviter les problèmes de conversion
+    // Normaliser la date ? minuit dans le fuseau horaire local pour eviter les problemes de conversion
     const normalizedDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
     setSelectedDate(normalizedDate);
     
@@ -673,17 +854,17 @@ export default function CreateOfferScreen() {
     const dateStr = `${year}-${month}-${day}`;
     
     setDateInput(dateStr);
-    console.log('📅 Date sélectionnée dans le calendrier (offre):', dateStr, 'Date originale:', normalizedDate);
+    console.log('Date selectionnee dans le calendrier (offre):', dateStr, 'Date originale:', normalizedDate);
   };
 
   const handleDateConfirm = () => {
-    // Utiliser selectedDate pour garantir qu'on utilise la date sélectionnée
+    // Utiliser selectedDate pour garantir qu'on utilise la date selectionnee
     if (!selectedDate) {
-      Alert.alert('Erreur', 'Veuillez sélectionner une date');
+      Alert.alert('Erreur', 'Veuillez selectionner une date');
       return;
     }
 
-    // Normaliser la date à minuit dans le fuseau horaire local
+    // Normaliser la date ? minuit dans le fuseau horaire local
     const normalizedDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
     
     // Formater la date en YYYY-MM-DD en utilisant le fuseau horaire local
@@ -701,20 +882,25 @@ export default function CreateOfferScreen() {
       return;
     }
 
-    // Mettre à jour dateInput avec la date sélectionnée
+    // Mettre ? jour dateInput avec la date selectionnee
     setDateInput(dateStr);
-    console.log('✅ Date confirmée (offre):', dateStr, 'Date normalisée:', normalizedDate);
+    console.log('Date confirmee (offre):', dateStr, 'Date normalisee:', normalizedDate);
     setShowDatePicker(false);
   };
 
   const handleCreateOffer = async () => {
     if (selectedOfferTypes.length === 0) {
-      Alert.alert('Erreur', 'Veuillez sélectionner au moins un type d\'offre');
+      Alert.alert('Erreur', 'Veuillez selectionner au moins un type d\'offre');
       return;
     }
 
     if (!title.trim()) {
       Alert.alert('Erreur', 'Veuillez entrer un titre');
+      return;
+    }
+
+    if (!dateInput || !timeInput) {
+      Alert.alert('Erreur', 'Veuillez sélectionner une date et une heure');
       return;
     }
 
@@ -735,7 +921,7 @@ export default function CreateOfferScreen() {
     }
 
     if (combinedDateTime < new Date()) {
-      Alert.alert('Erreur', 'La date et l\'heure doivent être dans le futur');
+      Alert.alert('Erreur', 'La date et l\'heure doivent etre dans le futur');
       return;
     }
 
@@ -748,8 +934,8 @@ export default function CreateOfferScreen() {
     setIsLoading(true);
     try {
       if (isEditMode && offerId) {
-        // Mode édition : mettre à jour l'offre existante
-        const { error, offer } = await updateOffer(
+        // Mode ?dition : mettre ? jour l'offre existante
+        const { error } = await updateOffer(
           offerId,
           selectedOfferTypes,
           title.trim(),
@@ -769,8 +955,8 @@ export default function CreateOfferScreen() {
         }
 
         Alert.alert(
-          'Succès', 
-          'Votre offre a été modifiée avec succès', 
+          'Succès',
+          'Votre offre a été modifiée avec succès',
           [
             {
               text: 'OK',
@@ -781,8 +967,8 @@ export default function CreateOfferScreen() {
           ]
         );
       } else {
-        // Mode création : créer une nouvelle offre
-        const { error, offer } = await createOffer(
+        // Mode creation : creer une nouvelle offre
+        const { error } = await createOffer(
           selectedOfferTypes,
           title.trim(),
           combinedDateTime.toISOString(),
@@ -795,18 +981,18 @@ export default function CreateOfferScreen() {
         );
 
         if (error) {
-          Alert.alert('Erreur', error.message || 'Impossible de créer l\'offre');
+          Alert.alert('Erreur', error.message || 'Impossible de creer l\'offre');
           setIsLoading(false);
           return;
         }
 
-        // Rediriger immédiatement sans attendre l'alerte
+        // Rediriger immediatement sans attendre l'alerte
         router.back();
         
-        // Afficher l'alerte de succès en arrière-plan (non bloquant)
+        // Afficher l'alerte de succ?s en arriere-plan (non bloquant)
         setTimeout(() => {
           Alert.alert(
-            'Succès', 
+            'Succès',
             `Votre offre avec ${selectedOfferTypes.length} type${selectedOfferTypes.length > 1 ? 's' : ''} a été créée et sera visible par tous les utilisateurs disponibles`
           );
         }, 300);
@@ -830,11 +1016,6 @@ export default function CreateOfferScreen() {
     });
   };
 
-  const formatTime = (timeStr: string) => {
-    if (!timeStr) return 'Sélectionner une heure';
-    return timeStr;
-  };
-
   // Validation de l'heure
   const validateTime = (): { isValid: boolean; errorMessage: string } => {
     // Si pas de date ou d'heure, on ne valide pas (l'utilisateur doit d'abord remplir)
@@ -848,12 +1029,12 @@ export default function CreateOfferScreen() {
     const selectedDate = new Date(`${dateInput}T00:00:00`);
     selectedDate.setHours(0, 0, 0, 0);
 
-    // Si la date sélectionnée est aujourd'hui
+    // Si la date selectionnee est aujourd'hui
     if (selectedDate.getTime() === today.getTime()) {
-      // Vérifier si l'heure est dans le futur
+      // V?rifier si l'heure est dans le futur
       const [hours, minutes] = timeInput.split(':').map(Number);
       if (isNaN(hours) || isNaN(minutes)) {
-        // Format invalide, mais on ne bloque pas (sera validé lors de l'envoi)
+        // Format invalide, mais on ne bloque pas (sera valid? lors de l'envoi)
         return { isValid: true, errorMessage: '' };
       }
 
@@ -883,13 +1064,13 @@ export default function CreateOfferScreen() {
           <TouchableOpacity onPress={() => router.back()}>
             <Ionicons name="arrow-back" size={24} color={colors.textSecondary} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Modifier l'offre</Text>
+          <Text style={styles.headerTitle}>Modifier l&apos;offre</Text>
           <View style={{ width: 24 }} />
         </View>
         <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
           <ActivityIndicator size="large" color={colors.pink500} />
           <Text style={{ marginTop: 16, color: colors.textSecondary }}>
-            Chargement de l'offre...
+            Chargement de l&apos;offre...
           </Text>
         </View>
       </SafeAreaView>
@@ -911,7 +1092,7 @@ export default function CreateOfferScreen() {
       <KeyboardAvoidingView
         style={styles.keyboardAvoidingView}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 16}
       >
         <ScrollView
           style={styles.scrollView}
@@ -922,7 +1103,7 @@ export default function CreateOfferScreen() {
           nestedScrollEnabled={true}
         >
           <Animated.View entering={FadeIn} style={styles.content}>
-          <Text style={styles.sectionTitle}>Types d'offre (sélection multiple)</Text>
+          <Text style={styles.sectionTitle}>Types d&apos;offre (sélection multiple)</Text>
           <View style={styles.offerTypesContainer}>
             {OFFER_TYPES.map((type) => {
               const isSelected = selectedOfferTypes.includes(type.value);
@@ -935,10 +1116,10 @@ export default function CreateOfferScreen() {
                   ]}
                   onPress={() => {
                     if (isSelected) {
-                      // Désélectionner
+                      // D?selectionner
                       setSelectedOfferTypes(prev => prev.filter(t => t !== type.value));
                     } else {
-                      // Sélectionner
+                      // Selectionner
                       setSelectedOfferTypes(prev => [...prev, type.value]);
                     }
                   }}
@@ -966,7 +1147,7 @@ export default function CreateOfferScreen() {
             })}
           </View>
 
-          <Text style={styles.sectionTitle}>Titre de l'offre *</Text>
+          <Text style={styles.sectionTitle}>Titre de l&apos;offre *</Text>
           <Input
             value={title}
             onChangeText={setTitle}
@@ -978,13 +1159,13 @@ export default function CreateOfferScreen() {
           <Input
             value={description}
             onChangeText={setDescription}
-            placeholder="Décrivez votre offre..."
+            placeholder="Decrivez votre offre..."
             multiline
             numberOfLines={3}
             containerStyle={styles.input}
           />
 
-          <Text style={styles.sectionTitle}>Détails de l'offre</Text>
+          <Text style={styles.sectionTitle}>Details de l&apos;offre</Text>
           <View style={styles.detailsCard}>
             <TouchableOpacity
               style={styles.detailRow}
@@ -1000,24 +1181,21 @@ export default function CreateOfferScreen() {
               <Ionicons name="chevron-forward" size={20} color={colors.textTertiary} />
             </TouchableOpacity>
             <View style={styles.separator} />
-            <View style={styles.detailRow}>
+            <TouchableOpacity
+              style={styles.detailRow}
+              onPress={() => setShowTimePicker(true)}
+            >
               <Ionicons name="time-outline" size={20} color={colors.pink400} />
               <View style={styles.detailInfo}>
                 <Text style={styles.detailLabel}>Heure</Text>
-                <Input
-                  value={timeInput}
-                  onChangeText={setTimeInput}
-                  placeholder="HH:MM"
-                  keyboardType="default"
-                  style={styles.durationInput}
-                  containerStyle={{ marginTop: 8 }}
-                />
-                <Text style={styles.inputHint}>Format: HH:MM (ex: 20:00)</Text>
+                <Text style={styles.detailValue}>{timeInput || 'Sélectionner une heure'}</Text>
+                <Text style={styles.inputHint}>Choisissez l&apos;heure et les minutes</Text>
                 {timeValidation.errorMessage ? (
                   <Text style={styles.errorText}>{timeValidation.errorMessage}</Text>
                 ) : null}
               </View>
-            </View>
+              <Ionicons name="chevron-forward" size={20} color={colors.textTertiary} />
+            </TouchableOpacity>
             <View style={styles.separator} />
             <View style={styles.detailRow}>
               <Ionicons name="hourglass-outline" size={20} color={colors.pink400} />
@@ -1048,7 +1226,7 @@ export default function CreateOfferScreen() {
                         }
                       }}
                       onBlur={() => {
-                        // Délai pour permettre le clic sur une suggestion
+                        // Delai pour permettre le clic sur une suggestion
                         setTimeout(() => setShowSuggestions(false), 200);
                       }}
                       placeholder="Rechercher un lieu..."
@@ -1173,6 +1351,94 @@ export default function CreateOfferScreen() {
         </View>
       </Modal>
 
+      {DatePicker ? (
+        Platform.OS === 'ios' ? (
+          <Modal
+            visible={showTimePicker}
+            transparent
+            animationType="slide"
+            onRequestClose={() => setShowTimePicker(false)}
+          >
+            <View style={styles.modalOverlay}>
+              <View style={styles.modalContent}>
+                <Text style={styles.modalTitle}>Sélectionner l&apos;heure</Text>
+                <DatePicker
+                  value={iosTimeDraft}
+                  mode="time"
+                  display="spinner"
+                  is24Hour
+                  minuteInterval={5}
+                  onChange={handleTimePickerChange}
+                  style={styles.timePicker}
+                />
+                <View style={styles.modalActions}>
+                  <Button
+                    title="Annuler"
+                    onPress={() => setShowTimePicker(false)}
+                    variant="outline"
+                    style={styles.modalButton}
+                  />
+                  <Button
+                    title="Confirmer"
+                    onPress={handleTimeConfirm}
+                    style={styles.modalButton}
+                  />
+                </View>
+              </View>
+            </View>
+          </Modal>
+        ) : (
+          showTimePicker ? (
+            <DatePicker
+              value={timePickerValue}
+              mode="time"
+              display="default"
+              is24Hour
+              minuteInterval={5}
+              onChange={handleTimePickerChange}
+            />
+          ) : null
+        )
+      ) : (
+        <Modal
+          visible={showTimePicker}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowTimePicker(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Sélectionner l&apos;heure</Text>
+              <ScrollView style={styles.timeOptionsList} showsVerticalScrollIndicator={false}>
+                {timeOptions.map((timeOption) => {
+                  const isSelected = timeInput === timeOption;
+                  return (
+                    <TouchableOpacity
+                      key={timeOption}
+                      style={[styles.timeOptionItem, isSelected && styles.timeOptionItemSelected]}
+                      onPress={() => handleFallbackTimeSelect(timeOption)}
+                    >
+                      <Text style={[styles.timeOptionText, isSelected && styles.timeOptionTextSelected]}>
+                        {timeOption}
+                      </Text>
+                      {isSelected ? <Ionicons name="checkmark-circle" size={18} color={colors.pink500} /> : null}
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+              <View style={styles.modalActions}>
+                <Button
+                  title="Fermer"
+                  onPress={() => setShowTimePicker(false)}
+                  variant="outline"
+                  style={styles.modalButton}
+                />
+              </View>
+            </View>
+          </View>
+        </Modal>
+      )}
+
       {/* Map Picker Modal */}
       <Modal
         visible={showMapPicker}
@@ -1183,7 +1449,7 @@ export default function CreateOfferScreen() {
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
         >
           <SafeAreaView style={styles.mapModalContainer}>
             <View style={styles.mapHeader}>
@@ -1210,10 +1476,13 @@ export default function CreateOfferScreen() {
                     onPress={() => {
                       setSearchQuery('');
                       setSearchResults([]);
+                      lastSearchQueryRef.current = '';
                       hasSearchResultsRef.current = false;
+                      isSearchingRef.current = false;
                       Keyboard.dismiss();
                       if (mapSearchTimeoutRef.current) {
                         clearTimeout(mapSearchTimeoutRef.current);
+                        mapSearchTimeoutRef.current = null;
                       }
                     }}
                     style={styles.clearButton}
@@ -1273,31 +1542,27 @@ export default function CreateOfferScreen() {
             {mapRegion && Mapbox && Mapbox.StyleURL ? (
               <View style={styles.mapContainer}>
                 <MapView
-                  styleURL={Mapbox.StyleURL.Street}
+                  styleURL={Mapbox?.StyleURL?.Street || 'mapbox://styles/mapbox/streets-v12'}
                   style={styles.map}
                   logoEnabled={false}
                   attributionEnabled={false}
                   onPress={handleMapPress}
+                  onCameraChanged={handleMapCameraChanged}
+                  onMapIdle={handleMapIdle}
                 >
                   <Camera
-                    centerCoordinate={[mapRegion.longitude, mapRegion.latitude]}
-                    zoomLevel={Math.log2(360 / mapRegion.longitudeDelta)}
-                    animationMode="flyTo"
-                    animationDuration={500}
+                    ref={cameraRef}
+                    defaultSettings={{
+                      centerCoordinate: [mapRegion.longitude, mapRegion.latitude],
+                      zoomLevel: getZoomLevelFromLongitudeDelta(mapRegion.longitudeDelta),
+                    }}
                   />
-                  
-                  {selectedLocation && (
-                    <PointAnnotation
-                      id="selected-location"
-                      coordinate={[selectedLocation.lng, selectedLocation.lat]}
-                      anchor={{ x: 0.5, y: 0.5 }}
-                    >
-                      <View style={styles.selectedLocationMarker}>
-                        <Ionicons name="location" size={24} color={colors.pink500} />
-                      </View>
-                    </PointAnnotation>
-                  )}
                 </MapView>
+                <View pointerEvents="none" style={styles.mapCenterMarkerOverlay}>
+                  <View style={styles.selectedLocationMarker}>
+                    <Ionicons name="location" size={24} color={colors.pink500} />
+                  </View>
+                </View>
               </View>
             ) : (
               <View style={[styles.map, { justifyContent: 'center', alignItems: 'center', backgroundColor: colors.backgroundSecondary }]}>
@@ -1313,6 +1578,22 @@ export default function CreateOfferScreen() {
                 <ActivityIndicator size="large" color={colors.pink500} />
               </View>
             )}
+
+            <View style={styles.mapSelectionInfo}>
+              <View style={styles.mapInfoRow}>
+                {(isResolvingMapAddress || isLoadingAddress) ? (
+                  <ActivityIndicator size="small" color={colors.pink500} />
+                ) : (
+                  <Ionicons name="location" size={18} color={colors.pink500} />
+                )}
+                <Text style={styles.mapSelectionText} numberOfLines={2}>
+                  {mapAddressPreview ||
+                    (selectedLocation
+                      ? `${selectedLocation.lat.toFixed(6)}, ${selectedLocation.lng.toFixed(6)}`
+                      : 'Deplacez la carte ou appuyez pour choisir un lieu')}
+                </Text>
+              </View>
+            </View>
 
             <View style={styles.modalActions}>
               <Button
@@ -1359,6 +1640,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: 16,
+    paddingBottom: 120,
   },
   content: {
     flex: 1,
@@ -1418,6 +1700,7 @@ const styles = StyleSheet.create({
   detailRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    minHeight: 52,
     paddingVertical: 8,
   },
   detailInfo: {
@@ -1556,6 +1839,32 @@ const styles = StyleSheet.create({
     padding: 16,
     maxHeight: '90%',
   },
+  timePicker: {
+    marginTop: 8,
+  },
+  timeOptionsList: {
+    maxHeight: 360,
+  },
+  timeOptionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderSecondary,
+  },
+  timeOptionItemSelected: {
+    backgroundColor: colors.backgroundSecondary,
+  },
+  timeOptionText: {
+    fontSize: 16,
+    color: colors.text,
+  },
+  timeOptionTextSelected: {
+    color: colors.pink500,
+    fontWeight: '600',
+  },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1672,6 +1981,12 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     borderColor: colors.pink500,
   },
+  mapCenterMarkerOverlay: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    transform: [{ translateX: -20 }, { translateY: -20 }],
+  },
   loadingOverlay: {
     position: 'absolute',
     top: 100,
@@ -1681,6 +1996,25 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: 'rgba(0, 0, 0, 0.3)',
+  },
+  mapSelectionInfo: {
+    marginTop: -8,
+    marginBottom: 8,
+    paddingHorizontal: 16,
+  },
+  mapInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: colors.backgroundSecondary,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  mapSelectionText: {
+    flex: 1,
+    fontSize: 13,
+    color: colors.textSecondary,
   },
   modalActions: {
     flexDirection: 'row',
@@ -1712,5 +2046,6 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
 });
+
 
 
