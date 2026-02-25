@@ -16,6 +16,7 @@
       }
     },
     "production": {
+      "environment": "production",
       "distribution": "store",
       "autoIncrement": true,
 
@@ -32,6 +33,7 @@
       }
     },
     "production-android": {
+      "environment": "production",
       "distribution": "store",
       "autoIncrement": true,
       "android": {
@@ -47,7 +49,6 @@
     "production": {}
   }
 }
-
 
 
 
