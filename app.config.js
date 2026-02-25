@@ -2,117 +2,132 @@ const mapboxAccessToken = process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN || '';
 
 export default {
   expo: {
-    name: "kutana",
-    slug: "kutana",
-    version: "1.0.0",
-    orientation: "portrait",
-    icon: "./assets/images/icon.png",
-    scheme: "kutana",
-    userInterfaceStyle: "automatic",
+    name: 'kutana',
+    slug: 'kutana',
+    version: '1.0.0',
+    orientation: 'portrait',
+    icon: './assets/images/icon.png',
+    scheme: 'kutana',
+    userInterfaceStyle: 'automatic',
     // newArchEnabled: true
     ios: {
       supportsTablet: true,
       infoPlist: {
-        NSLocationWhenInUseUsageDescription: "Cette application a besoin de votre localisation pour afficher les utilisateurs à proximité et mettre à jour votre position sur la carte.",
-        NSLocationAlwaysUsageDescription: "Cette application a besoin de votre localisation pour afficher les utilisateurs à proximité et mettre à jour votre position sur la carte.",
+        NSLocationWhenInUseUsageDescription:
+          'Cette application a besoin de votre localisation pour afficher les utilisateurs à proximité et mettre à jour votre position sur la carte.',
+        NSLocationAlwaysUsageDescription:
+          'Cette application a besoin de votre localisation pour afficher les utilisateurs à proximité et mettre à jour votre position sur la carte.',
         ITSAppUsesNonExemptEncryption: false,
-        NSLocationAlwaysAndWhenInUseUsageDescription: "Cette application utilise votre localisation même en arrière-plan pour améliorer l'expérience sur la carte.",
-        NSUserTrackingUsageDescription: "Cette application utilise un identifiant pour offrir une meilleure expérience.",
-        NSCameraUsageDescription: "Cette application a besoin d'accéder à votre caméra pour prendre des photos de profil et des photos d'album.",
-        NSPhotoLibraryUsageDescription: "Cette application a besoin d'accéder à votre bibliothèque de photos pour sélectionner des images pour votre profil et vos albums.",
-        UIBackgroundModes: ["location"]
+        NSLocationAlwaysAndWhenInUseUsageDescription:
+          "Cette application utilise votre localisation même en arrière-plan pour améliorer l'expérience sur la carte.",
+        NSUserTrackingUsageDescription:
+          'Cette application utilise un identifiant pour offrir une meilleure expérience.',
+        NSCameraUsageDescription:
+          "Cette application a besoin d'accéder à votre caméra pour prendre des photos de profil et des photos d'album.",
+        NSPhotoLibraryUsageDescription:
+          "Cette application a besoin d'accéder à votre bibliothèque de photos pour sélectionner des images pour votre profil et vos albums.",
+        UIBackgroundModes: ['location'],
       },
-      bundleIdentifier: "com.biso.kutana"
+      bundleIdentifier: 'com.biso.kutana',
     },
     android: {
       googleServicesFile: './google-services.json',
-      package: "com.kuntana",  // Doit correspondre à google-services.json
-      softwareKeyboardLayoutMode: "resize",
+      package: 'com.kuntana', // Doit correspondre à google-services.json
+      softwareKeyboardLayoutMode: 'resize',
       adaptiveIcon: {
-        backgroundColor: "#E6F4FE",
-        foregroundImage: "./assets/images/android-icon-foreground.png",
-        backgroundImage: "./assets/images/android-icon-background.png",
-        monochromeImage: "./assets/images/android-icon-monochrome.png"
+        backgroundColor: '#E6F4FE',
+        foregroundImage: './assets/images/android-icon-foreground.png',
+        backgroundImage: './assets/images/android-icon-background.png',
+        monochromeImage: './assets/images/android-icon-monochrome.png',
       },
       edgeToEdgeEnabled: true,
       predictiveBackGestureEnabled: false,
       permissions: [
-        "ACCESS_FINE_LOCATION",
-        "ACCESS_COARSE_LOCATION",
-        "ACCESS_BACKGROUND_LOCATION",
-        "RECEIVE_BOOT_COMPLETED",
-        "VIBRATE",
-        "CAMERA"
+        'ACCESS_FINE_LOCATION',
+        'ACCESS_COARSE_LOCATION',
+        'ACCESS_BACKGROUND_LOCATION',
+        'RECEIVE_BOOT_COMPLETED',
+        'VIBRATE',
+        'CAMERA',
       ],
-      privacy: "https://kutana-landing.onrender.com/privacy",
+      privacy: 'https://kutana-landing.onrender.com/privacy',
     },
     web: {
-      output: "static",
-      favicon: "./assets/images/favicon.png"
+      output: 'static',
+      favicon: './assets/images/favicon.png',
     },
     plugins: [
-      "expo-router",
+      'expo-router',
       [
-        "expo-splash-screen",
+        'expo-splash-screen',
         {
-          image: "./assets/images/splash-icon.png",
+          image: './assets/images/splash-icon.png',
           imageWidth: 200,
-          resizeMode: "contain",
-          backgroundColor: "#ffffff",
+          resizeMode: 'contain',
+          backgroundColor: '#ffffff',
           dark: {
-            backgroundColor: "#000000"
-          }
-        }
+            backgroundColor: '#000000',
+          },
+        },
       ],
       [
-        "expo-location",
+        'expo-location',
         {
-          locationAlwaysAndWhenInUsePermission: "Cette application utilise votre localisation même en arrière-plan pour améliorer l'expérience sur la carte.",
-          locationAlwaysPermission: "Cette application utilise votre localisation même en arrière-plan pour améliorer l'expérience sur la carte.",
-          locationWhenInUsePermission: "Cette application a besoin de votre localisation pour afficher les utilisateurs à proximité et mettre à jour votre position sur la carte.",
+          locationAlwaysAndWhenInUsePermission:
+            "Cette application utilise votre localisation même en arrière-plan pour améliorer l'expérience sur la carte.",
+          locationAlwaysPermission:
+            "Cette application utilise votre localisation même en arrière-plan pour améliorer l'expérience sur la carte.",
+          locationWhenInUsePermission:
+            'Cette application a besoin de votre localisation pour afficher les utilisateurs à proximité et mettre à jour votre position sur la carte.',
           isIosBackgroundLocationEnabled: true,
           isAndroidBackgroundLocationEnabled: true,
-        }
+        },
       ],
       [
         '@rnmapbox/maps',
         {
-            RNMapboxMapsImpl: 'mapbox',
-            android: {
-              accessToken: mapboxAccessToken,
-            },
-            ios: {
-                accessToken: mapboxAccessToken,
-            }
+          RNMapboxMapsImpl: 'mapbox',
+          android: {
+            accessToken: mapboxAccessToken,
+          },
+          ios: {
+            accessToken: mapboxAccessToken,
+          },
         },
       ],
       [
-        "expo-notifications",
+        'expo-notifications',
         {
-          icon: "./assets/images/icon.png",
-          color: "#ffffff"
-        }
+          icon: './assets/images/icon.png',
+          color: '#ffffff',
+        },
       ],
       [
-        "expo-image-picker",
+        'expo-image-picker',
         {
-          photosPermission: "Cette application a besoin d'accéder à votre bibliothèque de photos pour sélectionner des images pour votre profil et vos albums.",
-          cameraPermission: "Cette application a besoin d'accéder à votre caméra pour prendre des photos de profil et des photos d'album."
-        }
-      ]
+          photosPermission:
+            "Cette application a besoin d'accéder à votre bibliothèque de photos pour sélectionner des images pour votre profil et vos albums.",
+          cameraPermission:
+            "Cette application a besoin d'accéder à votre caméra pour prendre des photos de profil et des photos d'album.",
+        },
+      ],
     ],
     experiments: {
       typedRoutes: true,
-      reactCompiler: true
+      reactCompiler: true,
     },
     extra: {
-      supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL || "https://etmfpkoghsvkrvbxazlt.supabase.co",
-      supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV0bWZwa29naHN2a3J2Ynhhemx0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjMzNzQxMTgsImV4cCI6MjA3ODk1MDExOH0.DSloLRedesuW-upMu8eMxzO3eHA3eONCy2B_QkH7qDY",
+      supabaseUrl:
+        process.env.EXPO_PUBLIC_SUPABASE_URL ||
+        'https://etmfpkoghsvkrvbxazlt.supabase.co',
+      supabaseAnonKey:
+        process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV0bWZwa29naHN2a3J2Ynhhemx0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjMzNzQxMTgsImV4cCI6MjA3ODk1MDExOH0.DSloLRedesuW-upMu8eMxzO3eHA3eONCy2B_QkH7qDY',
       router: {},
       eas: {
-        projectId: "df84af22-016e-434a-b1c0-3bd9ea1bc992"
+        projectId: 'df84af22-016e-434a-b1c0-3bd9ea1bc992',
       },
-      mapboxAccessToken
+      mapboxAccessToken,
     },
-  }
+  },
 };
