@@ -53,6 +53,8 @@ export default function NotificationsScreen() {
       case 'offer_application_accepted':
       case 'offer_application_rejected':
         return 'gift-outline';
+      case 'new_offer_published':
+        return 'sparkles-outline';
       default:
         return 'notifications-outline';
     }
@@ -63,6 +65,7 @@ export default function NotificationsScreen() {
       case 'access_request_received':
       case 'booking_request_received':
       case 'offer_application_received':
+      case 'new_offer_published':
         return colors.purple500;
       case 'access_request_accepted':
       case 'booking_request_accepted':
@@ -123,6 +126,13 @@ export default function NotificationsScreen() {
       case 'offer_application_rejected':
         if (data?.offerId) {
           router.push(`/(screens)/offer-details?offerId=${data.offerId}`);
+        }
+        break;
+      case 'new_offer_published':
+        if (data?.offerId) {
+          router.push(`/(screens)/offer-details?offerId=${data.offerId}`);
+        } else {
+          router.push('/(screens)/offers');
         }
         break;
       default:

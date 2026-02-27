@@ -14,7 +14,7 @@ import { colors } from '../../constants/colors';
 import { useAuth } from '../../context/AuthContext';
 import { useOffer } from '../../context/OfferContext';
 import { isMapboxAvailable, MAPBOX_ACCESS_TOKEN } from '../../lib/mapbox';
-import { OfferType } from '../../types';
+import { OfferTargetGender, OfferType } from '../../types';
 
 let DatePicker: any = null;
 try {
@@ -47,6 +47,12 @@ const OFFER_TYPES: { value: OfferType; label: string; icon: string }[] = [
   { value: 'food', label: 'À manger', icon: 'restaurant-outline' },
   { value: 'transport', label: 'Remboursement transport', icon: 'car-outline' },
   { value: 'gift', label: 'Présent', icon: 'gift-outline' },
+];
+
+const TARGET_AUDIENCE_OPTIONS: { value: OfferTargetGender; label: string }[] = [
+  { value: 'all', label: 'Tous les sexes' },
+  { value: 'female', label: 'Femmes uniquement' },
+  { value: 'male', label: 'Hommes uniquement' },
 ];
 
 const TIME_STEP_MINUTES = 15;
@@ -94,6 +100,7 @@ export default function CreateOfferScreen() {
   const [dateInput, setDateInput] = useState('');
   const [timeInput, setTimeInput] = useState('');
   const [durationHours, setDurationHours] = useState('1');
+  const [targetGender, setTargetGender] = useState<OfferTargetGender>('all');
   const [location, setLocation] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showMapPicker, setShowMapPicker] = useState(false);
@@ -229,6 +236,7 @@ export default function CreateOfferScreen() {
           
           // Pr?-remplir la duree
           setDurationHours(offer.durationHours?.toString() || '1');
+          setTargetGender(offer.targetGender || 'all');
           
           // Pr?-remplir le lieu
           setLocation(offer.location || '');
@@ -945,7 +953,8 @@ export default function CreateOfferScreen() {
           notes.trim() || undefined,
           location.trim() || undefined,
           selectedLocation?.lat,
-          selectedLocation?.lng
+          selectedLocation?.lng,
+          targetGender
         );
 
         if (error) {
@@ -977,7 +986,8 @@ export default function CreateOfferScreen() {
           notes.trim() || undefined,
           location.trim() || undefined,
           selectedLocation?.lat,
-          selectedLocation?.lng
+          selectedLocation?.lng,
+          targetGender
         );
 
         if (error) {
@@ -993,7 +1003,7 @@ export default function CreateOfferScreen() {
         setTimeout(() => {
           Alert.alert(
             'Succès',
-            `Votre offre avec ${selectedOfferTypes.length} type${selectedOfferTypes.length > 1 ? 's' : ''} a été créée et sera visible par tous les utilisateurs disponibles`
+            `Votre offre avec ${selectedOfferTypes.length} type${selectedOfferTypes.length > 1 ? 's' : ''} a été créée (${targetGender === 'all' ? 'ouverte à tous les sexes' : targetGender === 'female' ? 'réservée aux femmes' : 'réservée aux hommes'})`
           );
         }, 300);
       }
@@ -1155,6 +1165,32 @@ export default function CreateOfferScreen() {
             containerStyle={styles.input}
           />
 
+          <Text style={styles.sectionTitle}>Audience de l&apos;offre</Text>
+          <View style={styles.targetAudienceContainer}>
+            {TARGET_AUDIENCE_OPTIONS.map((option) => {
+              const isSelected = option.value === targetGender;
+              return (
+                <TouchableOpacity
+                  key={option.value}
+                  style={[
+                    styles.targetAudienceOption,
+                    isSelected && styles.targetAudienceOptionActive,
+                  ]}
+                  onPress={() => setTargetGender(option.value)}
+                >
+                  <Text
+                    style={[
+                      styles.targetAudienceOptionText,
+                      isSelected && styles.targetAudienceOptionTextActive,
+                    ]}
+                  >
+                    {option.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
           <Text style={styles.sectionTitle}>Description (optionnel)</Text>
           <Input
             value={description}
@@ -1296,7 +1332,9 @@ export default function CreateOfferScreen() {
           <View style={styles.infoCard}>
             <Ionicons name="information-circle-outline" size={20} color={colors.pink400} />
             <Text style={styles.infoText}>
-              Votre offre sera visible par tous les utilisateurs disponibles. Ils pourront candidater et vous pourrez choisir parmi les candidats.
+              {targetGender === 'all'
+                ? 'Votre offre sera visible par tous les utilisateurs disponibles. Ils pourront candidater et vous pourrez choisir parmi les candidats.'
+                : `Votre offre sera réservée aux ${targetGender === 'female' ? 'femmes' : 'hommes'} et seuls ces profils recevront la notification.`}
             </Text>
           </View>
 
@@ -1657,6 +1695,32 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 12,
     marginBottom: 24,
+  },
+  targetAudienceContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginBottom: 24,
+  },
+  targetAudienceOption: {
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: colors.backgroundSecondary,
+  },
+  targetAudienceOptionActive: {
+    borderColor: colors.pink500,
+    backgroundColor: colors.backgroundTertiary,
+  },
+  targetAudienceOptionText: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    fontWeight: '500',
+  },
+  targetAudienceOptionTextActive: {
+    color: colors.pink500,
   },
   offerTypeCard: {
     flex: 1,

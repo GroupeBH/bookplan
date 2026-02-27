@@ -31,6 +31,12 @@ const OFFER_TYPE_ICONS: Record<OfferType, string> = {
   gift: 'gift-outline',
 };
 
+const TARGET_AUDIENCE_LABELS: Record<'all' | 'female' | 'male', string> = {
+  all: 'Tous les sexes',
+  female: 'Femmes',
+  male: 'Hommes',
+};
+
 /**
  * Fonction utilitaire pour obtenir la source d'image correcte pour React Native Image
  * Gère à la fois les URLs HTTP/HTTPS (Supabase) et les images locales par défaut
@@ -435,7 +441,11 @@ export default function OfferDetailsScreen() {
 
   const isAuthor = offer.authorId === user?.id;
   const isExpired = offer.status === 'expired';
-  const canApply = !isAuthor && !hasApplied && offer.status === 'active' && !isExpired;
+  const targetAudience = (offer.targetGender || 'all') as 'all' | 'female' | 'male';
+  const isAudienceEligible =
+    targetAudience === 'all' || targetAudience === (user?.gender || 'female');
+  const canApply =
+    !isAuthor && !hasApplied && offer.status === 'active' && !isExpired && isAudienceEligible;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -518,6 +528,16 @@ export default function OfferDetailsScreen() {
                   <Text style={styles.detailValue}>{formatDuration(offer.durationHours)}</Text>
                 </View>
               </View>
+              <View style={styles.separator} />
+              <View style={styles.detailRow}>
+                <Ionicons name="people-outline" size={20} color={colors.pink400} />
+                <View style={styles.detailInfo}>
+                  <Text style={styles.detailLabel}>Audience</Text>
+                  <Text style={styles.detailValue}>
+                    {TARGET_AUDIENCE_LABELS[targetAudience]}
+                  </Text>
+                </View>
+              </View>
               {offer.location && (
                 <>
                   <View style={styles.separator} />
@@ -566,6 +586,15 @@ export default function OfferDetailsScreen() {
               icon={<Ionicons name="send" size={20} color="#ffffff" />}
               style={styles.button}
             />
+          )}
+
+          {!isAuthor && !hasApplied && offer.status === 'active' && !isExpired && !isAudienceEligible && (
+            <View style={styles.infoCard}>
+              <Ionicons name="information-circle-outline" size={20} color={colors.orange500} />
+              <Text style={styles.infoText}>
+                Cette offre est réservée au public: {TARGET_AUDIENCE_LABELS[targetAudience]}.
+              </Text>
+            </View>
           )}
 
           {hasApplied && myApplication && (

@@ -10,6 +10,7 @@ export type NotificationType =
   | 'offer_application_received'    // Candidature à mon offre
   | 'offer_application_accepted'   // Ma candidature acceptée
   | 'offer_application_rejected'   // Ma candidature rejetée
+  | 'new_offer_published'          // Nouvelle offre publiée
   | 'booking_reminder';            // Rappel pour rendez-vous
 
 export interface Notification {
@@ -171,12 +172,14 @@ export interface Rating {
 }
 
 export type OfferType = 'drink' | 'food' | 'transport' | 'gift';
+export type OfferTargetGender = 'all' | 'male' | 'female';
 
 export interface Offer {
   id: string;
   authorId: string;
   offerType: OfferType; // Gardé pour rétrocompatibilité (premier type)
   offerTypes?: OfferType[]; // Nouveau : tous les types de l'offre (optionnel pour rétrocompatibilité)
+  targetGender?: OfferTargetGender;
   title: string;
   description?: string;
   notes?: string;

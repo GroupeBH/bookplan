@@ -2,8 +2,9 @@ import React, { createContext, ReactNode, useContext, useEffect, useState } from
 import { isNetworkError } from '../lib/errorUtils';
 import { sendPushNotification } from '../lib/pushNotifications';
 import { supabase } from '../lib/supabase';
-import { Offer, OfferApplication, OfferType } from '../types';
+import { Offer, OfferApplication, OfferTargetGender, OfferType } from '../types';
 import { useAuth } from './AuthContext';
+import { useNotification } from './NotificationContext';
 
 // Vérifier si un ID est un UUID valide
 const isValidUUID = (id: string | undefined): boolean => {
@@ -25,7 +26,8 @@ interface OfferContextType {
     notes?: string,
     location?: string,
     lat?: number,
-    lng?: number
+    lng?: number,
+    targetGender?: OfferTargetGender
   ) => Promise<{ error: any; offer: Offer | null }>;
   getAvailableOffers: () => Promise<Offer[]>;
   getOfferById: (offerId: string) => Promise<Offer | null>;
@@ -38,7 +40,19 @@ interface OfferContextType {
   cancelOffer: (offerId: string, cancellationMessage?: string) => Promise<{ error: any }>;
   deleteOffer: (offerId: string) => Promise<{ error: any }>;
   reactivateOffer: (offerId: string) => Promise<{ error: any }>;
-  updateOffer: (offerId: string, offerTypes: OfferType[], title: string, offerDate: string, durationHours: number, description?: string, notes?: string, location?: string, lat?: number, lng?: number) => Promise<{ error: any; offer: Offer | null }>;
+  updateOffer: (
+    offerId: string,
+    offerTypes: OfferType[],
+    title: string,
+    offerDate: string,
+    durationHours: number,
+    description?: string,
+    notes?: string,
+    location?: string,
+    lat?: number,
+    lng?: number,
+    targetGender?: OfferTargetGender
+  ) => Promise<{ error: any; offer: Offer | null }>;
   refreshOffers: () => Promise<void>;
   refreshMyOffers: () => Promise<void>;
 }
@@ -47,6 +61,7 @@ const OfferContext = createContext<OfferContextType | undefined>(undefined);
 
 export function OfferProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
+  const { createNotification } = useNotification();
   const [offers, setOffers] = useState<Offer[]>([]);
   const [myOffers, setMyOffers] = useState<Offer[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -57,7 +72,7 @@ export function OfferProvider({ children }: { children: ReactNode }) {
       refreshOffers();
       refreshMyOffers();
     }
-  }, [user]);
+  }, [user]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Rafraîchir les offres disponibles
   const refreshOffers = async () => {
@@ -153,14 +168,20 @@ export function OfferProvider({ children }: { children: ReactNode }) {
       // (la politique RLS devrait déjà le faire, mais on double-vérifie)
       const now = new Date();
       const activeOffers = (data || []).filter(offer => {
+        const targetGender = (offer.target_gender || 'all') as OfferTargetGender;
+        const viewerGender = (user.gender || 'female') as 'male' | 'female';
+        const isAudienceMatch = targetGender === 'all' || targetGender === viewerGender;
         const expiresAt = new Date(offer.expires_at);
-        const isActive = offer.status === 'active' && expiresAt > now;
+        const isActive = offer.status === 'active' && expiresAt > now && isAudienceMatch;
         if (!isActive) {
           console.log('⚠️ Offre filtrée:', {
             id: offer.id,
             title: offer.title,
             status: offer.status,
             expiresAt: offer.expires_at,
+            targetGender,
+            viewerGender,
+            isAudienceMatch,
             isExpired: expiresAt <= now,
             now: now.toISOString()
           });
@@ -434,7 +455,8 @@ export function OfferProvider({ children }: { children: ReactNode }) {
     notes?: string,
     location?: string,
     lat?: number,
-    lng?: number
+    lng?: number,
+    targetGender: OfferTargetGender = 'all'
   ): Promise<{ error: any; offer: Offer | null }> => {
     if (!user) {
       return { error: 'Utilisateur non connecté', offer: null };
@@ -460,6 +482,7 @@ export function OfferProvider({ children }: { children: ReactNode }) {
         .insert({
           author_id: user.id,
           offer_type: offerTypes[0], // Premier type pour rétrocompatibilité
+          target_gender: targetGender,
           title,
           description,
           notes,
@@ -522,12 +545,12 @@ export function OfferProvider({ children }: { children: ReactNode }) {
         // Rafraîchir les offres en arrière-plan
         refreshOffers().catch(() => {}),
         refreshMyOffers().catch(() => {}),
-        // Envoyer des notifications push en arrière-plan
+        // Envoyer des notifications temps réel + push en arrière-plan
         (async () => {
           try {
             const { data: availableUsers } = await supabase
               .from('profiles')
-              .select('id')
+              .select('id, gender')
               .eq('is_available', true)
               .neq('id', user.id);
 
@@ -544,17 +567,45 @@ export function OfferProvider({ children }: { children: ReactNode }) {
                 ? offer.offerTypes.map(t => offerTypeLabels[t]).join(', ')
                 : offerTypeLabels[offer.offerType];
 
-              // Envoyer les notifications en parallèle (limité à 10 pour éviter la surcharge)
-              const notifications = availableUsers.slice(0, 10).map(profile =>
-                sendPushNotification({
-                  userId: profile.id,
-                  title: 'Nouvelle offre disponible',
-                  body: `${user.pseudo} propose ${typesText}: ${title}`,
-                  data: { type: 'new_offer', offerId: offer.id },
-                }).catch(() => {}) // Ignorer les erreurs individuelles
+              const eligibleUsers = availableUsers.filter((profile: any) => {
+                const profileGender = (profile.gender || 'female') as 'male' | 'female';
+                return targetGender === 'all' || profileGender === targetGender;
+              });
+
+              if (eligibleUsers.length === 0) {
+                return;
+              }
+
+              const audienceLabel =
+                targetGender === 'all'
+                  ? 'Tout le monde'
+                  : targetGender === 'male'
+                    ? 'Hommes'
+                    : 'Femmes';
+              const body = `${user.pseudo} propose ${typesText}: ${title}`;
+
+              const tasks = eligibleUsers.map((profile: any) =>
+                Promise.allSettled([
+                  createNotification(
+                    profile.id,
+                    'new_offer_published',
+                    'Nouvelle offre disponible',
+                    body,
+                    { offerId: offer.id, authorId: user.id, targetGender }
+                  ),
+                  sendPushNotification({
+                    userId: profile.id,
+                    title: 'Nouvelle offre disponible',
+                    body,
+                    data: { type: 'new_offer', offerId: offer.id, targetGender },
+                  }),
+                ])
               );
 
-              await Promise.all(notifications);
+              await Promise.allSettled(tasks);
+              console.log(
+                `✅ Notifications nouvelle offre envoyées à ${eligibleUsers.length} utilisateur(s) [${audienceLabel}]`
+              );
             }
           } catch (notifError) {
             console.error('Error sending push notifications:', notifError);
@@ -709,6 +760,23 @@ export function OfferProvider({ children }: { children: ReactNode }) {
     }
 
     try {
+      const targetOffer = await getOfferById(offerId);
+      if (!targetOffer) {
+        return { error: { message: 'Offre introuvable' }, application: null };
+      }
+
+      if (
+        targetOffer.targetGender &&
+        targetOffer.targetGender !== 'all' &&
+        targetOffer.targetGender !== user.gender
+      ) {
+        const audienceLabel = targetOffer.targetGender === 'male' ? 'hommes' : 'femmes';
+        return {
+          error: { message: `Cette offre est réservée aux ${audienceLabel}.` },
+          application: null,
+        };
+      }
+
       // Vérifier s'il y a déjà une candidature pour cette offre
       const { data: existingApplication } = await supabase
         .from('offer_applications')
@@ -778,26 +846,19 @@ export function OfferProvider({ children }: { children: ReactNode }) {
 
       // Envoyer une notification à l'auteur de l'offre
       try {
-        const offer = await getOfferById(offerId);
+        const offer = targetOffer;
         if (offer?.authorId) {
-          // Créer une notification dans la table notifications
-          const { error: notificationError } = await supabase
-            .from('notifications')
-            .insert({
-              user_id: offer.authorId,
-              type: 'offer_application_received',
-              title: 'Nouvelle candidature',
-              message: `${user.pseudo} a candidaté à votre offre "${offer.title}"`,
-              data: {
-                offerId: offerId,
-                applicationId: application.id,
-                applicantId: user.id,
-              },
-            });
-
-          if (notificationError && !isNetworkError(notificationError)) {
-            console.error('Error creating notification:', notificationError);
-          }
+          await createNotification(
+            offer.authorId,
+            'offer_application_received',
+            'Nouvelle candidature',
+            `${user.pseudo} a candidaté à votre offre "${offer.title}"`,
+            {
+              offerId,
+              applicationId: application.id,
+              applicantId: user.id,
+            }
+          );
 
           // Envoyer aussi une notification push
           await sendPushNotification({
@@ -858,6 +919,18 @@ export function OfferProvider({ children }: { children: ReactNode }) {
             .eq('id', user.id)
             .single();
 
+          await createNotification(
+            application.applicant_id,
+            'offer_application_accepted',
+            'Candidature acceptée',
+            `${authorProfile?.pseudo || 'L\'auteur'} a accepté votre candidature pour "${offer?.title}"`,
+            {
+              offerId,
+              applicationId,
+              authorId: user.id,
+            }
+          );
+
           await sendPushNotification({
             userId: application.applicant_id,
             title: 'Candidature acceptée ! 🎉',
@@ -916,15 +989,22 @@ export function OfferProvider({ children }: { children: ReactNode }) {
 
         if (application?.applicant_id) {
           const offer = await getOfferById(application.offer_id);
-          const { data: authorProfile } = await supabase
-            .from('profiles')
-            .select('pseudo')
-            .eq('id', user.id)
-            .single();
 
           // Message gentil pour le refus
           const friendlyMessage = rejectionMessage || 
             `Merci pour votre candidature à "${offer?.title}". Malheureusement, nous avons choisi un autre candidat pour cette fois. Nous espérons vous revoir bientôt !`;
+
+          await createNotification(
+            application.applicant_id,
+            'offer_application_rejected',
+            'Réponse à votre candidature',
+            friendlyMessage,
+            {
+              offerId: application.offer_id,
+              applicationId,
+              authorId: user.id,
+            }
+          );
 
           await sendPushNotification({
             userId: application.applicant_id,
@@ -1020,12 +1100,6 @@ export function OfferProvider({ children }: { children: ReactNode }) {
 
       // Envoyer une notification gentille au candidat
       try {
-        const { data: authorProfile } = await supabase
-          .from('profiles')
-          .select('pseudo')
-          .eq('id', user.id)
-          .single();
-
         await sendPushNotification({
           userId: application.applicant_id,
           title: 'Annulation de candidature',
@@ -1285,6 +1359,7 @@ export function OfferProvider({ children }: { children: ReactNode }) {
       authorId: dbOffer.author_id,
       offerType: offerTypes[0] || (dbOffer.offer_type as OfferType), // Premier type pour rétrocompatibilité
       offerTypes: offerTypes, // Tous les types
+      targetGender: (dbOffer.target_gender || 'all') as OfferTargetGender,
       title: dbOffer.title,
       description: dbOffer.description,
       notes: dbOffer.notes,
@@ -1352,7 +1427,8 @@ export function OfferProvider({ children }: { children: ReactNode }) {
     notes?: string,
     location?: string,
     lat?: number,
-    lng?: number
+    lng?: number,
+    targetGender: OfferTargetGender = 'all'
   ): Promise<{ error: any; offer: Offer | null }> => {
     if (!user) {
       return { error: 'Utilisateur non connecté', offer: null };
@@ -1379,6 +1455,7 @@ export function OfferProvider({ children }: { children: ReactNode }) {
           notes,
           offer_date: offerDate,
           duration_hours: durationHours,
+          target_gender: targetGender,
           location,
           lat,
           lng,
@@ -1492,4 +1569,3 @@ export function useOffer() {
   }
   return context;
 }
-

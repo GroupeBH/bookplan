@@ -1,5 +1,6 @@
 import React, { createContext, ReactNode, useContext, useEffect, useRef, useState } from 'react';
 import { isNetworkError } from '../lib/errorUtils';
+import { sendBookingNotification } from '../lib/pushNotifications';
 import { supabase } from '../lib/supabase';
 import { Booking } from '../types';
 import { useAuth } from './AuthContext';
@@ -102,7 +103,7 @@ export function BookingProvider({ children }: { children: ReactNode }) {
     if (user) {
       refreshBookings();
     }
-  }, [user]);
+  }, [user]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Rafraîchir les bookings
   const refreshBookings = async () => {
@@ -162,7 +163,7 @@ export function BookingProvider({ children }: { children: ReactNode }) {
 
   // Obtenir la demande active avec un utilisateur spécifique (définie avant createBooking)
   const getActiveBookingWithUser = React.useCallback(async (userId: string): Promise<Booking | null> => {
-    if (!user) return null;
+    if (!user?.id) return null;
 
     try {
       // Chercher les bookings où l'utilisateur actuel est le requester et l'autre est le provider
@@ -353,20 +354,23 @@ export function BookingProvider({ children }: { children: ReactNode }) {
           // Ignorer les erreurs de rafraîchissement
         });
         
-        // Notifier le provider qu'il a reçu une demande
-        const { data: providerProfile } = await supabase
-          .from('profiles')
-          .select('pseudo')
-          .eq('id', providerId)
-          .single();
-        
-        createNotification(
-          providerId,
-          'booking_request_received',
-          'Nouvelle demande de compagnie',
-          `${user.pseudo || 'Un utilisateur'} vous a envoyé une demande de compagnie`,
-          { bookingId: newBooking.id, userId: user.id }
-        ).catch(() => {
+        const bookingRequestMessage = `${user.pseudo || 'Un utilisateur'} vous a envoyé une demande de compagnie`;
+        Promise.allSettled([
+          createNotification(
+            providerId,
+            'booking_request_received',
+            'Nouvelle demande de compagnie',
+            bookingRequestMessage,
+            { bookingId: newBooking.id, userId: user.id }
+          ),
+          sendBookingNotification(
+            providerId,
+            newBooking.id,
+            'request',
+            'Nouvelle demande de compagnie',
+            bookingRequestMessage
+          ),
+        ]).catch(() => {
           // Ignorer les erreurs de notification
         });
         
@@ -425,14 +429,24 @@ export function BookingProvider({ children }: { children: ReactNode }) {
             .select('pseudo')
             .eq('id', user.id)
             .single();
-          
-          await createNotification(
-            requesterId,
-            'booking_request_accepted',
-            'Demande de compagnie acceptée',
-            `${providerProfile?.pseudo || 'Un utilisateur'} a accepté votre demande de compagnie`,
-            { bookingId: bookingId, userId: user.id }
-          );
+          const message = `${providerProfile?.pseudo || 'Un utilisateur'} a accepté votre demande de compagnie`;
+
+          await Promise.allSettled([
+            createNotification(
+              requesterId,
+              'booking_request_accepted',
+              'Demande de compagnie acceptée',
+              message,
+              { bookingId: bookingId, userId: user.id }
+            ),
+            sendBookingNotification(
+              requesterId,
+              bookingId,
+              'accepted',
+              'Demande de compagnie acceptée',
+              message
+            ),
+          ]);
         } else if (status === 'rejected') {
           // Notifier le requester que sa demande a été rejetée
           const requesterId = updatedBooking.requesterId;
@@ -441,20 +455,30 @@ export function BookingProvider({ children }: { children: ReactNode }) {
             .select('pseudo')
             .eq('id', user.id)
             .single();
-          
-          await createNotification(
-            requesterId,
-            'booking_request_rejected',
-            'Demande de compagnie rejetée',
-            `${providerProfile?.pseudo || 'Un utilisateur'} a rejeté votre demande de compagnie`,
-            { bookingId: bookingId, userId: user.id }
-          );
+          const message = `${providerProfile?.pseudo || 'Un utilisateur'} a rejeté votre demande de compagnie`;
+
+          await Promise.allSettled([
+            createNotification(
+              requesterId,
+              'booking_request_rejected',
+              'Demande de compagnie rejetée',
+              message,
+              { bookingId: bookingId, userId: user.id }
+            ),
+            sendBookingNotification(
+              requesterId,
+              bookingId,
+              'rejected',
+              'Demande de compagnie rejetée',
+              message
+            ),
+          ]);
         } else if (status === 'completed') {
           // Notifier les deux utilisateurs que la compagnie est terminée
           const requesterId = updatedBooking.requesterId;
           const providerId = updatedBooking.providerId;
           
-          await Promise.all([
+          await Promise.allSettled([
             createNotification(
               requesterId,
               'booking_request_accepted',
@@ -469,20 +493,43 @@ export function BookingProvider({ children }: { children: ReactNode }) {
               'Votre compagnie est terminée. Ouvrez les détails pour noter, modifier votre avis ou demander une prolongation.',
               { bookingId: bookingId }
             ),
+            sendBookingNotification(
+              requesterId,
+              bookingId,
+              'completed',
+              'Compagnie terminée',
+              'Votre compagnie est terminée. Ouvrez les détails pour noter ou prolonger.'
+            ),
+            sendBookingNotification(
+              providerId,
+              bookingId,
+              'completed',
+              'Compagnie terminée',
+              'Votre compagnie est terminée. Ouvrez les détails pour noter ou prolonger.'
+            ),
           ]);
         } else if (status === 'cancelled') {
           // Déterminer qui a annulé
           const isRequester = updatedBooking.requesterId === user.id;
           const otherUserId = isRequester ? updatedBooking.providerId : updatedBooking.requesterId;
-          
-          // Notifier l'autre utilisateur
-          await createNotification(
-            otherUserId,
-            'booking_request_rejected',
-            'Compagnie annulée',
-            `${user.pseudo || 'Un utilisateur'} a annulé la compagnie`,
-            { bookingId: bookingId, userId: user.id }
-          );
+          const message = `${user.pseudo || 'Un utilisateur'} a annulé la compagnie`;
+
+          await Promise.allSettled([
+            createNotification(
+              otherUserId,
+              'booking_request_rejected',
+              'Compagnie annulée',
+              message,
+              { bookingId: bookingId, userId: user.id }
+            ),
+            sendBookingNotification(
+              otherUserId,
+              bookingId,
+              'cancelled',
+              'Compagnie annulée',
+              message
+            ),
+          ]);
         }
         
         return { error: null };
@@ -934,7 +981,7 @@ export function BookingProvider({ children }: { children: ReactNode }) {
         }
       };
     }
-  }, [user, bookings]);
+  }, [user, bookings]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Mapper les données de la DB vers le type Booking
   const mapBookingFromDB = (dbBooking: any): Booking => ({

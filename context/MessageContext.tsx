@@ -357,8 +357,25 @@ export function MessageProvider({ children }: { children: React.ReactNode }) {
         };
       });
 
-      // Rafraîchir les conversations
-      await getConversations();
+      // Mettre à jour localement les compteurs de non lus pour éviter un délai visuel
+      setConversations((prev) =>
+        prev.map((conv) => {
+          if (conv.id !== conversationId) return conv;
+          return {
+            ...conv,
+            unreadCount: 0,
+            user1UnreadCount: conv.user1Id === user.id ? 0 : conv.user1UnreadCount,
+            user2UnreadCount: conv.user2Id === user.id ? 0 : conv.user2UnreadCount,
+          };
+        })
+      );
+
+      // Rafraîchir en arrière-plan pour rester strictement synchronisé avec la DB
+      getConversations().catch((error) => {
+        if (!isNetworkError(error)) {
+          console.error('Error refreshing conversations after markAsRead:', error);
+        }
+      });
     } catch (error: any) {
       if (!isNetworkError(error)) {
         console.error('Error in markAsRead:', error);
@@ -589,77 +606,106 @@ export function MessageProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!user?.id) return;
 
-    // S'abonner aux mises à jour de conversations où l'utilisateur est impliqué
-    const conversationSubscription = supabase
-      .channel('user_conversations')
+    const handleConversationUpdate = (payload: any) => {
+      const updatedConv = payload.new as any;
+
+      setConversations((prev) => {
+        const existingIndex = prev.findIndex((c) => c.id === updatedConv.id);
+        if (existingIndex === -1) {
+          getConversations().catch((error) => {
+            if (!isNetworkError(error)) {
+              console.error('Error refreshing conversations after realtime insert/update:', error);
+            }
+          });
+          return prev;
+        }
+
+        const updated = [...prev];
+        const existingConv = updated[existingIndex];
+        const unreadCount =
+          updatedConv.user1_id === user.id ? updatedConv.user1_unread_count : updatedConv.user2_unread_count;
+
+        updated[existingIndex] = {
+          ...existingConv,
+          lastMessageId: updatedConv.last_message_id,
+          lastMessageAt: updatedConv.last_message_at,
+          user1UnreadCount: updatedConv.user1_unread_count,
+          user2UnreadCount: updatedConv.user2_unread_count,
+          unreadCount,
+          updatedAt: updatedConv.updated_at,
+        };
+
+        updated.sort((a, b) => {
+          const dateA = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+          const dateB = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+          return dateB - dateA;
+        });
+
+        return updated;
+      });
+    };
+
+    const onConversationInserted = () => {
+      getConversations().catch((error) => {
+        if (!isNetworkError(error)) {
+          console.error('Error refreshing conversations after realtime conversation insert:', error);
+        }
+      });
+    };
+
+    // Supabase Realtime n'accepte qu'un seul filtre par subscription.
+    // On crée donc deux channels : participant user1 + participant user2.
+    const user1Channel = supabase
+      .channel(`user_conversations_user1:${user.id}`)
       .on(
         'postgres_changes',
         {
           event: 'UPDATE',
           schema: 'public',
           table: 'conversations',
-          filter: `user1_id=eq.${user.id},user2_id=eq.${user.id}`,
+          filter: `user1_id=eq.${user.id}`,
         },
-        (payload) => {
-          const updatedConv = payload.new as any;
-          
-          // Mettre à jour la conversation dans la liste
-          setConversations((prev) => {
-            const existingIndex = prev.findIndex(c => c.id === updatedConv.id);
-            if (existingIndex === -1) {
-              // Si la conversation n'existe pas encore, la charger
-              getConversations();
-              return prev;
-            }
-            
-            // Mettre à jour la conversation existante
-            const updated = [...prev];
-            const existingConv = updated[existingIndex];
-            
-            // Calculer le nouveau unreadCount
-            const unreadCount = updatedConv.user1_id === user.id 
-              ? updatedConv.user1_unread_count 
-              : updatedConv.user2_unread_count;
-            
-            updated[existingIndex] = {
-              ...existingConv,
-              lastMessageId: updatedConv.last_message_id,
-              lastMessageAt: updatedConv.last_message_at,
-              user1UnreadCount: updatedConv.user1_unread_count,
-              user2UnreadCount: updatedConv.user2_unread_count,
-              unreadCount,
-              updatedAt: updatedConv.updated_at,
-            };
-            
-            // Réorganiser par date de dernier message (le plus récent en premier)
-            updated.sort((a, b) => {
-              const dateA = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
-              const dateB = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
-              return dateB - dateA;
-            });
-            
-            return updated;
-          });
-        }
+        handleConversationUpdate
       )
-      // Écouter aussi les nouvelles conversations
       .on(
         'postgres_changes',
         {
           event: 'INSERT',
           schema: 'public',
           table: 'conversations',
-          filter: `user1_id=eq.${user.id},user2_id=eq.${user.id}`,
+          filter: `user1_id=eq.${user.id}`,
         },
-        () => {
-          // Recharger les conversations si une nouvelle est créée
-          getConversations();
-        }
+        onConversationInserted
+      )
+      .subscribe();
+
+    const user2Channel = supabase
+      .channel(`user_conversations_user2:${user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'conversations',
+          filter: `user2_id=eq.${user.id}`,
+        },
+        handleConversationUpdate
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'conversations',
+          filter: `user2_id=eq.${user.id}`,
+        },
+        onConversationInserted
       )
       .subscribe();
 
     return () => {
-      supabase.removeChannel(conversationSubscription);
+      supabase.removeChannel(user1Channel);
+      supabase.removeChannel(user2Channel);
     };
   }, [user?.id, getConversations]);
 
@@ -792,4 +838,3 @@ export function useMessage() {
   }
   return context;
 }
-
