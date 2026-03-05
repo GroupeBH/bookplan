@@ -658,6 +658,7 @@ export default function ChatScreen() {
 
         {/* Menu Options */}
         <Modal
+          statusBarTranslucent
           visible={showMenu}
           transparent
           animationType="fade"
@@ -698,6 +699,7 @@ export default function ChatScreen() {
 
         {/* Modal Détails de la conversation */}
         <Modal
+          statusBarTranslucent
           visible={showDetails}
           transparent
           animationType="slide"
@@ -1125,7 +1127,7 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(0, 0, 0, 0.58)',
     justifyContent: 'flex-end',
   },
   menuContainer: {
@@ -1162,7 +1164,7 @@ const styles = StyleSheet.create({
   },
   detailsModalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(0, 0, 0, 0.58)',
     justifyContent: 'flex-end',
   },
   detailsModalContent: {

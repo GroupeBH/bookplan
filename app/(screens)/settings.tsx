@@ -1,11 +1,13 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, RefreshControl, Modal, Switch, ActivityIndicator, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl, Modal, Switch, ActivityIndicator, KeyboardAvoidingView, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../constants/colors';
 import { Button } from '../../components/ui/Button';
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
+import { FloatingAlert } from '../../components/ui/FloatingAlert';
 import { Input } from '../../components/ui/Input';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
 import { useBlock } from '../../context/BlockContext';
@@ -15,11 +17,13 @@ import { isValidPhoneNumber, normalizePhoneNumber } from '../../lib/phone';
 import { supabase } from '../../lib/supabase';
 import Animated, { FadeIn } from 'react-native-reanimated';
 
+type FeedbackType = 'success' | 'error' | 'info';
+
 export default function SettingsScreen() {
   const router = useRouter();
   const { blockedUsers, isLoading, unblockUser, refreshBlockedUsers } = useBlock();
   const { setSelectedUser, currentUser } = useUser();
-  const { user, sendOTP, verifyOTPSimple } = useAuth();
+  const { user, sendOTP, verifyOTPSimple, logout } = useAuth();
   const [refreshing, setRefreshing] = useState(false);
   
   // États pour modifier le mot de passe
@@ -39,6 +43,76 @@ export default function SettingsScreen() {
   // États pour les notifications push
   const [pushNotificationsEnabled, setPushNotificationsEnabled] = useState(true);
   const [isLoadingPushSettings, setIsLoadingPushSettings] = useState(true);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [isUnblocking, setIsUnblocking] = useState(false);
+  const [pendingUnblock, setPendingUnblock] = useState<{ id: string; pseudo: string } | null>(null);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [showReconnectConfirm, setShowReconnectConfirm] = useState(false);
+  const [feedback, setFeedback] = useState<{
+    visible: boolean;
+    type: FeedbackType;
+    title: string;
+    message: string;
+  }>({
+    visible: false,
+    type: 'info',
+    title: '',
+    message: '',
+  });
+
+  const resetPhoneModalState = useCallback(() => {
+    setShowPhoneModal(false);
+    setNewPhone('');
+    setOtpCode('');
+    setOtpSent(false);
+  }, []);
+
+  const showFeedback = useCallback((type: FeedbackType, title: string, message: string) => {
+    setFeedback({ visible: true, type, title, message });
+  }, []);
+
+  const hideFeedback = useCallback(() => {
+    setFeedback((prev) => ({ ...prev, visible: false }));
+  }, []);
+
+  const performLogout = useCallback(async () => {
+    if (isLoggingOut) return;
+
+    setIsLoggingOut(true);
+    try {
+      await logout();
+      router.replace('/(screens)/auth');
+    } catch (error: any) {
+      showFeedback('error', 'Erreur', error?.message || 'Impossible de vous déconnecter pour le moment');
+    } finally {
+      setIsLoggingOut(false);
+      setShowLogoutConfirm(false);
+      setShowReconnectConfirm(false);
+    }
+  }, [isLoggingOut, logout, router, showFeedback]);
+
+  const handleLogoutPress = useCallback(() => {
+    if (isLoggingOut) return;
+    setShowLogoutConfirm(true);
+  }, [isLoggingOut]);
+
+  const handleConfirmUnblock = useCallback(async () => {
+    if (!pendingUnblock || isUnblocking) return;
+
+    setIsUnblocking(true);
+    try {
+      const success = await unblockUser(pendingUnblock.id);
+      if (success) {
+        showFeedback('success', 'Succès', 'Utilisateur débloqué');
+        await refreshBlockedUsers();
+      } else {
+        showFeedback('error', 'Erreur', 'Impossible de débloquer l\'utilisateur');
+      }
+    } finally {
+      setPendingUnblock(null);
+      setIsUnblocking(false);
+    }
+  }, [pendingUnblock, isUnblocking, unblockUser, refreshBlockedUsers, showFeedback]);
 
   // Charger les préférences de notifications push
   const loadPushNotificationSettings = useCallback(async () => {
@@ -80,27 +154,8 @@ export default function SettingsScreen() {
     setRefreshing(false);
   };
 
-  const handleUnblock = async (blockedId: string, blockedPseudo: string) => {
-    Alert.alert(
-      'Débloquer',
-      `Êtes-vous sûr de vouloir débloquer ${blockedPseudo} ?`,
-      [
-        { text: 'Annuler', style: 'cancel' },
-        {
-          text: 'Débloquer',
-          style: 'destructive',
-          onPress: async () => {
-            const success = await unblockUser(blockedId);
-            if (success) {
-              Alert.alert('Succès', 'Utilisateur débloqué');
-              await refreshBlockedUsers();
-            } else {
-              Alert.alert('Erreur', 'Impossible de débloquer l\'utilisateur');
-            }
-          },
-        },
-      ]
-    );
+  const handleUnblock = (blockedId: string, blockedPseudo: string) => {
+    setPendingUnblock({ id: blockedId, pseudo: blockedPseudo });
   };
 
   const handleViewProfile = async (blockedId: string) => {
@@ -137,24 +192,24 @@ export default function SettingsScreen() {
       }
     } catch (error) {
       console.error('Error loading user profile:', error);
-      Alert.alert('Erreur', 'Impossible de charger le profil');
+      showFeedback('error', 'Erreur', 'Impossible de charger le profil');
     }
   };
 
   // Modifier le mot de passe
   const handleChangePassword = async () => {
     if (!currentPassword || !newPassword || !confirmPassword) {
-      Alert.alert('Erreur', 'Veuillez remplir tous les champs');
+      showFeedback('error', 'Erreur', 'Veuillez remplir tous les champs');
       return;
     }
 
     if (newPassword !== confirmPassword) {
-      Alert.alert('Erreur', 'Les mots de passe ne correspondent pas');
+      showFeedback('error', 'Erreur', 'Les mots de passe ne correspondent pas');
       return;
     }
 
     if (newPassword.length < 6) {
-      Alert.alert('Erreur', 'Le mot de passe doit contenir au moins 6 caractères');
+      showFeedback('error', 'Erreur', 'Le mot de passe doit contenir au moins 6 caractères');
       return;
     }
 
@@ -163,8 +218,7 @@ export default function SettingsScreen() {
       // Récupérer l'email de l'utilisateur depuis auth.users
       const { data: authUser } = await supabase.auth.getUser();
       if (!authUser?.user?.email) {
-        Alert.alert('Erreur', 'Impossible de récupérer les informations de votre compte');
-        setIsChangingPassword(false);
+        showFeedback('error', 'Erreur', 'Impossible de récupérer les informations de votre compte');
         return;
       }
 
@@ -175,8 +229,7 @@ export default function SettingsScreen() {
       });
 
       if (signInError) {
-        Alert.alert('Erreur', 'Mot de passe actuel incorrect');
-        setIsChangingPassword(false);
+        showFeedback('error', 'Erreur', 'Mot de passe actuel incorrect');
         return;
       }
 
@@ -186,16 +239,16 @@ export default function SettingsScreen() {
       });
 
       if (updateError) {
-        Alert.alert('Erreur', updateError.message || 'Impossible de modifier le mot de passe');
+        showFeedback('error', 'Erreur', updateError.message || 'Impossible de modifier le mot de passe');
       } else {
-        Alert.alert('Succès', 'Mot de passe modifié avec succès');
+        showFeedback('success', 'Succès', 'Mot de passe modifié avec succès');
         setShowPasswordModal(false);
         setCurrentPassword('');
         setNewPassword('');
         setConfirmPassword('');
       }
     } catch (error: any) {
-      Alert.alert('Erreur', error.message || 'Une erreur est survenue');
+      showFeedback('error', 'Erreur', error.message || 'Une erreur est survenue');
     } finally {
       setIsChangingPassword(false);
     }
@@ -205,7 +258,7 @@ export default function SettingsScreen() {
   const handleSendOTPForPhone = async () => {
     const normalizedPhone = normalizePhoneNumber(newPhone);
     if (!isValidPhoneNumber(normalizedPhone)) {
-      Alert.alert('Erreur', 'Veuillez entrer un numéro de téléphone');
+      showFeedback('error', 'Erreur', 'Veuillez entrer un numéro de téléphone');
       return;
     }
 
@@ -214,13 +267,13 @@ export default function SettingsScreen() {
       setNewPhone(normalizedPhone);
       const { error } = await sendOTP(normalizedPhone);
       if (error) {
-        Alert.alert('Erreur', error.message || 'Impossible d\'envoyer le code OTP');
+        showFeedback('error', 'Erreur', error.message || 'Impossible d\'envoyer le code OTP');
       } else {
         setOtpSent(true);
-        Alert.alert('Code envoyé', 'Vérifiez votre téléphone pour le code OTP');
+        showFeedback('success', 'Code envoyé', 'Vérifiez votre téléphone pour le code OTP');
       }
     } catch (error: any) {
-      Alert.alert('Erreur', error.message || 'Une erreur est survenue');
+      showFeedback('error', 'Erreur', error.message || 'Une erreur est survenue');
     } finally {
       setIsChangingPhone(false);
     }
@@ -229,7 +282,7 @@ export default function SettingsScreen() {
   // Vérifier l'OTP et mettre à jour le numéro de téléphone
   const handleVerifyOTPAndUpdatePhone = async () => {
     if (!otpCode.trim() || otpCode.length !== 6) {
-      Alert.alert('Erreur', 'Veuillez entrer un code OTP valide (6 chiffres)');
+      showFeedback('error', 'Erreur', 'Veuillez entrer un code OTP valide (6 chiffres)');
       return;
     }
 
@@ -237,21 +290,19 @@ export default function SettingsScreen() {
     try {
       const normalizedPhone = normalizePhoneNumber(newPhone);
       if (!isValidPhoneNumber(normalizedPhone)) {
-        Alert.alert('Erreur', 'Veuillez entrer un numéro de téléphone valide');
-        setIsChangingPhone(false);
+        showFeedback('error', 'Erreur', 'Veuillez entrer un numéro de téléphone valide');
         return;
       }
 
       // Vérifier l'OTP avec la fonction simple
       const { error: verifyError } = await verifyOTPSimple(normalizedPhone, otpCode);
       if (verifyError) {
-        Alert.alert('Erreur', verifyError.message || 'Code OTP incorrect');
-        setIsChangingPhone(false);
+        showFeedback('error', 'Erreur', verifyError.message || 'Code OTP incorrect');
         return;
       }
 
       const formattedNewPhone = normalizedPhone;
-      
+
       // Générer le nouvel email basé sur le nouveau numéro (même logique que dans AuthContext)
       const phoneDigits = formattedNewPhone.replace(/[^0-9]/g, '');
       const phoneHash = phoneDigits.slice(-8);
@@ -264,8 +315,7 @@ export default function SettingsScreen() {
         .eq('id', user?.id);
 
       if (updateProfileError) {
-        Alert.alert('Erreur', 'Impossible de mettre à jour le numéro de téléphone dans le profil');
-        setIsChangingPhone(false);
+        showFeedback('error', 'Erreur', 'Impossible de mettre à jour le numéro de téléphone dans le profil');
         return;
       }
 
@@ -275,23 +325,16 @@ export default function SettingsScreen() {
       });
 
       if (updateAuthError) {
-        Alert.alert('Erreur', 'Impossible de mettre à jour l\'email de connexion');
-        setIsChangingPhone(false);
+        showFeedback('error', 'Erreur', 'Impossible de mettre à jour l\'email de connexion');
         return;
       }
 
-      Alert.alert('Succès', 'Numéro de téléphone modifié avec succès. Vous devrez vous reconnecter avec votre nouveau numéro.');
-      setShowPhoneModal(false);
-      setNewPhone('');
-      setOtpCode('');
-      setOtpSent(false);
-      // Déconnexion pour forcer la reconnexion avec le nouveau numéro
-      setTimeout(() => {
-        router.replace('/(screens)/auth');
-      }, 2000);
+      resetPhoneModalState();
+      setShowReconnectConfirm(true);
     } catch (error: any) {
       console.error('Error in handleVerifyOTPAndUpdatePhone:', error);
-      Alert.alert('Erreur', error.message || 'Une erreur est survenue');
+      showFeedback('error', 'Erreur', error.message || 'Une erreur est survenue');
+    } finally {
       setIsChangingPhone(false);
     }
   };
@@ -307,17 +350,17 @@ export default function SettingsScreen() {
         .eq('id', user.id);
 
       if (error) {
-        Alert.alert('Erreur', 'Impossible de mettre à jour les préférences de notifications');
+        showFeedback('error', 'Erreur', 'Impossible de mettre à jour les préférences de notifications');
       } else {
         setPushNotificationsEnabled(enabled);
         if (enabled) {
-          Alert.alert('Succès', 'Notifications push activées');
+          showFeedback('success', 'Succès', 'Notifications push activées');
         } else {
-          Alert.alert('Succès', 'Notifications push désactivées');
+          showFeedback('success', 'Succès', 'Notifications push désactivées');
         }
       }
     } catch (error: any) {
-      Alert.alert('Erreur', error.message || 'Une erreur est survenue');
+      showFeedback('error', 'Erreur', error.message || 'Une erreur est survenue');
     }
   };
 
@@ -331,6 +374,13 @@ export default function SettingsScreen() {
         <Text style={styles.headerTitle}>Paramètres</Text>
         <View style={{ width: 24 }} />
       </View>
+      <FloatingAlert
+        visible={feedback.visible}
+        type={feedback.type}
+        title={feedback.title}
+        message={feedback.message}
+        onHide={hideFeedback}
+      />
 
       <ScrollView
         style={styles.scrollView}
@@ -364,10 +414,8 @@ export default function SettingsScreen() {
           <TouchableOpacity
             style={styles.settingItem}
             onPress={() => {
+              resetPhoneModalState();
               setShowPhoneModal(true);
-              setOtpSent(false);
-              setNewPhone('');
-              setOtpCode('');
             }}
           >
             <View style={styles.settingItemLeft}>
@@ -409,6 +457,27 @@ export default function SettingsScreen() {
               />
             )}
           </View>
+        </View>
+
+        {/* Section Session */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Ionicons name="log-out-outline" size={24} color={colors.red500} />
+            <Text style={styles.sectionTitle}>Session</Text>
+          </View>
+          <Text style={styles.sectionSubtitle}>
+            Vous pouvez vous déconnecter de cet appareil en toute sécurité.
+          </Text>
+          <Button
+            title="Se déconnecter"
+            variant="outline"
+            onPress={handleLogoutPress}
+            loading={isLoggingOut}
+            disabled={isLoggingOut}
+            icon={!isLoggingOut ? <Ionicons name="log-out-outline" size={18} color={colors.red500} /> : undefined}
+            style={[styles.settingItem, styles.logoutSettingButton]}
+            textStyle={styles.logoutSettingButtonText}
+          />
         </View>
 
         {/* Section Profils bloqués */}
@@ -474,11 +543,58 @@ export default function SettingsScreen() {
         </View>
       </ScrollView>
 
+      <ConfirmDialog
+        visible={showLogoutConfirm}
+        title="Déconnexion"
+        message="Voulez-vous vraiment vous déconnecter ?"
+        confirmLabel="Se déconnecter"
+        confirmTone="danger"
+        iconName="log-out-outline"
+        loading={isLoggingOut}
+        onCancel={() => setShowLogoutConfirm(false)}
+        onConfirm={() => {
+          void performLogout();
+        }}
+      />
+
+      <ConfirmDialog
+        visible={!!pendingUnblock}
+        title="Débloquer"
+        message={
+          pendingUnblock
+            ? `Confirmez le déblocage de ${pendingUnblock.pseudo}.`
+            : 'Confirmez cette action.'
+        }
+        confirmLabel="Débloquer"
+        confirmTone="danger"
+        iconName="lock-open-outline"
+        loading={isUnblocking}
+        onCancel={() => setPendingUnblock(null)}
+        onConfirm={() => {
+          void handleConfirmUnblock();
+        }}
+      />
+
+      <ConfirmDialog
+        visible={showReconnectConfirm}
+        title="Numéro mis à jour"
+        message="Votre numéro a été modifié. Reconnectez-vous maintenant pour finaliser la mise à jour."
+        confirmLabel="Se reconnecter"
+        cancelLabel="Plus tard"
+        iconName="checkmark-circle-outline"
+        loading={isLoggingOut}
+        onCancel={() => setShowReconnectConfirm(false)}
+        onConfirm={() => {
+          void performLogout();
+        }}
+      />
+
       {/* Modal Modifier le mot de passe */}
       <Modal
         visible={showPasswordModal}
         transparent
-        animationType="slide"
+        animationType="fade"
+        statusBarTranslucent
         onRequestClose={() => setShowPasswordModal(false)}
       >
         <KeyboardAvoidingView
@@ -492,9 +608,10 @@ export default function SettingsScreen() {
             keyboardDismissMode="on-drag"
           >
             <View style={styles.modalContent}>
+            <View style={styles.modalHandle} />
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Modifier le mot de passe</Text>
-              <TouchableOpacity onPress={() => setShowPasswordModal(false)}>
+              <TouchableOpacity onPress={() => setShowPasswordModal(false)} style={styles.modalCloseButton}>
                 <Ionicons name="close" size={24} color={colors.text} />
               </TouchableOpacity>
             </View>
@@ -555,8 +672,9 @@ export default function SettingsScreen() {
       <Modal
         visible={showPhoneModal}
         transparent
-        animationType="slide"
-        onRequestClose={() => setShowPhoneModal(false)}
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={resetPhoneModalState}
       >
         <KeyboardAvoidingView
           style={styles.modalOverlay}
@@ -569,14 +687,10 @@ export default function SettingsScreen() {
             keyboardDismissMode="on-drag"
           >
             <View style={styles.modalContent}>
+            <View style={styles.modalHandle} />
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Modifier le numéro de téléphone</Text>
-              <TouchableOpacity onPress={() => {
-                setShowPhoneModal(false);
-                setNewPhone('');
-                setOtpCode('');
-                setOtpSent(false);
-              }}>
+              <TouchableOpacity onPress={resetPhoneModalState} style={styles.modalCloseButton}>
                 <Ionicons name="close" size={24} color={colors.text} />
               </TouchableOpacity>
             </View>
@@ -602,12 +716,7 @@ export default function SettingsScreen() {
                   <Button
                     title="Annuler"
                     variant="outline"
-                    onPress={() => {
-                      setShowPhoneModal(false);
-                      setNewPhone('');
-                      setOtpCode('');
-                      setOtpSent(false);
-                    }}
+                    onPress={resetPhoneModalState}
                     style={styles.modalButton}
                   />
                   <Button
@@ -642,12 +751,7 @@ export default function SettingsScreen() {
                   <Button
                     title="Annuler"
                     variant="outline"
-                    onPress={() => {
-                      setShowPhoneModal(false);
-                      setNewPhone('');
-                      setOtpCode('');
-                      setOtpSent(false);
-                    }}
+                    onPress={resetPhoneModalState}
                     style={styles.modalButton}
                   />
                   <Button
@@ -804,20 +908,45 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: colors.textSecondary,
   },
+  logoutSettingButton: {
+    borderColor: colors.red500,
+    marginBottom: 0,
+  },
+  logoutSettingButtonText: {
+    color: colors.red500,
+    fontWeight: '600',
+  },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    backgroundColor: 'rgba(0, 0, 0, 0.58)',
   },
   modalScrollContent: {
     flexGrow: 1,
     justifyContent: 'flex-end',
+    paddingHorizontal: 10,
+    paddingBottom: 8,
   },
   modalContent: {
-    backgroundColor: colors.background,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    backgroundColor: '#111111',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
     padding: 24,
-    maxHeight: '90%',
+    maxHeight: '92%',
+    shadowColor: '#000',
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+  },
+  modalHandle: {
+    width: 44,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: colors.border,
+    alignSelf: 'center',
+    marginBottom: 16,
   },
   modalHeader: {
     flexDirection: 'row',
@@ -827,8 +956,16 @@ const styles = StyleSheet.create({
   },
   modalTitle: {
     fontSize: 20,
-    fontWeight: '600',
+    fontWeight: '700',
     color: colors.text,
+  },
+  modalCloseButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: colors.backgroundTertiary,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   modalDescription: {
     fontSize: 14,

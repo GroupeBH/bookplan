@@ -766,6 +766,7 @@ export default function OfferDetailsScreen() {
 
       {/* Applications Modal */}
       <Modal
+        statusBarTranslucent
         visible={showApplicationsModal}
         transparent
         animationType="slide"
@@ -849,6 +850,7 @@ export default function OfferDetailsScreen() {
 
       {/* Reject Modal */}
       <Modal
+        statusBarTranslucent
         visible={showRejectModal}
         transparent
         animationType="slide"
@@ -901,6 +903,7 @@ export default function OfferDetailsScreen() {
 
       {/* Application Modal */}
       <Modal
+        statusBarTranslucent
         visible={showApplicationModal}
         transparent
         animationType="slide"
@@ -1158,7 +1161,7 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    backgroundColor: 'rgba(0, 0, 0, 0.58)',
     justifyContent: 'flex-end',
   },
   modalContent: {

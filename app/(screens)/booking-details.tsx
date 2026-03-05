@@ -873,6 +873,7 @@ export default function BookingDetailsScreen() {
 
       {/* Rating Modal */}
       <Modal
+        statusBarTranslucent
         visible={showRatingModal}
         transparent
         animationType="fade"
@@ -959,6 +960,7 @@ export default function BookingDetailsScreen() {
 
       {/* Extension Request Modal (Requester) */}
       <Modal
+        statusBarTranslucent
         visible={showExtensionModal}
         transparent
         animationType="fade"
@@ -1209,7 +1211,7 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(0, 0, 0, 0.58)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,

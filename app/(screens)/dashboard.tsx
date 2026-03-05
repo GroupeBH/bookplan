@@ -17,6 +17,7 @@ import { useOffer } from '../../context/OfferContext';
 import { useRating } from '../../context/RatingContext';
 import { useUser } from '../../context/UserContext';
 import { getDefaultProfileImage } from '../../lib/defaultImages';
+import { clampPointToDRC, DRC_CAMERA_BOUNDS, isPointInDRC } from '../../lib/drcMap';
 import { isMapboxAvailable } from '../../lib/mapbox';
 import { Offer, OfferType, User } from '../../types';
 
@@ -260,9 +261,24 @@ export default function Dashboard() {
     return nowMs - parsedMs <= ONLINE_WINDOW_MS;
   }, []);
 
+  const toBoundedLocation = useCallback((lat: number, lng: number) => {
+    const bounded = clampPointToDRC(lat, lng);
+    return { lat: bounded.lat, lng: bounded.lng };
+  }, []);
+
+  const boundedUserLocation = useMemo(() => {
+    if (!userLocation) return null;
+    return toBoundedLocation(userLocation.lat, userLocation.lng);
+  }, [userLocation, toBoundedLocation]);
+
   const nearbyUsers = useMemo(() => {
     return availableUsers.filter((u) => {
       return (
+        u.lat !== undefined &&
+        u.lat !== null &&
+        u.lng !== undefined &&
+        u.lng !== null &&
+        isPointInDRC(u.lat, u.lng) &&
         u.distance !== undefined &&
         Number.isFinite(u.distance) &&
         u.distance >= 0 &&
@@ -339,7 +355,7 @@ export default function Dashboard() {
         initialLoadDone.current = true;
         //         ( )    Ã©
         if (user.lat && user.lng) {
-          const profileLocation = { lat: user.lat, lng: user.lng };
+          const profileLocation = toBoundedLocation(user.lat, user.lng);
           setUserLocation(profileLocation);
           //    Ã© v    
           loadAvailableUsers(profileLocation);
@@ -408,7 +424,7 @@ export default function Dashboard() {
 
         //  v '  Ã©   ,     'Ãª
       };
-    }, [isAuthenticated, user])
+    }, [isAuthenticated, user, toBoundedLocation])
   );
 
   //          Ã   (  Ã©       )
@@ -544,8 +560,11 @@ export default function Dashboard() {
           const cachedLocation = JSON.parse(cachedLocationStr);
           //      Ã©    Ã©
           //      ,   Ã©Ã©  
-          if (cachedLocation.lat && cachedLocation.lng) {
-            setUserLocation(cachedLocation);
+          if (
+            Number.isFinite(cachedLocation?.lat) &&
+            Number.isFinite(cachedLocation?.lng)
+          ) {
+            setUserLocation(toBoundedLocation(cachedLocation.lat, cachedLocation.lng));
           }
         }
       } catch {
@@ -568,17 +587,17 @@ export default function Dashboard() {
       } catch (error) {
         // Si timeout ou erreur, utiliser la position du profil utilisateur si disponible
         if (user?.lat && user?.lng) {
-          const profileLocation = { lat: user.lat, lng: user.lng };
+          const profileLocation = toBoundedLocation(user.lat, user.lng);
           setUserLocation(profileLocation);
           await AsyncStorage.setItem('user_location', JSON.stringify(profileLocation));
           //  Ã    Ã¨- v   Ã©
           Location.getCurrentPositionAsync({
             accuracy: Location.Accuracy.Balanced,
           }).then((betterLocation) => {
-            const newLocation = {
-              lat: betterLocation.coords.latitude,
-              lng: betterLocation.coords.longitude,
-            };
+            const newLocation = toBoundedLocation(
+              betterLocation.coords.latitude,
+              betterLocation.coords.longitude
+            );
             setUserLocation(newLocation);
             AsyncStorage.setItem('user_location', JSON.stringify(newLocation));
             if (user && isAuthenticated) {
@@ -590,10 +609,7 @@ export default function Dashboard() {
         throw error;
       }
 
-      const newLocation = {
-        lat: location.coords.latitude,
-        lng: location.coords.longitude,
-      };
+      const newLocation = toBoundedLocation(location.coords.latitude, location.coords.longitude);
 
       setUserLocation(newLocation);
       // Sauvegarder dans le cache
@@ -622,10 +638,7 @@ export default function Dashboard() {
             return;
           }
 
-          const updatedLocation = {
-            lat: location.coords.latitude,
-            lng: location.coords.longitude,
-          };
+          const updatedLocation = toBoundedLocation(location.coords.latitude, location.coords.longitude);
 
           // Ã©     v Ã©  Ã¨ v v   Ã  
           //  Ã©v   Ã       Ã´  
@@ -661,7 +674,7 @@ export default function Dashboard() {
         console.log('Localisation non disponible ou timeout');
         // Utiliser la position du profil utilisateur si disponible
         if (user?.lat && user?.lng) {
-          const profileLocation = { lat: user.lat, lng: user.lng };
+          const profileLocation = toBoundedLocation(user.lat, user.lng);
           setUserLocation(profileLocation);
           await AsyncStorage.setItem('user_location', JSON.stringify(profileLocation)).catch(() => {});
         } else {
@@ -782,6 +795,8 @@ export default function Dashboard() {
 
         // Filtrer les utilisateurs strictement en ligne et dans un rayon de 10 km
         const filteredUsers = formattedUsers.filter((u) => {
+          if (u.lat === undefined || u.lng === undefined) return false;
+          if (!isPointInDRC(u.lat, u.lng)) return false;
           if (u.distance === undefined || isNaN(u.distance)) return false;
           if (u.distance < 0 || u.distance > PROXIMITY_RADIUS_KM) return false;
           return isUserOnlineNow(u.lastSeen);
@@ -946,7 +961,7 @@ export default function Dashboard() {
               xÃ©z   -- v
             </Text>
           </View>
-        ) : userLocation && userLocation.lng !== undefined && userLocation.lat !== undefined && Mapbox && Mapbox.StyleURL && MapView && Camera ? (
+        ) : boundedUserLocation && boundedUserLocation.lng !== undefined && boundedUserLocation.lat !== undefined && Mapbox && Mapbox.StyleURL && MapView && Camera ? (
           <MapView
             styleURL={Mapbox.StyleURL.Street}
             style={styles.map}
@@ -959,19 +974,20 @@ export default function Dashboard() {
             }}
           >
             <Camera
-              centerCoordinate={[userLocation.lng, userLocation.lat]}
+              maxBounds={DRC_CAMERA_BOUNDS}
+              centerCoordinate={[boundedUserLocation.lng, boundedUserLocation.lat]}
               zoomLevel={13}
               animationMode="flyTo"
               animationDuration={2000}
             />
             
             {/*   '  - zx Ã©vÃ©  Ãª - */}
-            {mapReady && PointAnnotation && userLocation && 
-             userLocation.lng !== undefined && userLocation.lat !== undefined &&
-             isFinite(userLocation.lng) && isFinite(userLocation.lat) ? (
+            {mapReady && PointAnnotation && boundedUserLocation &&
+             boundedUserLocation.lng !== undefined && boundedUserLocation.lat !== undefined &&
+             isFinite(boundedUserLocation.lng) && isFinite(boundedUserLocation.lat) ? (
               <PointAnnotation
                 id="current-user"
-                coordinate={[userLocation.lng, userLocation.lat]}
+                coordinate={[boundedUserLocation.lng, boundedUserLocation.lat]}
                 anchor={{ x: 0.5, y: 0.5 }}
                 onSelected={() => handleMarkerSelect('current-user')}
               >
@@ -988,7 +1004,8 @@ export default function Dashboard() {
                   nearbyUser.lat !== undefined &&
                   nearbyUser.lat !== null &&
                   nearbyUser.lng !== undefined &&
-                  nearbyUser.lng !== null
+                  nearbyUser.lng !== null &&
+                  isPointInDRC(nearbyUser.lat, nearbyUser.lng)
                 );
               });
 
@@ -1016,7 +1033,7 @@ export default function Dashboard() {
                   const angle = usersAtZeroCount > 1 ? (zeroIndex * 2 * Math.PI) / usersAtZeroCount : Math.PI / 4; // Par defaut a 45 degres si seul
                   // Calculer les offsets en latitude et longitude
                   //     Ãª Ã©          
-                  const lat = user.lat || (userLocation?.lat || 0);
+                  const lat = user.lat || (boundedUserLocation?.lat || 0);
                   const latRad = lat * Math.PI / 180;
                   latOffset = radius * Math.cos(angle);
                   lngOffset = radius * Math.sin(angle) / Math.cos(latRad); // Ajustement pour la projection Mercator
@@ -1025,11 +1042,14 @@ export default function Dashboard() {
                 }
                 
                 // Ã©   Ã©  v v    
-                const userLat = (user.lat || 0) + latOffset;
-                const userLng = (user.lng || 0) + lngOffset;
+                const rawUserLat = (user.lat || 0) + latOffset;
+                const rawUserLng = (user.lng || 0) + lngOffset;
+                const boundedMarkerPoint = clampPointToDRC(rawUserLat, rawUserLng);
+                const userLat = boundedMarkerPoint.lat;
+                const userLng = boundedMarkerPoint.lng;
                 
                 // Ã©   Ã©v   x
-                if (!PointAnnotation || !userLocation || 
+                if (!PointAnnotation || !boundedUserLocation ||
                     userLat === 0 || userLng === 0 ||
                     isNaN(userLat) || isNaN(userLng) ||
                     !isFinite(userLat) || !isFinite(userLng) ||
@@ -1071,6 +1091,7 @@ export default function Dashboard() {
 
       {/*      - ' Ã© */}
       <Modal
+        statusBarTranslucent
         visible={selectedUserForCallout !== null}
         transparent={true}
         animationType="fade"
@@ -1095,6 +1116,7 @@ export default function Dashboard() {
 
       {/* Modal simple pour "Moi" */}
       <Modal
+        statusBarTranslucent
         visible={selectedMarkerId === 'current-user'}
         transparent={true}
         animationType="fade"
@@ -1841,7 +1863,7 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(0, 0, 0, 0.58)',
     justifyContent: 'center',
     alignItems: 'center',
   },

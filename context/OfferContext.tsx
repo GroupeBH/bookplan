@@ -477,10 +477,21 @@ export function OfferProvider({ children }: { children: ReactNode }) {
         status: 'active'
       });
 
+      const { data: authUserData, error: authUserError } = await supabase.auth.getUser();
+      if (authUserError || !authUserData?.user?.id) {
+        return {
+          error: {
+            message: 'Session invalide. Veuillez vous reconnecter avant de publier une offre.',
+          },
+          offer: null,
+        };
+      }
+      const authorId = authUserData.user.id;
+
       const { data, error } = await supabase
         .from('offers')
         .insert({
-          author_id: user.id,
+          author_id: authorId,
           offer_type: offerTypes[0], // Premier type pour rétrocompatibilité
           target_gender: targetGender,
           title,
@@ -497,7 +508,21 @@ export function OfferProvider({ children }: { children: ReactNode }) {
         .single();
 
       if (error) {
-        console.error('❌ Error creating offer:', error);
+        console.error('Error creating offer:', error);
+        if (
+          error.code === '42501' ||
+          (typeof error.message === 'string' &&
+            error.message.toLowerCase().includes('row-level security'))
+        ) {
+          return {
+            error: {
+              ...error,
+              message:
+                'Permissions insuffisantes pour publier cette offre (RLS). Verifiez la migration des policies offers.',
+            },
+            offer: null,
+          };
+        }
         return { error, offer: null };
       }
 
@@ -1569,3 +1594,4 @@ export function useOffer() {
   }
   return context;
 }
+

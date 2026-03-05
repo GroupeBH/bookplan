@@ -15,6 +15,15 @@ import { colors } from '../../constants/colors';
 import { useAuth } from '../../context/AuthContext';
 import { useBooking } from '../../context/BookingContext';
 import { useUser } from '../../context/UserContext';
+import {
+  clampPointToDRC,
+  DRC_CAMERA_BOUNDS,
+  DRC_DEFAULT_REGION,
+  DRC_MAPBOX_BBOX,
+  DRC_MAPBOX_COUNTRY,
+  isCountryInDRC,
+  isPointInDRC,
+} from '../../lib/drcMap';
 import { isMapboxAvailable, MAPBOX_ACCESS_TOKEN } from '../../lib/mapbox';
 
 let DatePicker: any = null;
@@ -232,26 +241,22 @@ export default function BookingScreen() {
   // Initialiser la carte avec la position de l'utilisateur (optimis? pour performance)
   useEffect(() => {
     const initializeMap = async () => {
-      // Position par defaut (Kinshasa) - utilisee immediatement pour un chargement instantan?
-      const defaultRegion = {
-        latitude: -4.3276,
-        longitude: 15.3136,
-        latitudeDelta: 0.05,
-        longitudeDelta: 0.05,
-      };
+      // Position par defaut (Kinshasa) - utilisee immediatement pour un chargement instantane
+      const defaultRegion = DRC_DEFAULT_REGION;
 
       // Utiliser d'abord la position de l'utilisateur actuel si disponible (plus rapide)
       if (currentUser?.lat && currentUser?.lng) {
+        const boundedUserPoint = clampPointToDRC(currentUser.lat, currentUser.lng);
         const userRegion = {
-          latitude: currentUser.lat,
-          longitude: currentUser.lng,
+          latitude: boundedUserPoint.lat,
+          longitude: boundedUserPoint.lng,
           latitudeDelta: 0.05,
           longitudeDelta: 0.05,
         };
         setMapRegion(userRegion);
         setSelectedLocation({
-          lat: currentUser.lat,
-          lng: currentUser.lng,
+          lat: boundedUserPoint.lat,
+          lng: boundedUserPoint.lng,
         });
         // Continuer en arriere-plan pour obtenir une position plus precise si possible
         updateLocationInBackground();
@@ -288,17 +293,21 @@ export default function BookingScreen() {
 
         try {
           const currentLocation = await Promise.race([locationPromise, timeoutPromise]) as any;
+          const boundedCurrentPoint = clampPointToDRC(
+            currentLocation.coords.latitude,
+            currentLocation.coords.longitude
+          );
 
           const region = {
-            latitude: currentLocation.coords.latitude,
-            longitude: currentLocation.coords.longitude,
+            latitude: boundedCurrentPoint.lat,
+            longitude: boundedCurrentPoint.lng,
             latitudeDelta: 0.05,
             longitudeDelta: 0.05,
           };
           setMapRegion(region);
           setSelectedLocation({
-            lat: currentLocation.coords.latitude,
-            lng: currentLocation.coords.longitude,
+            lat: boundedCurrentPoint.lat,
+            lng: boundedCurrentPoint.lng,
           });
         } catch {
           // En cas d'erreur ou timeout, garder la position deja definie (par defaut ou utilisateur)
@@ -335,10 +344,14 @@ export default function BookingScreen() {
 
   // Fonction pour obtenir l'adresse ? partir des coordonnees (g?ocodage inverse)
   const resolveAddressFromCoordinates = useCallback(async (lat: number, lng: number) => {
-    const addresses = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
+    const boundedPoint = clampPointToDRC(lat, lng);
+    const addresses = await Location.reverseGeocodeAsync({
+      latitude: boundedPoint.lat,
+      longitude: boundedPoint.lng,
+    });
 
     if (addresses && addresses.length > 0) {
-      const address = addresses[0];
+      const address = addresses.find((item) => isCountryInDRC(item?.country, item?.isoCountryCode)) ?? addresses[0];
       const addressParts = [
         address.street,
         address.streetNumber,
@@ -348,22 +361,23 @@ export default function BookingScreen() {
         address.country,
       ].filter(Boolean);
 
-      return addressParts.join(', ') || `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+      return addressParts.join(', ') || `${boundedPoint.lat.toFixed(6)}, ${boundedPoint.lng.toFixed(6)}`;
     }
 
-    return `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+    return `${boundedPoint.lat.toFixed(6)}, ${boundedPoint.lng.toFixed(6)}`;
   }, []);
 
   const reverseGeocode = useCallback(async (lat: number, lng: number) => {
+    const boundedPoint = clampPointToDRC(lat, lng);
     try {
       setIsLoadingAddress(true);
-      const fullAddress = await resolveAddressFromCoordinates(lat, lng);
+      const fullAddress = await resolveAddressFromCoordinates(boundedPoint.lat, boundedPoint.lng);
       setLocation(fullAddress);
       setMapAddressPreview(fullAddress);
       return fullAddress;
     } catch (error) {
       console.error('Error reverse geocoding:', error);
-      const coordAddress = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+      const coordAddress = `${boundedPoint.lat.toFixed(6)}, ${boundedPoint.lng.toFixed(6)}`;
       setLocation(coordAddress);
       setMapAddressPreview(coordAddress);
       return coordAddress;
@@ -407,13 +421,19 @@ export default function BookingScreen() {
   }, [getZoomLevelFromLongitudeDelta, mapRegion?.longitudeDelta]);
 
   const updateSelectedLocationFromMap = useCallback((lat: number, lng: number) => {
-    mapCenterRef.current = { lat, lng };
+    const boundedPoint = clampPointToDRC(lat, lng);
+    mapCenterRef.current = boundedPoint;
     setSelectedLocation((prev) => {
-      if (prev && Math.abs(prev.lat - lat) < 0.000001 && Math.abs(prev.lng - lng) < 0.000001) {
+      if (
+        prev &&
+        Math.abs(prev.lat - boundedPoint.lat) < 0.000001 &&
+        Math.abs(prev.lng - boundedPoint.lng) < 0.000001
+      ) {
         return prev;
       }
-      return { lat, lng };
+      return boundedPoint;
     });
+    return boundedPoint;
   }, []);
 
   const resolveMapAddressPreview = useCallback(async (lat: number, lng: number) => {
@@ -451,23 +471,26 @@ export default function BookingScreen() {
     const coordinates = extractCoordinatesFromMapEvent(event);
     if (!coordinates) return;
 
-    updateSelectedLocationFromMap(coordinates.lat, coordinates.lng);
-    focusMapOnCoordinates(coordinates.lat, coordinates.lng);
-    scheduleMapAddressPreview(coordinates.lat, coordinates.lng);
+    const boundedPoint = updateSelectedLocationFromMap(coordinates.lat, coordinates.lng);
+    focusMapOnCoordinates(boundedPoint.lat, boundedPoint.lng);
+    scheduleMapAddressPreview(boundedPoint.lat, boundedPoint.lng);
   };
 
   const handleMapCameraChanged = (event: any) => {
     const coordinates = extractCoordinatesFromMapEvent(event);
     if (!coordinates) return;
-    mapCenterRef.current = coordinates;
+    mapCenterRef.current = clampPointToDRC(coordinates.lat, coordinates.lng);
   };
 
   const handleMapIdle = (event: any) => {
     const coordinates = extractCoordinatesFromMapEvent(event) ?? mapCenterRef.current;
     if (!coordinates) return;
 
-    updateSelectedLocationFromMap(coordinates.lat, coordinates.lng);
-    scheduleMapAddressPreview(coordinates.lat, coordinates.lng);
+    const boundedPoint = updateSelectedLocationFromMap(coordinates.lat, coordinates.lng);
+    if (!isPointInDRC(coordinates.lat, coordinates.lng)) {
+      focusMapOnCoordinates(boundedPoint.lat, boundedPoint.lng);
+    }
+    scheduleMapAddressPreview(boundedPoint.lat, boundedPoint.lng);
   };
 
   // Confirmer la selection de la carte
@@ -552,8 +575,11 @@ export default function BookingScreen() {
 
     const fallbackToExpo = async (): Promise<AddressSuggestion[]> => {
       const expoResults = await Location.geocodeAsync(query);
+      const drcExpoResults = expoResults.filter((result) =>
+        isPointInDRC(result.latitude, result.longitude)
+      );
 
-      return expoResults.slice(0, 5).map((result) => {
+      return drcExpoResults.slice(0, 5).map((result) => {
         const fullAddress = buildFullAddress(result);
         return {
           latitude: result.latitude,
@@ -569,7 +595,9 @@ export default function BookingScreen() {
     }
 
     try {
-      const endpoint = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?autocomplete=true&language=fr&limit=5&types=address,place,locality,neighborhood,poi&access_token=${MAPBOX_ACCESS_TOKEN}`;
+      const endpoint = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(
+        query
+      )}.json?autocomplete=true&language=fr&limit=5&types=address,place,locality,neighborhood,poi&country=${DRC_MAPBOX_COUNTRY}&bbox=${DRC_MAPBOX_BBOX}&access_token=${MAPBOX_ACCESS_TOKEN}`;
       const response = await fetch(endpoint);
 
       if (!response.ok) {
@@ -587,6 +615,9 @@ export default function BookingScreen() {
 
           const [longitude, latitude] = feature.center;
           if (typeof latitude !== 'number' || typeof longitude !== 'number') {
+            return null;
+          }
+          if (!isPointInDRC(latitude, longitude)) {
             return null;
           }
 
@@ -661,12 +692,13 @@ export default function BookingScreen() {
 
   // Selectionner une suggestion d'autocomplete
   const handleSelectSuggestion = (suggestion: AddressSuggestion) => {
+    const boundedPoint = clampPointToDRC(suggestion.latitude, suggestion.longitude);
     const fullAddress = suggestion.fullAddress || buildFullAddress(suggestion);
     setLocation(fullAddress);
-    updateSelectedLocationFromMap(suggestion.latitude, suggestion.longitude);
+    updateSelectedLocationFromMap(boundedPoint.lat, boundedPoint.lng);
     setMapRegion({
-      latitude: suggestion.latitude,
-      longitude: suggestion.longitude,
+      latitude: boundedPoint.lat,
+      longitude: boundedPoint.lng,
       latitudeDelta: 0.01,
       longitudeDelta: 0.01,
     });
@@ -781,14 +813,15 @@ export default function BookingScreen() {
       hasSearchResultsRef.current = true;
 
       const firstResult = normalizedResults[0];
+      const boundedPoint = clampPointToDRC(firstResult.latitude, firstResult.longitude);
       setMapRegion({
-        latitude: firstResult.latitude,
-        longitude: firstResult.longitude,
+        latitude: boundedPoint.lat,
+        longitude: boundedPoint.lng,
         latitudeDelta: 0.01,
         longitudeDelta: 0.01,
       });
-      updateSelectedLocationFromMap(firstResult.latitude, firstResult.longitude);
-      focusMapOnCoordinates(firstResult.latitude, firstResult.longitude, getZoomLevelFromLongitudeDelta(0.01));
+      updateSelectedLocationFromMap(boundedPoint.lat, boundedPoint.lng);
+      focusMapOnCoordinates(boundedPoint.lat, boundedPoint.lng, getZoomLevelFromLongitudeDelta(0.01));
       setSearchQuery(firstResult.fullAddress);
       setLocation(firstResult.fullAddress);
       setMapAddressPreview(firstResult.fullAddress);
@@ -803,15 +836,16 @@ export default function BookingScreen() {
 
   // Selectionner un resultat de recherche
   const handleSelectSearchResult = (result: AddressSuggestion) => {
+    const boundedPoint = clampPointToDRC(result.latitude, result.longitude);
     const region = {
-      latitude: result.latitude,
-      longitude: result.longitude,
+      latitude: boundedPoint.lat,
+      longitude: boundedPoint.lng,
       latitudeDelta: 0.01,
       longitudeDelta: 0.01,
     };
     setMapRegion(region);
-    updateSelectedLocationFromMap(result.latitude, result.longitude);
-    focusMapOnCoordinates(result.latitude, result.longitude, getZoomLevelFromLongitudeDelta(region.longitudeDelta));
+    updateSelectedLocationFromMap(boundedPoint.lat, boundedPoint.lng);
+    focusMapOnCoordinates(boundedPoint.lat, boundedPoint.lng, getZoomLevelFromLongitudeDelta(region.longitudeDelta));
 
     const fullAddress = result.fullAddress || buildFullAddress(result);
     setSearchQuery(fullAddress);
@@ -1279,6 +1313,7 @@ export default function BookingScreen() {
 
       {/* Date/Time Picker Modal */}
       <Modal
+        statusBarTranslucent
         visible={showDatePicker}
         transparent
         animationType="slide"
@@ -1337,6 +1372,7 @@ export default function BookingScreen() {
       {DatePicker ? (
         Platform.OS === 'ios' ? (
           <Modal
+            statusBarTranslucent
             visible={showTimePicker}
             transparent
             animationType="slide"
@@ -1384,6 +1420,7 @@ export default function BookingScreen() {
         )
       ) : (
         <Modal
+          statusBarTranslucent
           visible={showTimePicker}
           transparent
           animationType="slide"
@@ -1424,6 +1461,7 @@ export default function BookingScreen() {
 
       {/* Map Picker Modal */}
       <Modal
+        statusBarTranslucent
         visible={showMapPicker}
         transparent={false}
         animationType="slide"
@@ -1532,6 +1570,7 @@ export default function BookingScreen() {
               >
                 <Camera
                   ref={cameraRef}
+                  maxBounds={DRC_CAMERA_BOUNDS}
                   defaultSettings={{
                     centerCoordinate: [mapRegion.longitude, mapRegion.latitude],
                     zoomLevel: getZoomLevelFromLongitudeDelta(mapRegion.longitudeDelta),
@@ -1578,6 +1617,7 @@ export default function BookingScreen() {
 
       {/* Topic Picker Modal */}
       <Modal
+        statusBarTranslucent
         visible={showTopicPicker}
         transparent
         animationType="slide"
@@ -1878,7 +1918,7 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    backgroundColor: 'rgba(0, 0, 0, 0.58)',
     justifyContent: 'flex-end',
   },
   modalKeyboardView: {

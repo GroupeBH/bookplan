@@ -1615,6 +1615,7 @@ export default function UserProfileScreen() {
 
       {/* Access Request Dialog */}
       <Modal
+        statusBarTranslucent
         visible={showAccessDialog}
         transparent
         animationType="fade"
@@ -1654,6 +1655,7 @@ export default function UserProfileScreen() {
 
       {/* Rating Dialog */}
       <Modal
+        statusBarTranslucent
         visible={showRatingDialog}
         transparent
         animationType="fade"
@@ -2060,7 +2062,7 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    backgroundColor: 'rgba(0, 0, 0, 0.58)',
     justifyContent: 'center',
     alignItems: 'center',
   },

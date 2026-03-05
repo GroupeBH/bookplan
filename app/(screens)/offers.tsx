@@ -1,9 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import Animated, { FadeIn } from 'react-native-reanimated';
+import Animated from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Badge } from '../../components/ui/Badge';
 import { colors } from '../../constants/colors';
@@ -36,22 +36,39 @@ export default function OffersScreen() {
   const { offers, isLoading, refreshOffers } = useOffer();
   const [refreshing, setRefreshing] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
+  const refreshOffersRef = useRef(refreshOffers);
+  const isFocusRefreshingRef = useRef(false);
 
   useEffect(() => {
     const interval = setInterval(() => setNowMs(Date.now()), 60 * 1000);
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    refreshOffersRef.current = refreshOffers;
+  }, [refreshOffers]);
+
+  const refreshOnFocus = useCallback(() => {
+    if (isFocusRefreshingRef.current) return;
+    isFocusRefreshingRef.current = true;
+
+    Promise.resolve(refreshOffersRef.current())
+      .catch(() => {})
+      .finally(() => {
+        isFocusRefreshingRef.current = false;
+      });
+  }, []);
+
   useFocusEffect(
-    React.useCallback(() => {
-      refreshOffers();
-    }, [refreshOffers])
+    useCallback(() => {
+      refreshOnFocus();
+    }, [refreshOnFocus])
   );
 
   const onRefresh = async () => {
     setRefreshing(true);
     try {
-      await refreshOffers();
+      await refreshOffersRef.current();
     } finally {
       setRefreshing(false);
     }
@@ -184,7 +201,7 @@ export default function OffersScreen() {
               : (offer.offerType ? [offer.offerType] : []);
 
             return (
-              <Animated.View key={offer.id} entering={FadeIn}>
+              <Animated.View key={offer.id}>
                 <TouchableOpacity
                   style={styles.offerCard}
                   onPress={() => handleViewOffer(offer)}
