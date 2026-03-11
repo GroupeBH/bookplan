@@ -1,7 +1,7 @@
 /* eslint-disable react-hooks/exhaustive-deps */
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import * as Location from 'expo-location';
 import { usePathname, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -19,6 +19,7 @@ import { useUser } from '../../context/UserContext';
 import { getDefaultProfileImage } from '../../lib/defaultImages';
 import { clampPointToDRC, DRC_CAMERA_BOUNDS, isPointInDRC } from '../../lib/drcMap';
 import { isMapboxAvailable } from '../../lib/mapbox';
+import { supabase } from '../../lib/supabase';
 import { Offer, OfferType, User } from '../../types';
 
 // Import conditionnel de Mapbox
@@ -188,45 +189,63 @@ export default function Dashboard() {
   const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(null);
   const [selectedUserForCallout, setSelectedUserForCallout] = useState<User | null>(null);
   const [mapReady, setMapReady] = useState(false);
+  const isScreenFocused = useIsFocused();
 
-  //    -     v  Ã©
-  //    Ã©v  -    Ã¨  
-  const authCheckRef = useRef({ hasChecked: false, timeoutId: null as ReturnType<typeof setTimeout> | null });
-  
+  const authCheckRef = useRef({ timeoutId: null as ReturnType<typeof setTimeout> | null });
+  const authSnapshotRef = useRef({
+    isLoading: true,
+    isAuthenticated: false,
+    hasUser: false,
+  });
+
   useEffect(() => {
-    // y   Ã©Ã©
+    authSnapshotRef.current = {
+      isLoading,
+      isAuthenticated,
+      hasUser: !!user,
+    };
+  }, [isLoading, isAuthenticated, user]);
+
+  useEffect(() => {
     if (authCheckRef.current.timeoutId) {
       clearTimeout(authCheckRef.current.timeoutId);
       authCheckRef.current.timeoutId = null;
     }
-    
-    // Ne rien faire pendant le chargement initial
-    if (isLoading) {
-      authCheckRef.current.hasChecked = false;
+
+    if (!isScreenFocused || isLoading || (isAuthenticated && user)) {
       return;
     }
-    
-    //  '  vÃ©Ã©     Ã©
-    if (!authCheckRef.current.hasChecked) {
-      authCheckRef.current.hasChecked = true;
-    }
-    
-    // Ã© ' v  Ã©  Ã©v  Ã¨  
-    //       Ã»  ' '  Ã©
+
     authCheckRef.current.timeoutId = setTimeout(() => {
-      //  vÃ©  '     Ã©  ' '  Ã©
-      if (authCheckRef.current.hasChecked && !isLoading && !isAuthenticated && !user) {
-        router.replace('/(screens)/auth');
-      }
-    }, ) // Ã© Ã© Ã      Ã©vÃ©
-    
+      void (async () => {
+        const snapshot = authSnapshotRef.current;
+        if (snapshot.isLoading || (snapshot.isAuthenticated && snapshot.hasUser)) {
+          return;
+        }
+
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session?.user) {
+            return;
+          }
+        } catch {
+          // ignore
+        }
+
+        const latestSnapshot = authSnapshotRef.current;
+        if (!latestSnapshot.isLoading && !latestSnapshot.isAuthenticated && !latestSnapshot.hasUser) {
+          router.replace('/(screens)/auth');
+        }
+      })();
+    }, 1800);
+
     return () => {
       if (authCheckRef.current.timeoutId) {
         clearTimeout(authCheckRef.current.timeoutId);
         authCheckRef.current.timeoutId = null;
       }
     };
-  }, [isAuthenticated, isLoading, user, router]);
+  }, [isAuthenticated, isLoading, user, router, isScreenFocused]);
 
   // Ã© '    v  
   const pathname = usePathname();
@@ -1891,8 +1910,6 @@ const styles = StyleSheet.create({
     elevation: 10,
   },
 });
-
-
 
 
 

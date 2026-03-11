@@ -133,12 +133,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // Il sera démarré uniquement sur le dashboard via useFocusEffect
           // Cela évite que les icônes de direction s'actualisent en boucle sur tous les onglets
         }
-      } else {
-        // Arrêter le suivi de localisation lors de la déconnexion
+      } else if (event === 'SIGNED_OUT') {
+        // Arrêter le suivi de localisation lors d'une vraie déconnexion
         const { LocationService } = await import('../lib/locationService');
         LocationService.stopBackgroundTracking();
         setUser(null);
         setIsAuthenticated(false);
+      } else {
+        // Sur connexion instable, certains événements peuvent arriver sans session temporairement.
+        // On revérifie la session avant de déconnecter localement.
+        try {
+          const { data: { session: latestSession } } = await supabase.auth.getSession();
+          if (latestSession?.user?.id) {
+            await loadUserProfile(latestSession.user.id);
+            return;
+          }
+        } catch {
+          // ignore
+        }
       }
         })();
       }, 0);
@@ -383,6 +395,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } else if (!isNetworkError(error)) {
         console.error('Error in loadUserProfile:', error);
       }
+
+      // Ne pas casser la session locale sur erreur réseau intermittente.
+      if (isNetworkErr && user?.id) {
+        setIsAuthenticated(true);
+        return;
+      }
+
+      // Fallback sur le cache si disponible
+      try {
+        const cachedUser = await AsyncStorage.getItem(`user_profile_${userId}`);
+        if (cachedUser) {
+          const userProfile: User = JSON.parse(cachedUser);
+          setUser(userProfile);
+          setIsAuthenticated(true);
+          return;
+        }
+      } catch {
+        // ignore
+      }
+
+      // Déconnecter uniquement si on n'a ni session locale, ni cache exploitable
       setIsAuthenticated(false);
       setUser(null);
     }

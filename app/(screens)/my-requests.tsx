@@ -2,676 +2,411 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import {
+  ActivityIndicator,
+  FlatList,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
 import { Badge } from '../../components/ui/Badge';
-import { Button } from '../../components/ui/Button';
 import { colors } from '../../constants/colors';
 import { useAccessRequest } from '../../context/AccessRequestContext';
 import { useAuth } from '../../context/AuthContext';
 import { useBooking } from '../../context/BookingContext';
+import { deriveBookingStatus } from '../../lib/bookingLifecycle';
 import { getProfileImage } from '../../lib/defaultImages';
 import { supabase } from '../../lib/supabase';
 
 type RequestType = 'access' | 'booking';
+type RequestFilter =
+  | 'all'
+  | 'pending'
+  | 'accepted'
+  | 'rejected'
+  | 'completed'
+  | 'cancelled'
+  | 'expired';
+type BadgeVariant = 'default' | 'success' | 'error' | 'warning' | 'info';
+
+interface ProfileRow {
+  id: string;
+  pseudo: string | null;
+  photo: string | null;
+  age: number | null;
+  gender: 'male' | 'female' | null;
+}
+
+interface ProfileLite {
+  id: string;
+  pseudo: string;
+  photo: string;
+  age: number;
+}
 
 interface RequestItem {
   id: string;
   type: RequestType;
   status: string;
-  targetUser?: any;
+  targetUserId: string;
   createdAt: string;
   updatedAt: string;
-  data?: any; // Données spécifiques (booking date, etc.)
-  _targetId?: string; // ID du target stocké explicitement pour éviter les confusions (pour les demandes d'accès)
+  bookingDate?: string;
+  durationHours?: number;
+  location?: string;
+}
+
+interface StatusMeta {
+  label: string;
+  variant: BadgeVariant;
+  color: string;
+  icon: string;
+}
+
+const FILTERS: readonly { key: RequestFilter; label: string }[] = [
+  { key: 'all', label: 'Toutes' },
+  { key: 'pending', label: 'En attente' },
+  { key: 'accepted', label: 'Acceptees' },
+  { key: 'rejected', label: 'Refusees' },
+  { key: 'completed', label: 'Terminees' },
+  { key: 'cancelled', label: 'Annulees' },
+  { key: 'expired', label: 'Cloturees' },
+];
+
+function getStatusMeta(status: string): StatusMeta {
+  switch (status) {
+    case 'pending':
+      return { label: 'En attente', variant: 'warning', color: colors.yellow500, icon: 'time-outline' };
+    case 'accepted':
+      return { label: 'Acceptee', variant: 'success', color: colors.green500, icon: 'checkmark-circle' };
+    case 'rejected':
+      return { label: 'Refusee', variant: 'error', color: colors.red500, icon: 'close-circle' };
+    case 'completed':
+      return { label: 'Terminee', variant: 'info', color: colors.purple400, icon: 'checkmark-done' };
+    case 'cancelled':
+      return { label: 'Annulee', variant: 'error', color: colors.red500, icon: 'close-circle' };
+    case 'expired':
+      return { label: 'Cloturee', variant: 'default', color: colors.textSecondary, icon: 'hourglass-outline' };
+    default:
+      return { label: status, variant: 'default', color: colors.textSecondary, icon: 'ellipse-outline' };
+  }
+}
+
+function formatRelativeDate(dateString: string): string {
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffDays <= 0) return "Aujourd'hui";
+  if (diffDays === 1) return 'Hier';
+  if (diffDays < 7) return `Il y a ${diffDays} jours`;
+
+  return date.toLocaleDateString('fr-FR', {
+    day: 'numeric',
+    month: 'short',
+    year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined,
+  });
+}
+
+function formatBookingDate(dateString: string): string {
+  const date = new Date(dateString);
+  return date.toLocaleDateString('fr-FR', {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 export default function MyRequestsScreen() {
   const router = useRouter();
   const { user: currentUser } = useAuth();
-  const { accessRequests, refreshRequests } = useAccessRequest();
-  const { bookings, refreshBookings } = useBooking();
-  
-  // Log pour déboguer
-  console.log('🔍 MyRequestsScreen - État initial:', {
-    currentUserId: currentUser?.id,
-    accessRequestsCount: accessRequests.length,
-    bookingsCount: bookings.length,
-    accessRequests: accessRequests.map(r => ({ id: r.id, requesterId: r.requesterId, targetId: r.targetId })),
-    bookings: bookings.map(b => ({ id: b.id, requesterId: b.requesterId, providerId: b.providerId })),
-  });
-  const [requests, setRequests] = useState<RequestItem[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const {
+    accessRequests,
+    refreshRequests,
+    isLoading: isAccessLoading,
+  } = useAccessRequest();
+  const {
+    bookings,
+    refreshBookings,
+    isLoading: isBookingsLoading,
+  } = useBooking();
+
   const [refreshing, setRefreshing] = useState(false);
-  const [filter, setFilter] = useState<'all' | 'pending' | 'accepted' | 'rejected'>('all');
-  const isLoadingRef = useRef(false);
-  const lastLoadKeyRef = useRef<string>('');
+  const [isBootstrapping, setIsBootstrapping] = useState(true);
+  const [filter, setFilter] = useState<RequestFilter>('all');
+  const [bookingClock, setBookingClock] = useState(Date.now());
+  const [profilesById, setProfilesById] = useState<Record<string, ProfileLite>>({});
+  const inFlightProfileIdsRef = useRef<Set<string>>(new Set());
+  const lastFocusRefreshRef = useRef(0);
+  const refreshRequestsRef = useRef(refreshRequests);
+  const refreshBookingsRef = useRef(refreshBookings);
 
-  // Mémoriser les demandes filtrées pour éviter les recalculs
-  const sentAccessRequests = useMemo(() => {
-    const filtered = accessRequests.filter(r => r.requesterId === currentUser?.id);
-    console.log('📋 sentAccessRequests:', {
-      total: accessRequests.length,
-      filtered: filtered.length,
-      currentUserId: currentUser?.id,
-      allRequesterIds: accessRequests.map(r => r.requesterId),
-    });
-    return filtered;
-  }, [accessRequests, currentUser?.id]);
-
-  const sentBookings = useMemo(() => {
-    const filtered = bookings.filter(b => b.requesterId === currentUser?.id);
-    console.log('📋 sentBookings:', {
-      total: bookings.length,
-      filtered: filtered.length,
-      currentUserId: currentUser?.id,
-      allRequesterIds: bookings.map(b => b.requesterId),
-    });
-    return filtered;
-  }, [bookings, currentUser?.id]);
-
-  const loadRequests = useCallback(async (force: boolean = false) => {
-    if (!currentUser?.id) {
-      setIsLoading(false);
-      return;
-    }
-
-    // Créer une clé unique pour cette requête (sans le filtre car le filtre est appliqué après)
-    const accessRequestIds = sentAccessRequests.map(r => r.id).sort().join(',');
-    const bookingIds = sentBookings.map(b => b.id).sort().join(',');
-    const loadKey = `${currentUser.id}-${accessRequestIds}-${bookingIds}`;
-    
-    console.log('🔄 loadRequests appelé:', { force, loadKey, lastKey: lastLoadKeyRef.current, isLoading: isLoadingRef.current });
-    
-    // Éviter les appels multiples (sauf si forcé)
-    if (!force && (isLoadingRef.current || lastLoadKeyRef.current === loadKey)) {
-      console.log('⏭️ loadRequests ignoré (déjà en cours ou même clé)');
-      return;
-    }
-
-    isLoadingRef.current = true;
-    lastLoadKeyRef.current = loadKey;
-    setIsLoading(true);
-    
-    console.log('✅ loadRequests démarre:', { 
-      accessRequestsCount: sentAccessRequests.length, 
-      bookingsCount: sentBookings.length 
-    });
-
-    // Timeout de sécurité pour éviter un chargement infini
-    let safetyTimeout: ReturnType<typeof setTimeout> | null = null;
-    
-    try {
-      const allRequests: RequestItem[] = [];
-
-      // Si aucune demande, terminer immédiatement
-      if (sentAccessRequests.length === 0 && sentBookings.length === 0) {
-        console.log('📭 Aucune demande à charger');
-        setRequests(allRequests); // Liste vide
-        return; // Le finally s'occupera de réinitialiser isLoading
-      }
-
-      // Timeout de sécurité pour éviter un chargement infini
-      safetyTimeout = setTimeout(() => {
-        if (isLoadingRef.current) {
-          console.warn('⚠️ Timeout de sécurité - arrêt du chargement');
-          isLoadingRef.current = false;
-          setIsLoading(false);
-          setRequests([]);
-        }
-      }, 30000); // 30 secondes maximum
-
-      // Charger les demandes d'accès envoyées
-      for (const accessRequest of sentAccessRequests) {
-        // Stocker le targetId AVANT toute opération asynchrone pour éviter les confusions
-        const currentTargetId = accessRequest.targetId;
-        const currentRequestId = accessRequest.id;
-        
-        try {
-          console.log('🔍 [ACCESS] Début chargement profil:', {
-            requestId: currentRequestId,
-            targetId: currentTargetId,
-            requesterId: accessRequest.requesterId,
-            currentUserId: currentUser.id,
-          });
-
-          // Charger le profil du target avec timeout amélioré
-          const profileQuery = supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', currentTargetId) // Utiliser la variable locale pour éviter toute confusion
-            .single();
-
-          // Utiliser Promise.race avec timeout (réduit à 5 secondes)
-          const timeoutPromise = new Promise<{ data: null; error: { message: string } }>((resolve) =>
-            setTimeout(() => resolve({ data: null, error: { message: 'Timeout' } }), 5000)
-          );
-
-          const result = await Promise.race([profileQuery, timeoutPromise]) as any;
-          const { data: targetProfile, error: profileError } = result;
-          
-          // Vérifier immédiatement que le profil correspond
-          if (targetProfile && targetProfile.id !== currentTargetId) {
-            console.error('❌ [ACCESS] ERREUR CRITIQUE: Le profil chargé ne correspond PAS au targetId!', {
-              requestId: currentRequestId,
-              expectedTargetId: currentTargetId,
-              loadedProfileId: targetProfile.id,
-              loadedProfilePseudo: targetProfile.pseudo,
-            });
-            // Ne pas utiliser ce profil, utiliser les infos partielles à la place
-            allRequests.push({
-              id: currentRequestId,
-              type: 'access',
-              status: accessRequest.status,
-              targetUser: {
-                id: currentTargetId,
-                pseudo: 'Utilisateur',
-                photo: getProfileImage(null, 'female'),
-                age: 25,
-              },
-              createdAt: accessRequest.createdAt,
-              updatedAt: accessRequest.updatedAt,
-              _targetId: currentTargetId,
-            });
-            continue; // Passer à la demande suivante
-          }
-
-          // Vérifier que le profil chargé correspond bien au targetId
-          if (!profileError && targetProfile && targetProfile.id === currentTargetId) {
-            console.log('✅ [ACCESS] Profil chargé correctement:', {
-              requestId: currentRequestId,
-              targetId: currentTargetId,
-              profileId: targetProfile.id,
-              pseudo: targetProfile.pseudo,
-            });
-            
-            allRequests.push({
-              id: currentRequestId,
-              type: 'access',
-              status: accessRequest.status,
-              targetUser: {
-                id: currentTargetId, // Utiliser la variable locale pour garantir la cohérence
-                pseudo: targetProfile.pseudo || 'Utilisateur',
-                photo: getProfileImage(targetProfile.photo, targetProfile.gender),
-                age: targetProfile.age || 25,
-              },
-              createdAt: accessRequest.createdAt,
-              updatedAt: accessRequest.updatedAt,
-              // Stocker aussi le targetId directement pour éviter toute confusion
-              _targetId: currentTargetId,
-            });
-          } else {
-            // Même en cas d'erreur ou de timeout, afficher la demande avec des infos partielles
-            console.warn('⚠️ [ACCESS] Impossible de charger le profil target:', {
-              requestId: currentRequestId,
-              targetId: currentTargetId,
-              error: profileError?.message || 'Timeout',
-              profileId: targetProfile?.id,
-              profileMatches: targetProfile?.id === currentTargetId,
-            });
-            allRequests.push({
-              id: currentRequestId,
-              type: 'access',
-              status: accessRequest.status,
-              targetUser: {
-                id: currentTargetId, // Utiliser la variable locale
-                pseudo: 'Utilisateur',
-                photo: getProfileImage(null, 'female'),
-                age: 25,
-              },
-              createdAt: accessRequest.createdAt,
-              updatedAt: accessRequest.updatedAt,
-              // Stocker aussi le targetId directement pour éviter toute confusion
-              _targetId: currentTargetId,
-            });
-          }
-        } catch (err) {
-          console.error('❌ [ACCESS] Error loading target profile:', {
-            requestId: currentRequestId,
-            targetId: currentTargetId,
-            error: err,
-          });
-          // Même en cas d'erreur, afficher la demande avec des infos partielles
-          allRequests.push({
-            id: currentRequestId,
-            type: 'access',
-            status: accessRequest.status,
-            targetUser: {
-              id: currentTargetId, // Utiliser la variable locale
-              pseudo: 'Utilisateur',
-              photo: getProfileImage(null, 'female'),
-              age: 25,
-            },
-            createdAt: accessRequest.createdAt,
-            updatedAt: accessRequest.updatedAt,
-            // Stocker aussi le targetId directement pour éviter toute confusion
-            _targetId: currentTargetId,
-          });
-        }
-      }
-
-      // Charger les demandes de compagnie envoyées
-      for (const booking of sentBookings) {
-        // Stocker les IDs AVANT toute opération asynchrone
-        const currentBookingId = booking.id;
-        const currentProviderId = booking.providerId;
-        
-        try {
-          console.log('🔍 [BOOKING] Début chargement profil:', {
-            bookingId: currentBookingId,
-            providerId: currentProviderId,
-            requesterId: booking.requesterId,
-            currentUserId: currentUser.id,
-          });
-          
-          // Charger le profil du provider avec timeout amélioré
-          const profileQuery = supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', currentProviderId) // Utiliser la variable locale
-            .single();
-
-          // Utiliser Promise.race avec timeout (réduit à 5 secondes)
-          const timeoutPromise = new Promise<{ data: null; error: { message: string } }>((resolve) =>
-            setTimeout(() => resolve({ data: null, error: { message: 'Timeout' } }), 5000)
-          );
-
-          const result = await Promise.race([profileQuery, timeoutPromise]) as any;
-          const { data: providerProfile, error: profileError } = result;
-
-          // Vérifier que le profil correspond bien
-          if (providerProfile && providerProfile.id !== currentProviderId) {
-            console.error('❌ [BOOKING] ERREUR CRITIQUE: Le profil chargé ne correspond PAS au providerId!', {
-              bookingId: currentBookingId,
-              expectedProviderId: currentProviderId,
-              loadedProfileId: providerProfile.id,
-              loadedProfilePseudo: providerProfile.pseudo,
-            });
-          }
-
-          if (!profileError && providerProfile && providerProfile.id === currentProviderId) {
-            console.log('✅ [BOOKING] Profil chargé correctement:', {
-              bookingId: currentBookingId,
-              providerId: currentProviderId,
-              profileId: providerProfile.id,
-              pseudo: providerProfile.pseudo,
-            });
-            
-            allRequests.push({
-              id: currentBookingId, // Utiliser la variable locale
-              type: 'booking',
-              status: booking.status,
-              targetUser: {
-                id: currentProviderId, // Utiliser la variable locale pour garantir la cohérence
-                pseudo: providerProfile.pseudo || 'Utilisateur',
-                photo: getProfileImage(providerProfile.photo, providerProfile.gender),
-                age: providerProfile.age || 25,
-              },
-              createdAt: booking.createdAt,
-              updatedAt: booking.updatedAt,
-              data: {
-                bookingDate: booking.bookingDate,
-                durationHours: booking.durationHours,
-                location: booking.location,
-              },
-            });
-          } else {
-            // Même en cas d'erreur ou de timeout, afficher la demande avec des infos partielles
-            console.warn('⚠️ [BOOKING] Impossible de charger le profil provider:', {
-              bookingId: currentBookingId,
-              providerId: currentProviderId,
-              error: profileError?.message || 'Timeout',
-            });
-            allRequests.push({
-              id: currentBookingId, // Utiliser la variable locale
-              type: 'booking',
-              status: booking.status,
-              targetUser: {
-                id: currentProviderId, // Utiliser la variable locale
-                pseudo: 'Utilisateur',
-                photo: getProfileImage(null, 'female'),
-                age: 25,
-              },
-              createdAt: booking.createdAt,
-              updatedAt: booking.updatedAt,
-              data: {
-                bookingDate: booking.bookingDate,
-                durationHours: booking.durationHours,
-                location: booking.location,
-              },
-            });
-          }
-        } catch (err) {
-          console.error('❌ [BOOKING] Error loading provider profile:', {
-            bookingId: currentBookingId,
-            providerId: currentProviderId,
-            error: err,
-          });
-          // Même en cas d'erreur, afficher la demande avec des infos partielles
-          allRequests.push({
-            id: currentBookingId, // Utiliser la variable locale
-            type: 'booking',
-            status: booking.status,
-            targetUser: {
-              id: currentProviderId, // Utiliser la variable locale
-              pseudo: 'Utilisateur',
-              photo: getProfileImage(null, 'female'),
-              age: 25,
-            },
-            createdAt: booking.createdAt,
-            updatedAt: booking.updatedAt,
-            data: {
-              bookingDate: booking.bookingDate,
-              durationHours: booking.durationHours,
-              location: booking.location,
-            },
-          });
-        }
-      }
-
-      // Trier par date de création (plus récent en premier)
-      allRequests.sort((a, b) => 
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      );
-
-      // Log détaillé de toutes les demandes avant de les définir
-      console.log('✅ [LOAD] loadRequests terminé - Liste complète des demandes:', {
-        requestsCount: allRequests.length,
-        requests: allRequests.map(r => ({
-          id: r.id,
-          type: r.type,
-          targetUserPseudo: r.targetUser?.pseudo,
-          targetUserId: r.targetUser?.id,
-          _targetId: r._targetId,
-          status: r.status,
-        })),
-      });
-      
-      // Vérifier qu'il n'y a pas de doublons d'IDs
-      const requestIds = allRequests.map(r => r.id);
-      const duplicateIds = requestIds.filter((id, index) => requestIds.indexOf(id) !== index);
-      if (duplicateIds.length > 0) {
-        console.error('❌ [LOAD] ERREUR: IDs dupliqués trouvés!', duplicateIds);
-      }
-      
-      setRequests(allRequests);
-    } catch (error) {
-      console.error('Error loading requests:', error);
-      setRequests([]); // Afficher une liste vide plutôt que de rester en chargement
-    } finally {
-      if (safetyTimeout) {
-        clearTimeout(safetyTimeout);
-      }
-      isLoadingRef.current = false;
-      setIsLoading(false);
-      console.log('✅ loadRequests - État de chargement réinitialisé');
-    }
-  }, [currentUser?.id, sentAccessRequests, sentBookings]);
-
-  // Charger les demandes au montage initial et quand les données changent
   useEffect(() => {
-    if (!currentUser?.id) {
-      setIsLoading(false);
-      setRequests([]);
-      return;
-    }
+    refreshRequestsRef.current = refreshRequests;
+  }, [refreshRequests]);
 
-    // Vérifier si les IDs ont changé
-    const accessRequestIds = sentAccessRequests.map(r => r.id).sort().join(',');
-    const bookingIds = sentBookings.map(b => b.id).sort().join(',');
-    const newKey = `${currentUser.id}-${accessRequestIds}-${bookingIds}`;
-    
-    // Si la clé est vide, c'est le premier chargement - forcer
-    const isFirstLoad = lastLoadKeyRef.current === '';
-    
-    console.log('🔍 useEffect check:', { 
-      isFirstLoad, 
-      newKey, 
-      lastKey: lastLoadKeyRef.current, 
-      isLoading: isLoadingRef.current,
-      hasAccessRequests: sentAccessRequests.length > 0,
-      hasBookings: sentBookings.length > 0
-    });
-    
-    // Éviter les appels multiples (sauf si c'est le premier chargement)
-    if (!isFirstLoad && (isLoadingRef.current || lastLoadKeyRef.current === newKey)) {
-      console.log('⏭️ useEffect ignoré');
-      return;
-    }
+  useEffect(() => {
+    refreshBookingsRef.current = refreshBookings;
+  }, [refreshBookings]);
 
-    const hasRequests = sentAccessRequests.length > 0 || sentBookings.length > 0;
-    if (hasRequests) {
-      // Forcer le premier chargement
-      console.log('🚀 Démarrage du chargement des demandes');
-      loadRequests(isFirstLoad);
-    } else {
-      console.log('📭 Aucune demande, mise à jour de l\'état');
-      // Réinitialiser les refs pour permettre un nouveau chargement si des demandes arrivent
-      isLoadingRef.current = false;
-      setIsLoading(false);
-      setRequests([]);
-      // Mettre à jour la clé même si pas de demandes pour éviter les rechargements
-      if (lastLoadKeyRef.current !== newKey) {
-        lastLoadKeyRef.current = newKey;
+  useEffect(() => {
+    setProfilesById({});
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setBookingClock(Date.now());
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const refreshAll = useCallback(async () => {
+    await Promise.allSettled([refreshRequestsRef.current(), refreshBookingsRef.current()]);
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const bootstrap = async () => {
+      if (!currentUser?.id) {
+        if (isMounted) {
+          setIsBootstrapping(false);
+        }
+        return;
       }
-    }
-  }, [currentUser?.id, sentAccessRequests, sentBookings]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Suivre le temps du dernier focus pour éviter les rafraîchissements trop fréquents
-  const lastFocusTimeRef = useRef<number>(0);
-  
+      if (isMounted) {
+        setIsBootstrapping(true);
+      }
+      await refreshAll();
+      if (isMounted) {
+        setIsBootstrapping(false);
+      }
+    };
+
+    bootstrap();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [currentUser?.id, refreshAll]);
+
+  const sentAccessRequests = useMemo(
+    () => accessRequests.filter((request) => request.requesterId === currentUser?.id),
+    [accessRequests, currentUser?.id]
+  );
+
+  const sentBookings = useMemo(
+    () => bookings.filter((booking) => booking.requesterId === currentUser?.id),
+    [bookings, currentUser?.id]
+  );
+
+  const requests = useMemo<RequestItem[]>(() => {
+    const accessItems: RequestItem[] = sentAccessRequests.map((request) => ({
+      id: request.id,
+      type: 'access',
+      status: request.status,
+      targetUserId: request.targetId,
+      createdAt: request.createdAt,
+      updatedAt: request.updatedAt,
+    }));
+
+    const bookingItems: RequestItem[] = sentBookings.map((booking) => ({
+      id: booking.id,
+      type: 'booking',
+      status: deriveBookingStatus(
+        booking.status,
+        booking.bookingDate,
+        booking.durationHours,
+        bookingClock
+      ),
+      targetUserId: booking.providerId,
+      createdAt: booking.createdAt,
+      updatedAt: booking.updatedAt,
+      bookingDate: booking.bookingDate,
+      durationHours: booking.durationHours,
+      location: booking.location,
+    }));
+
+    return [...accessItems, ...bookingItems].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }, [sentAccessRequests, sentBookings, bookingClock]);
+
+  useEffect(() => {
+    const inFlightProfileIds = inFlightProfileIdsRef.current;
+    const uniqueTargetIds = Array.from(
+      new Set(requests.map((request) => request.targetUserId).filter(Boolean))
+    );
+
+    const idsToLoad = uniqueTargetIds.filter(
+      (id) => !profilesById[id] && !inFlightProfileIds.has(id)
+    );
+
+    if (idsToLoad.length === 0) {
+      return;
+    }
+
+    idsToLoad.forEach((id) => inFlightProfileIds.add(id));
+    let isMounted = true;
+
+    const loadProfiles = async () => {
+      try {
+        const { data } = await supabase
+          .from('profiles')
+          .select('id, pseudo, photo, age, gender')
+          .in('id', idsToLoad);
+
+        if (!isMounted || !data) {
+          return;
+        }
+
+        const rows = data as ProfileRow[];
+        const mappedProfiles: Record<string, ProfileLite> = {};
+
+        rows.forEach((profile) => {
+          mappedProfiles[profile.id] = {
+            id: profile.id,
+            pseudo: profile.pseudo || 'Utilisateur',
+            photo: getProfileImage(profile.photo, profile.gender || 'female'),
+            age: profile.age || 25,
+          };
+        });
+
+        if (Object.keys(mappedProfiles).length > 0) {
+          setProfilesById((prev) => ({ ...prev, ...mappedProfiles }));
+        }
+      } finally {
+        idsToLoad.forEach((id) => inFlightProfileIds.delete(id));
+      }
+    };
+
+    loadProfiles();
+
+    return () => {
+      isMounted = false;
+      idsToLoad.forEach((id) => inFlightProfileIds.delete(id));
+    };
+  }, [profilesById, requests]);
+
   useFocusEffect(
     useCallback(() => {
-      if (!currentUser?.id || isLoadingRef.current) return;
-      
+      if (!currentUser?.id) return;
+
       const now = Date.now();
-      const timeSinceLastFocus = now - lastFocusTimeRef.current;
-      
-      // Ne rafraîchir que si on revient après plus de 2 secondes (évite les rafraîchissements lors de la navigation rapide)
-      if (timeSinceLastFocus > 2000 || lastFocusTimeRef.current === 0) {
-        console.log('🔄 Rafraîchissement des demandes (focus après', timeSinceLastFocus, 'ms)');
-        lastFocusTimeRef.current = now;
-        
-        // Rafraîchir les données au focus (sans forcer le rechargement complet)
-        refreshRequests().then(() => {
-          console.log('✅ Access requests rafraîchies');
-        });
-        refreshBookings().then(() => {
-          console.log('✅ Bookings rafraîchies');
-        });
-        
-        // Recharger seulement si les données ont changé (pas de forçage systématique)
-        const timer = setTimeout(() => {
-          if (!isLoadingRef.current) {
-            // Vérifier si les données ont changé avant de recharger
-            const newAccessRequestIds = sentAccessRequests.map(r => r.id).sort().join(',');
-            const newBookingIds = sentBookings.map(b => b.id).sort().join(',');
-            const newLoadKey = `${currentUser.id}-${newAccessRequestIds}-${newBookingIds}`;
-            
-            if (newLoadKey !== lastLoadKeyRef.current) {
-              console.log('🔄 Données changées, rechargement nécessaire');
-              loadRequests(false); // Ne pas forcer, laisser la logique normale gérer
-            } else {
-              console.log('⏭️ Données inchangées, pas de rechargement');
-            }
-          }
-        }, 500);
-        return () => clearTimeout(timer);
-      } else {
-        console.log('⏭️ Focus trop récent, pas de rafraîchissement');
+      if (now - lastFocusRefreshRef.current < 15000) {
+        return;
       }
-    }, [currentUser?.id, sentAccessRequests, sentBookings, refreshRequests, refreshBookings, loadRequests])
+
+      lastFocusRefreshRef.current = now;
+      refreshAll();
+    }, [currentUser?.id, refreshAll])
   );
 
   const onRefresh = useCallback(async () => {
-    if (isLoadingRef.current) return; // Éviter les refresh multiples
-    
+    if (refreshing) {
+      return;
+    }
+
     setRefreshing(true);
-    // Réinitialiser la clé de chargement pour forcer le rechargement
-    lastLoadKeyRef.current = '';
-    isLoadingRef.current = false;
-    
-    await refreshRequests();
-    await refreshBookings();
-    
-    // Attendre un peu pour que les données soient mises à jour
-    setTimeout(() => {
-      loadRequests(true);
+    try {
+      await refreshAll();
+    } finally {
       setRefreshing(false);
-    }, 500);
-  }, [refreshRequests, refreshBookings]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const filteredRequests = requests.filter(req => {
-    if (filter === 'all') return true;
-    return req.status === filter;
-  });
-
-  const getStatusBadge = (status: string, type: RequestType) => {
-    switch (status) {
-      case 'pending':
-        return <Badge variant="warning">En attente</Badge>;
-      case 'accepted':
-        return <Badge variant="success">Acceptée</Badge>;
-      case 'rejected':
-        return <Badge variant="error">Refusée</Badge>;
-      case 'completed':
-        return <Badge variant="default">Terminée</Badge>;
-      case 'cancelled':
-        return <Badge variant="error">Annulée</Badge>;
-      default:
-        return <Badge variant="default">{status}</Badge>;
     }
-  };
+  }, [refreshAll, refreshing]);
 
-  const getRequestIcon = (type: RequestType, status: string) => {
-    if (type === 'access') {
-      return status === 'accepted' ? 'lock-open' : 'lock-closed';
-    } else {
-      switch (status) {
-        case 'pending':
-          return 'time-outline';
-        case 'accepted':
-          return 'checkmark-circle';
-        case 'rejected':
-          return 'close-circle';
-        case 'completed':
-          return 'checkmark-done';
-        case 'cancelled':
-          return 'close-circle';
-        default:
-          return 'calendar-outline';
+  const filteredRequests = useMemo(() => {
+    if (filter === 'all') {
+      return requests;
+    }
+    return requests.filter((request) => request.status === filter);
+  }, [filter, requests]);
+
+  const countsByFilter = useMemo<Record<RequestFilter, number>>(() => {
+    const counts: Record<RequestFilter, number> = {
+      all: requests.length,
+      pending: 0,
+      accepted: 0,
+      rejected: 0,
+      completed: 0,
+      cancelled: 0,
+      expired: 0,
+    };
+
+    requests.forEach((request) => {
+      if (request.status in counts) {
+        counts[request.status as RequestFilter] += 1;
       }
-    }
-  };
-
-  const getRequestColor = (type: RequestType, status: string) => {
-    if (type === 'access') {
-      return status === 'accepted' ? colors.green500 : colors.purple500;
-    } else {
-      switch (status) {
-        case 'pending':
-          return colors.yellow500;
-        case 'accepted':
-          return colors.green500;
-        case 'rejected':
-        case 'cancelled':
-          return colors.red500;
-        case 'completed':
-          return colors.green500;
-        default:
-          return colors.textSecondary;
-      }
-    }
-  };
-
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diff = now.getTime() - date.getTime();
-    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-
-    if (days === 0) {
-      return "Aujourd'hui";
-    } else if (days === 1) {
-      return 'Hier';
-    } else if (days < 7) {
-      return `Il y a ${days} jours`;
-    } else {
-      return date.toLocaleDateString('fr-FR', {
-        day: 'numeric',
-        month: 'short',
-        year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined,
-      });
-    }
-  };
-
-  const handleRequestPress = (request: RequestItem) => {
-    console.log('🖱️ [CLICK] handleRequestPress appelé:', {
-      requestId: request.id,
-      type: request.type,
-      targetUserFromRequest: request.targetUser?.id,
-      targetUserPseudo: request.targetUser?.pseudo,
-      _targetId: request._targetId,
     });
-    
-    if (request.type === 'booking') {
-      // Pour toutes les demandes de compagnie, naviguer vers les détails
-      console.log('📋 [CLICK] Navigation vers booking-details:', request.id);
-      router.push(`/(screens)/booking-details?bookingId=${request.id}`);
-    } else if (request.type === 'access') {
-      // Pour les demandes d'accès, trouver le targetId depuis les accessRequests
-      const accessRequest = sentAccessRequests.find(r => r.id === request.id);
-      
-      console.log('📋 [CLICK] Détails de la demande d\'accès:', {
-        requestId: request.id,
-        _targetId: request._targetId,
-        targetUserFromRequest: request.targetUser?.id,
-        targetUserPseudo: request.targetUser?.pseudo,
-        accessRequestFound: !!accessRequest,
-        accessRequestTargetId: accessRequest?.targetId,
-        allSentAccessRequests: sentAccessRequests.map(r => ({
-          id: r.id,
-          targetId: r.targetId,
-          requesterId: r.requesterId,
-        })),
-      });
-      
-      // Priorité absolue: utiliser le targetId depuis sentAccessRequests (source de vérité)
-      const targetId = accessRequest?.targetId;
-      
-      if (!targetId) {
-        console.error('❌ [CLICK] ERREUR: Impossible de trouver le targetId pour la demande!', {
-          requestId: request.id,
-          _targetId: request._targetId,
-          targetUserFromRequest: request.targetUser?.id,
-          accessRequestFound: !!accessRequest,
-          allSentAccessRequests: sentAccessRequests.map(r => ({ id: r.id, targetId: r.targetId })),
-        });
-        Alert.alert('Erreur', 'Impossible d\'ouvrir le profil');
+
+    return counts;
+  }, [requests]);
+
+  const isLoading = isBootstrapping && (isAccessLoading || isBookingsLoading);
+
+  const getTargetProfile = useCallback(
+    (targetUserId: string): ProfileLite => {
+      return (
+        profilesById[targetUserId] || {
+          id: targetUserId,
+          pseudo: 'Utilisateur',
+          photo: getProfileImage(null, 'female'),
+          age: 25,
+        }
+      );
+    },
+    [profilesById]
+  );
+
+  const handleRequestPress = useCallback(
+    (request: RequestItem) => {
+      if (request.type === 'booking') {
+        router.push(`/(screens)/booking-details?bookingId=${request.id}`);
         return;
       }
-      
-      // Vérifier que le targetId correspond bien à la demande affichée
-      if (request.targetUser?.id && request.targetUser.id !== targetId) {
-        console.error('❌ [CLICK] ERREUR: Le targetUser.id ne correspond pas au targetId de la demande!', {
-          requestId: request.id,
-          expectedTargetId: targetId,
-          actualTargetUserId: request.targetUser.id,
-          targetUserPseudo: request.targetUser.pseudo,
-        });
+
+      if (request.targetUserId) {
+        router.push(`/(screens)/user-profile?userId=${request.targetUserId}`);
       }
-      
-      console.log('✅ [CLICK] Navigation vers user-profile avec targetId:', {
-        requestId: request.id,
-        targetId: targetId,
-        targetUserPseudo: request.targetUser?.pseudo,
-      });
-      
-      // TOUJOURS utiliser le targetId depuis sentAccessRequests (source de vérité)
-      router.push(`/(screens)/user-profile?userId=${targetId}`);
+    },
+    [router]
+  );
+
+  const renderEmptyState = () => {
+    if (isLoading) {
+      return (
+        <View style={styles.emptyContainer}>
+          <ActivityIndicator size="large" color={colors.pink500} />
+          <Text style={styles.emptyText}>Chargement des demandes...</Text>
+        </View>
+      );
     }
+
+    return (
+      <View style={styles.emptyContainer}>
+        <Ionicons name="document-text-outline" size={60} color={colors.textTertiary} />
+        <Text style={styles.emptyTitle}>
+          {filter === 'all' ? 'Aucune demande envoyee' : 'Aucun resultat pour ce filtre'}
+        </Text>
+        <Text style={styles.emptyText}>
+          {filter === 'all'
+            ? "Vous n'avez pas encore envoye de demande d'acces ou de compagnie."
+            : 'Essayez un autre statut pour afficher vos demandes.'}
+        </Text>
+      </View>
+    );
   };
 
   return (
@@ -680,149 +415,117 @@ export default function MyRequestsScreen() {
         <TouchableOpacity onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={24} color={colors.textSecondary} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Mes demandes</Text>
-        <View style={{ width: 24 }} />
+        <View style={styles.headerContent}>
+          <Text style={styles.headerTitle}>Mes demandes envoyees</Text>
+          <Text style={styles.headerSubtitle}>{requests.length} demande(s)</Text>
+        </View>
+        <View style={styles.headerSpacer} />
       </View>
 
-      {/* Filters */}
       <View style={styles.filters}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filtersContent}>
-          {(['all', 'pending', 'accepted', 'rejected'] as const).map((filterOption) => (
-            <TouchableOpacity
-              key={filterOption}
-              style={[styles.filterButton, filter === filterOption && styles.filterButtonActive]}
-              onPress={() => setFilter(filterOption)}
-            >
-              <Text style={[styles.filterText, filter === filterOption && styles.filterTextActive]}>
-                {filterOption === 'all' ? 'Toutes' : 
-                 filterOption === 'pending' ? 'En attente' :
-                 filterOption === 'accepted' ? 'Acceptées' : 'Refusées'}
-              </Text>
-            </TouchableOpacity>
-          ))}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.filtersContent}
+        >
+          {FILTERS.map((filterOption) => {
+            const isActive = filter === filterOption.key;
+            const count = countsByFilter[filterOption.key];
+
+            return (
+              <TouchableOpacity
+                key={filterOption.key}
+                style={[styles.filterButton, isActive && styles.filterButtonActive]}
+                onPress={() => setFilter(filterOption.key)}
+              >
+                <Text style={[styles.filterText, isActive && styles.filterTextActive]}>
+                  {filterOption.label} ({count})
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
         </ScrollView>
       </View>
 
-      <ScrollView
-        style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+      <FlatList
+        data={filteredRequests}
+        keyExtractor={(item) => `${item.type}-${item.id}`}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[
+          styles.listContent,
+          filteredRequests.length === 0 ? styles.listContentEmpty : undefined,
+        ]}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.purple500} />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.pink500} />
         }
-      >
-        {isLoading ? (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>Chargement...</Text>
-          </View>
-        ) : filteredRequests.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Ionicons name="document-text-outline" size={64} color={colors.textTertiary} />
-            <Text style={styles.emptyTitle}>
-              {filter === 'all' ? 'Aucune demande' : 
-               filter === 'pending' ? 'Aucune demande en attente' :
-               filter === 'accepted' ? 'Aucune demande acceptée' : 'Aucune demande refusée'}
-            </Text>
-            <Text style={styles.emptyText}>
-              {filter === 'all' 
-                ? 'Vous n\'avez pas encore envoyé de demandes d\'accès ou de compagnie.'
-                : 'Aucune demande ne correspond à ce filtre.'}
-            </Text>
-          </View>
-        ) : (
-          filteredRequests.map((request, index) => (
-            <Animated.View
-              key={`${request.type}-${request.id}`}
-              entering={FadeIn.delay(index * 50)}
-            >
+        ListEmptyComponent={renderEmptyState}
+        renderItem={({ item, index }) => {
+          const statusMeta = getStatusMeta(item.status);
+          const targetProfile = getTargetProfile(item.targetUserId);
+          const requestTypeLabel = item.type === 'access' ? "Demande d'acces" : 'Demande de compagnie';
+
+          return (
+            <Animated.View entering={FadeIn.delay(Math.min(index, 8) * 40)}>
               <TouchableOpacity
                 style={styles.requestCard}
-                onPress={() => {
-                  console.log('🖱️ [DISPLAY] Clic sur demande:', {
-                    requestId: request.id,
-                    type: request.type,
-                    targetUserPseudo: request.targetUser?.pseudo,
-                    targetUserId: request.targetUser?.id,
-                    _targetId: request._targetId,
-                  });
-                  handleRequestPress(request);
-                }}
-                activeOpacity={0.7}
+                onPress={() => handleRequestPress(item)}
+                activeOpacity={0.85}
               >
                 <View style={styles.requestHeader}>
                   <View style={styles.userInfo}>
-                    <ImageWithFallback
-                      source={{ uri: request.targetUser?.photo }}
-                      style={styles.userAvatar}
-                    />
+                    <ImageWithFallback source={{ uri: targetProfile.photo }} style={styles.userAvatar} />
                     <View style={styles.userDetails}>
-                      <Text style={styles.userName}>{request.targetUser?.pseudo || 'Utilisateur'}</Text>
-                      <Text style={styles.requestType}>
-                        {request.type === 'access' ? 'Demande d\'accès' : 'Demande de compagnie'}
-                      </Text>
+                      <Text style={styles.userName}>{targetProfile.pseudo}</Text>
+                      <Text style={styles.userMeta}>{targetProfile.age} ans</Text>
                     </View>
                   </View>
-                  <View style={[styles.iconContainer, { backgroundColor: `${getRequestColor(request.type, request.status)}33` }]}>
-                    <Ionicons
-                      name={getRequestIcon(request.type, request.status) as any}
-                      size={24}
-                      color={getRequestColor(request.type, request.status)}
-                    />
+                  <View style={[styles.iconContainer, { backgroundColor: `${statusMeta.color}26` }]}>
+                    <Ionicons name={statusMeta.icon as never} size={20} color={statusMeta.color} />
                   </View>
                 </View>
 
-                {request.type === 'booking' && request.data && (
+                <View style={styles.badgesRow}>
+                  <Badge variant={item.type === 'access' ? 'info' : 'default'}>{requestTypeLabel}</Badge>
+                  <Badge variant={statusMeta.variant}>{statusMeta.label}</Badge>
+                </View>
+
+                {item.type === 'booking' && item.bookingDate ? (
                   <View style={styles.bookingDetails}>
                     <View style={styles.bookingDetailRow}>
                       <Ionicons name="calendar-outline" size={16} color={colors.textSecondary} />
-                      <Text style={styles.bookingDetailText}>
-                        {new Date(request.data.bookingDate).toLocaleDateString('fr-FR', {
-                          weekday: 'long',
-                          day: 'numeric',
-                          month: 'long',
-                          year: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
-                      </Text>
+                      <Text style={styles.bookingDetailText}>{formatBookingDate(item.bookingDate)}</Text>
                     </View>
                     <View style={styles.bookingDetailRow}>
                       <Ionicons name="time-outline" size={16} color={colors.textSecondary} />
                       <Text style={styles.bookingDetailText}>
-                        {request.data.durationHours} heure(s)
+                        {item.durationHours || 1} heure{item.durationHours && item.durationHours > 1 ? 's' : ''}
                       </Text>
                     </View>
-                    {request.data.location && (
+                    {item.location ? (
                       <View style={styles.bookingDetailRow}>
                         <Ionicons name="location-outline" size={16} color={colors.textSecondary} />
-                        <Text style={styles.bookingDetailText}>{request.data.location}</Text>
+                        <Text style={styles.bookingDetailText} numberOfLines={1}>
+                          {item.location}
+                        </Text>
                       </View>
-                    )}
+                    ) : null}
                   </View>
-                )}
+                ) : null}
 
                 <View style={styles.requestFooter}>
-                  <View style={styles.statusContainer}>
-                    {getStatusBadge(request.status, request.type)}
+                  <Text style={styles.dateText}>{formatRelativeDate(item.createdAt)}</Text>
+                  <View style={styles.footerAction}>
+                    <Text style={styles.footerActionText}>
+                      {item.type === 'booking' ? 'Voir details' : 'Voir profil'}
+                    </Text>
+                    <Ionicons name="chevron-forward" size={16} color={colors.textTertiary} />
                   </View>
-                  <Text style={styles.dateText}>{formatDate(request.createdAt)}</Text>
                 </View>
-
-                {request.type === 'booking' && request.status === 'accepted' && (
-                  <View style={styles.actionContainer}>
-                    <Button
-                      title="Voir les détails"
-                      variant="outline"
-                      onPress={() => router.push(`/(screens)/booking-details?bookingId=${request.id}`)}
-                      style={styles.actionButton}
-                      icon={<Ionicons name="information-circle-outline" size={20} color={colors.text} />}
-                    />
-                  </View>
-                )}
               </TouchableOpacity>
             </Animated.View>
-          ))
-        )}
-      </ScrollView>
+          );
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -836,116 +539,144 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 24,
-    paddingVertical: 16,
-    backgroundColor: `${colors.backgroundSecondary}80`,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 14,
+    backgroundColor: `${colors.backgroundSecondary}99`,
     borderBottomWidth: 1,
     borderBottomColor: colors.borderSecondary,
   },
+  headerContent: {
+    alignItems: 'center',
+    gap: 2,
+  },
   headerTitle: {
     fontSize: 18,
-    fontWeight: '600',
+    fontWeight: '700',
     color: colors.text,
+  },
+  headerSubtitle: {
+    fontSize: 12,
+    color: colors.textTertiary,
+    fontWeight: '500',
+  },
+  headerSpacer: {
+    width: 24,
   },
   filters: {
     borderBottomWidth: 1,
     borderBottomColor: colors.borderSecondary,
-    backgroundColor: colors.backgroundSecondary,
+    backgroundColor: `${colors.backgroundSecondary}d9`,
   },
   filtersContent: {
-    paddingHorizontal: 24,
+    paddingHorizontal: 16,
     paddingVertical: 12,
     gap: 8,
   },
   filterButton: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     paddingVertical: 8,
-    borderRadius: 20,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
     backgroundColor: colors.background,
-    marginRight: 8,
   },
   filterButtonActive: {
-    backgroundColor: colors.pink500,
+    backgroundColor: `${colors.pink500}26`,
+    borderColor: `${colors.pink500}66`,
   },
   filterText: {
-    fontSize: 14,
+    fontSize: 13,
     color: colors.textSecondary,
-    fontWeight: '500',
-  },
-  filterTextActive: {
-    color: '#ffffff',
     fontWeight: '600',
   },
-  scrollView: {
-    flex: 1,
+  filterTextActive: {
+    color: colors.pink400,
   },
-  scrollContent: {
-    padding: 24,
-    gap: 16,
+  listContent: {
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    gap: 12,
+  },
+  listContentEmpty: {
+    flexGrow: 1,
   },
   emptyContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingVertical: 64,
-    gap: 16,
+    gap: 12,
+    paddingHorizontal: 24,
   },
   emptyTitle: {
-    fontSize: 20,
-    fontWeight: '600',
+    fontSize: 18,
+    fontWeight: '700',
     color: colors.text,
+    textAlign: 'center',
   },
   emptyText: {
     fontSize: 14,
     color: colors.textSecondary,
     textAlign: 'center',
-    maxWidth: 280,
+    lineHeight: 20,
+    maxWidth: 320,
   },
   requestCard: {
-    backgroundColor: colors.backgroundSecondary,
+    backgroundColor: `${colors.backgroundSecondary}ee`,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
     borderRadius: 16,
-    padding: 16,
+    padding: 14,
     gap: 12,
   },
   requestHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 12,
   },
   userInfo: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
     flex: 1,
   },
   userAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   userDetails: {
     flex: 1,
-    gap: 4,
+    gap: 2,
   },
   userName: {
-    fontSize: 16,
-    fontWeight: '600',
+    fontSize: 15,
+    fontWeight: '700',
     color: colors.text,
   },
-  requestType: {
+  userMeta: {
     fontSize: 12,
     color: colors.textSecondary,
   },
   iconContainer: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     justifyContent: 'center',
     alignItems: 'center',
   },
+  badgesRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
   bookingDetails: {
     gap: 8,
-    paddingTop: 12,
+    paddingTop: 10,
     borderTopWidth: 1,
     borderTopColor: colors.borderSecondary,
   },
@@ -955,29 +686,31 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   bookingDetailText: {
-    fontSize: 14,
+    fontSize: 13,
     color: colors.textSecondary,
+    flex: 1,
   },
   requestFooter: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingTop: 12,
+    paddingTop: 10,
     borderTopWidth: 1,
     borderTopColor: colors.borderSecondary,
-  },
-  statusContainer: {
-    flex: 1,
   },
   dateText: {
     fontSize: 12,
     color: colors.textTertiary,
+    fontWeight: '500',
   },
-  actionContainer: {
-    marginTop: 8,
+  footerAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
   },
-  actionButton: {
-    marginTop: 0,
+  footerActionText: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    fontWeight: '600',
   },
 });
-

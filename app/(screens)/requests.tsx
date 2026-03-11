@@ -12,6 +12,7 @@ import { useAccessRequest } from '../../context/AccessRequestContext';
 import { useAuth } from '../../context/AuthContext';
 import { useBooking } from '../../context/BookingContext';
 import { useUser } from '../../context/UserContext';
+import { deriveBookingStatus, getBookingStatusPresentation } from '../../lib/bookingLifecycle';
 import { supabase } from '../../lib/supabase';
 
 type RequestTab = 'bookings' | 'access';
@@ -26,6 +27,7 @@ export default function RequestsScreen() {
   const [statusFilter, setStatusFilter] = useState<'pending' | 'accepted' | 'rejected' | 'all'>('all');
   const [isLoading, setIsLoading] = useState(false);
   const [enrichedAccessRequests, setEnrichedAccessRequests] = useState<any[]>([]);
+  const [bookingClock, setBookingClock] = useState(Date.now());
   const isEnrichingRef = useRef(false);
   const lastEnrichKeyRef = useRef<string>('');
 
@@ -34,54 +36,48 @@ export default function RequestsScreen() {
     refreshRequests();
   }, []);
 
-  // Vérifier et mettre à jour le statut des compagnies terminées
   useEffect(() => {
-    if (!user || receivedBookings.length === 0) return;
-
-    const checkCompletedBookings = async () => {
-      const now = new Date();
-      
-      for (const booking of receivedBookings) {
-        if (booking.status === 'accepted') {
-          const bookingDate = new Date(booking.bookingDate);
-          const endTime = new Date(bookingDate.getTime() + booking.durationHours * 60 * 60 * 1000);
-          
-          // Si la compagnie est terminée, mettre à jour le statut
-          if (now >= endTime) {
-            try {
-              await updateBookingStatus(booking.id, 'completed');
-            } catch (error) {
-              console.error('Error updating booking status to completed:', error);
-            }
-          }
-        }
-      }
-    };
-
-    checkCompletedBookings();
-    // Vérifier toutes les minutes
-    const interval = setInterval(checkCompletedBookings, 60000);
-    
+    const interval = setInterval(() => {
+      setBookingClock(Date.now());
+    }, 30000);
     return () => clearInterval(interval);
-  }, [bookings, statusFilter, user, updateBookingStatus]);
+  }, []);
 
-  // Filtrer les bookings où l'utilisateur est le provider (demandes reçues)
-  const allReceivedBookings = useMemo(() => 
-    bookings.filter(b => b.providerId === user?.id),
-    [bookings, user?.id]
+  const allReceivedBookings = useMemo(() =>
+    bookings
+      .filter((booking) => booking.providerId === user?.id)
+      .map((booking) => {
+        const statusPresentation = getBookingStatusPresentation(
+          booking.status,
+          booking.bookingDate,
+          booking.durationHours,
+          bookingClock
+        );
+
+        return {
+          ...booking,
+          derivedStatus: statusPresentation.status,
+          statusPresentation,
+        };
+      }),
+    [bookings, user?.id, bookingClock]
   );
   const receivedBookings = useMemo(() => {
     if (statusFilter === 'all') {
       return allReceivedBookings;
     } else if (statusFilter === 'accepted') {
-      // Inclure les demandes acceptées ET terminées (car terminées = étaient acceptées)
-      return allReceivedBookings.filter(b => b.status === 'accepted' || b.status === 'completed');
+      return allReceivedBookings.filter(
+        (booking) => booking.derivedStatus === 'accepted' || booking.derivedStatus === 'completed'
+      );
     } else if (statusFilter === 'rejected') {
-      // Inclure les demandes refusées
-      return allReceivedBookings.filter(b => b.status === 'rejected');
+      return allReceivedBookings.filter(
+        (booking) =>
+          booking.derivedStatus === 'rejected' ||
+          booking.derivedStatus === 'cancelled' ||
+          booking.derivedStatus === 'expired'
+      );
     } else {
-      // Filtre "pending" : seulement les demandes en attente
-      return allReceivedBookings.filter(b => b.status === statusFilter);
+      return allReceivedBookings.filter((booking) => booking.derivedStatus === statusFilter);
     }
   }, [allReceivedBookings, statusFilter]);
 
@@ -169,10 +165,22 @@ export default function RequestsScreen() {
     enrichRequests();
   }, [receivedAccessRequests, user?.id, statusFilter]);
 
-  const handleAcceptBooking = async (bookingId: string) => {
+  const handleAcceptBooking = async (booking: any) => {
+    const currentStatus = deriveBookingStatus(
+      booking.status,
+      booking.bookingDate,
+      booking.durationHours,
+      bookingClock
+    );
+    if (currentStatus !== 'pending') {
+      Alert.alert('Demande cloturee', 'Cette demande n est plus en attente.');
+      refreshBookings();
+      return;
+    }
+
     setIsLoading(true);
     try {
-      const { error } = await updateBookingStatus(bookingId, 'accepted');
+      const { error } = await updateBookingStatus(booking.id, 'accepted');
       if (error) {
         Alert.alert('Erreur', error.message || 'Impossible d\'accepter la demande');
       } else {
@@ -186,7 +194,19 @@ export default function RequestsScreen() {
     }
   };
 
-  const handleRejectBooking = async (bookingId: string) => {
+  const handleRejectBooking = async (booking: any) => {
+    const currentStatus = deriveBookingStatus(
+      booking.status,
+      booking.bookingDate,
+      booking.durationHours,
+      bookingClock
+    );
+    if (currentStatus !== 'pending') {
+      Alert.alert('Demande cloturee', 'Cette demande n est plus en attente.');
+      refreshBookings();
+      return;
+    }
+
     Alert.alert(
       'Refuser la demande',
       'Êtes-vous sûr de vouloir refuser cette demande ?',
@@ -198,7 +218,7 @@ export default function RequestsScreen() {
           onPress: async () => {
             setIsLoading(true);
             try {
-              const { error } = await updateBookingStatus(bookingId, 'rejected');
+              const { error } = await updateBookingStatus(booking.id, 'rejected');
               if (error) {
                 Alert.alert('Erreur', error.message || 'Impossible de refuser la demande');
               } else {
@@ -274,6 +294,37 @@ export default function RequestsScreen() {
     });
   };
 
+  const getBookingBadgeVariant = (status: string): 'default' | 'success' | 'error' | 'warning' | 'info' => {
+    switch (status) {
+      case 'pending':
+        return 'warning';
+      case 'accepted':
+        return 'success';
+      case 'rejected':
+      case 'cancelled':
+        return 'error';
+      case 'completed':
+        return 'info';
+      case 'expired':
+      default:
+        return 'default';
+    }
+  };
+
+  const getStatusFilterLabel = (filter: 'all' | 'pending' | 'accepted' | 'rejected') => {
+    if (activeTab === 'bookings') {
+      if (filter === 'pending') return 'En attente';
+      if (filter === 'accepted') return 'Acceptees/terminees';
+      if (filter === 'rejected') return 'Refusees/cloturees';
+      return 'Toutes';
+    }
+
+    if (filter === 'pending') return 'En attente';
+    if (filter === 'accepted') return 'Acceptees';
+    if (filter === 'rejected') return 'Refusees';
+    return 'Toutes';
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       {/* Header */}
@@ -302,7 +353,7 @@ export default function RequestsScreen() {
               activeTab === 'bookings' && styles.tabTextActive,
             ]}
           >
-            Compagnies ({receivedBookings.length})
+            Compagnies ({allReceivedBookings.length})
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -320,7 +371,7 @@ export default function RequestsScreen() {
               activeTab === 'access' && styles.tabTextActive,
             ]}
           >
-            Accès ({receivedAccessRequests.length})
+            Accès ({allReceivedAccessRequests.length})
           </Text>
         </TouchableOpacity>
       </View>
@@ -335,10 +386,7 @@ export default function RequestsScreen() {
               onPress={() => setStatusFilter(filter)}
             >
               <Text style={[styles.statusFilterText, statusFilter === filter && styles.statusFilterTextActive]}>
-                {filter === 'pending' ? 'En attente' : 
-                 filter === 'accepted' ? 'Acceptées' : 
-                 filter === 'rejected' ? 'Refusées' : 
-                 'Toutes'}
+                {getStatusFilterLabel(filter)}
               </Text>
             </TouchableOpacity>
           ))}
@@ -354,9 +402,9 @@ export default function RequestsScreen() {
                 <Ionicons name="calendar-outline" size={48} color={colors.textTertiary} />
                 <Text style={styles.emptyStateText}>
                   {statusFilter === 'pending' ? 'Aucune demande de compagnie en attente' :
-                   statusFilter === 'accepted' ? 'Aucune demande de compagnie acceptée ou terminée' :
-                   statusFilter === 'rejected' ? 'Aucune demande de compagnie refusée' :
-                   'Aucune demande de compagnie reçue'}
+                   statusFilter === 'accepted' ? 'Aucune demande acceptee ou terminee' :
+                   statusFilter === 'rejected' ? 'Aucune demande refusee ou cloturee' :
+                   'Aucune demande de compagnie recue'}
                 </Text>
               </View>
             ) : (
@@ -377,22 +425,16 @@ export default function RequestsScreen() {
                         <Text style={styles.requestDate}>{formatDate(booking.bookingDate)}</Text>
                       </View>
                     </View>
-                    <Badge variant={
-                      booking.status === 'accepted' ? 'success' : 
-                      booking.status === 'rejected' ? 'error' : 
-                      booking.status === 'completed' ? 'default' :
-                      booking.status === 'cancelled' ? 'error' :
-                      'warning'
-                    }>
-                      {booking.status === 'accepted' ? 'Acceptée' : 
-                       booking.status === 'rejected' ? 'Refusée' : 
-                       booking.status === 'completed' ? 'Terminée' :
-                       booking.status === 'cancelled' ? 'Annulée' :
-                       'En attente'}
+                    <Badge variant={getBookingBadgeVariant(booking.derivedStatus)}>
+                      {booking.statusPresentation.label}
                     </Badge>
                   </View>
 
                   <View style={styles.requestDetails}>
+                    <View style={styles.detailItem}>
+                      <Ionicons name="information-circle-outline" size={16} color={colors.textTertiary} />
+                      <Text style={styles.statusHint}>{booking.statusPresentation.subtitle}</Text>
+                    </View>
                     <View style={styles.detailItem}>
                       <Ionicons name="time-outline" size={16} color={colors.textTertiary} />
                       <Text style={styles.detailText}>
@@ -413,13 +455,13 @@ export default function RequestsScreen() {
                     )}
                   </View>
 
-                  {booking.status === 'pending' ? (
+                  {booking.derivedStatus === 'pending' ? (
                     <View style={styles.requestActions}>
                       <Button
                         title="Refuser"
                         onPress={(e) => {
                           e.stopPropagation();
-                          handleRejectBooking(booking.id);
+                          handleRejectBooking(booking);
                         }}
                         variant="outline"
                         style={[styles.actionButton, styles.rejectButton]}
@@ -430,14 +472,14 @@ export default function RequestsScreen() {
                         title="Accepter"
                         onPress={(e) => {
                           e.stopPropagation();
-                          handleAcceptBooking(booking.id);
+                          handleAcceptBooking(booking);
                         }}
                         style={styles.actionButton}
                         disabled={isLoading}
                         loading={isLoading}
                       />
                     </View>
-                  ) : booking.status === 'accepted' ? (
+                  ) : booking.derivedStatus === 'accepted' || booking.derivedStatus === 'completed' || booking.derivedStatus === 'expired' ? (
                     <View style={styles.requestActions}>
                       <Button
                         title="Voir les détails"
@@ -792,6 +834,12 @@ const styles = StyleSheet.create({
   detailText: {
     fontSize: 14,
     color: colors.textSecondary,
+  },
+  statusHint: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    lineHeight: 18,
+    flex: 1,
   },
   infoCard: {
     flexDirection: 'row',

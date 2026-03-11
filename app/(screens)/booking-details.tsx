@@ -15,6 +15,7 @@ import { useBooking } from '../../context/BookingContext';
 import { useNotification } from '../../context/NotificationContext';
 import { useRating } from '../../context/RatingContext';
 import { useUser } from '../../context/UserContext';
+import { deriveBookingStatus, getBookingStatusPresentation } from '../../lib/bookingLifecycle';
 import { supabase } from '../../lib/supabase';
 
 export default function BookingDetailsScreen() {
@@ -40,6 +41,7 @@ export default function BookingDetailsScreen() {
   const [actionLoading, setActionLoading] = useState<'accept' | 'reject' | 'cancel' | 'extension_request' | 'extension_confirm' | 'extension_reject' | null>(null);
   const [otherUserRating, setOtherUserRating] = useState({ average: 0, count: 0 });
   const [ratingModalDismissed, setRatingModalDismissed] = useState(false);
+  const [bookingClock, setBookingClock] = useState(Date.now());
 
   // Charger les détails de la compagnie
   const loadBookingDetails = useCallback(async () => {
@@ -154,16 +156,26 @@ export default function BookingDetailsScreen() {
     }, [params.bookingId, loadBookingDetails])
   );
 
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setBookingClock(Date.now());
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, []);
+
   // Vérifier si la compagnie est terminée
   useEffect(() => {
-    if (!booking || booking.status !== 'accepted' || ratingModalDismissed) return;
+    if (!booking || ratingModalDismissed) return;
 
     const checkEndTime = () => {
-      const bookingDate = new Date(booking.booking_date);
-      const endTime = new Date(bookingDate.getTime() + booking.duration_hours * 60 * 60 * 1000);
-      const now = new Date();
+      const effectiveStatus = deriveBookingStatus(
+        booking.status,
+        booking.booking_date,
+        booking.duration_hours
+      );
 
-      if (now >= endTime && booking.status === 'accepted' && !ratingModalDismissed) {
+      if (effectiveStatus === 'completed' && !ratingModalDismissed) {
         // La compagnie est terminée, afficher le modal seulement si l'utilisateur ne l'a pas déjà fermé
         setShowRatingModal(true);
       }
@@ -178,9 +190,22 @@ export default function BookingDetailsScreen() {
   const isRequester = booking?.requester_id === currentUser?.id;
   const isProvider = booking?.provider_id === currentUser?.id;
   const isActionBusy = actionLoading !== null || isSubmitting;
+  const effectiveBookingStatus = booking
+    ? deriveBookingStatus(
+      booking.status,
+      booking.booking_date,
+      booking.duration_hours,
+      bookingClock
+    )
+    : null;
 
   const handleCancel = async () => {
     if (!booking || isActionBusy) return;
+    if (effectiveBookingStatus !== 'pending' && effectiveBookingStatus !== 'accepted') {
+      Alert.alert('Demande cloturee', 'Cette demande n est plus active.');
+      loadBookingDetails();
+      return;
+    }
 
     Alert.alert(
       'Annuler la compagnie',
@@ -221,7 +246,17 @@ export default function BookingDetailsScreen() {
   };
 
   const handleAcceptPendingBooking = async () => {
-    if (!booking || booking.status !== 'pending' || !isProvider || isActionBusy) return;
+    if (!booking || !isProvider || isActionBusy) return;
+    const currentStatus = deriveBookingStatus(
+      booking.status,
+      booking.booking_date,
+      booking.duration_hours
+    );
+    if (currentStatus !== 'pending') {
+      Alert.alert('Demande cloturee', 'Cette demande n est plus en attente.');
+      loadBookingDetails();
+      return;
+    }
 
     const previousBooking = { ...booking };
     setActionLoading('accept');
@@ -246,7 +281,17 @@ export default function BookingDetailsScreen() {
   };
 
   const handleRejectPendingBooking = async () => {
-    if (!booking || booking.status !== 'pending' || !isProvider || isActionBusy) return;
+    if (!booking || !isProvider || isActionBusy) return;
+    const currentStatus = deriveBookingStatus(
+      booking.status,
+      booking.booking_date,
+      booking.duration_hours
+    );
+    if (currentStatus !== 'pending') {
+      Alert.alert('Demande cloturee', 'Cette demande n est plus en attente.');
+      loadBookingDetails();
+      return;
+    }
 
     const previousBooking = { ...booking };
     setActionLoading('reject');
@@ -296,7 +341,7 @@ export default function BookingDetailsScreen() {
       }
 
       // Marquer la compagnie comme complétée si ce n'est pas déjà fait
-      if (booking.status === 'accepted') {
+      if (effectiveBookingStatus === 'accepted') {
         await updateBookingStatus(booking.id, 'completed');
       }
 
@@ -321,6 +366,16 @@ export default function BookingDetailsScreen() {
   const handleRequestExtension = async () => {
     if (!booking || extensionHours <= 0 || isActionBusy) {
       Alert.alert('Erreur', 'Veuillez entrer un nombre d\'heures valide');
+      return;
+    }
+    const currentStatus = deriveBookingStatus(
+      booking.status,
+      booking.booking_date,
+      booking.duration_hours
+    );
+    if (currentStatus !== 'accepted') {
+      Alert.alert('Demande cloturee', 'La compagnie n est plus active.');
+      loadBookingDetails();
       return;
     }
 
@@ -381,6 +436,16 @@ export default function BookingDetailsScreen() {
 
   const handleConfirmExtension = async () => {
     if (!booking || isActionBusy) return;
+    const currentStatus = deriveBookingStatus(
+      booking.status,
+      booking.booking_date,
+      booking.duration_hours
+    );
+    if (currentStatus !== 'accepted') {
+      Alert.alert('Demande cloturee', 'La compagnie n est plus active.');
+      loadBookingDetails();
+      return;
+    }
 
     setActionLoading('extension_confirm');
     const previousBooking = { ...booking };
@@ -429,6 +494,16 @@ export default function BookingDetailsScreen() {
 
   const handleRejectExtension = async () => {
     if (!booking || isActionBusy) return;
+    const currentStatus = deriveBookingStatus(
+      booking.status,
+      booking.booking_date,
+      booking.duration_hours
+    );
+    if (currentStatus !== 'accepted') {
+      Alert.alert('Demande cloturee', 'La compagnie n est plus active.');
+      loadBookingDetails();
+      return;
+    }
 
     setActionLoading('extension_reject');
     const previousBooking = { ...booking };
@@ -511,29 +586,44 @@ export default function BookingDetailsScreen() {
 
   const bookingDate = new Date(booking.booking_date);
   const endTime = new Date(bookingDate.getTime() + booking.duration_hours * 60 * 60 * 1000);
-  const now = new Date();
-  const isEnded = now >= endTime;
-  const timeRemaining = isEnded ? 0 : Math.max(0, endTime.getTime() - now.getTime());
+  const now = new Date(bookingClock);
+  const bookingStatus = deriveBookingStatus(
+    booking.status,
+    booking.booking_date,
+    booking.duration_hours,
+    bookingClock
+  );
+  const statusPresentation = getBookingStatusPresentation(
+    booking.status,
+    booking.booking_date,
+    booking.duration_hours,
+    bookingClock
+  );
+  const isEnded = bookingStatus === 'completed' || bookingStatus === 'expired';
+  const timeRemaining = bookingStatus === 'accepted' ? Math.max(0, endTime.getTime() - now.getTime()) : 0;
   const extensionRequesterId = booking.extension_requested_by || booking.requester_id;
   const extensionRequestedByCurrentUser = extensionRequesterId === currentUser?.id;
   const canRespondToExtensionRequest = Boolean(
     booking.extension_requested_hours &&
     extensionRequesterId &&
-    extensionRequesterId !== currentUser?.id
+    extensionRequesterId !== currentUser?.id &&
+    bookingStatus === 'accepted'
   );
 
   const getStatusBadge = () => {
-    switch (booking.status) {
+    switch (bookingStatus) {
       case 'pending':
         return <Badge variant="warning">En attente</Badge>;
       case 'accepted':
-        return <Badge variant="success">Acceptée</Badge>;
+        return <Badge variant="success">Acceptee</Badge>;
       case 'rejected':
-        return <Badge variant="error">Refusée</Badge>;
+        return <Badge variant="error">Refusee</Badge>;
       case 'completed':
-        return <Badge variant="default">Terminée</Badge>;
+        return <Badge variant="default">Terminee</Badge>;
       case 'cancelled':
-        return <Badge variant="error">Annulée</Badge>;
+        return <Badge variant="error">Annulee</Badge>;
+      case 'expired':
+        return <Badge variant="default">Cloturee</Badge>;
       default:
         return null;
     }
@@ -618,7 +708,7 @@ export default function BookingDetailsScreen() {
                 textStyle={{ fontSize: 14 }}
                 icon={<Ionicons name="person-outline" size={18} color={colors.text} />}
               />
-              {booking?.status === 'accepted' && (
+              {bookingStatus === 'accepted' && (
                 <Button
                   title="Message"
                   onPress={() => {
@@ -641,11 +731,7 @@ export default function BookingDetailsScreen() {
             <View style={styles.statusInfo}>
               <Text style={styles.statusTitle}>Statut</Text>
               <Text style={styles.statusSubtitle}>
-                {booking.status === 'pending' && 'En attente de réponse'}
-                {booking.status === 'accepted' && 'Compagnie acceptée'}
-                {booking.status === 'rejected' && 'Compagnie refusée'}
-                {booking.status === 'completed' && 'Compagnie terminée'}
-                {booking.status === 'cancelled' && 'Compagnie annulée'}
+                {statusPresentation.subtitle}
               </Text>
             </View>
           </View>
@@ -683,7 +769,7 @@ export default function BookingDetailsScreen() {
             </View>
           </View>
 
-          {booking.status === 'accepted' && !isEnded && (
+          {bookingStatus === 'accepted' && !isEnded && (
             <View style={styles.detailRow}>
               <Ionicons name="timer-outline" size={20} color={colors.purple400} />
               <View style={styles.detailInfo}>
@@ -716,7 +802,7 @@ export default function BookingDetailsScreen() {
           )}
 
           {/* Extension Request */}
-          {booking.extension_requested_hours && booking.status === 'accepted' && (
+          {booking.extension_requested_hours && bookingStatus === 'accepted' && (
             <Animated.View entering={FadeIn} style={styles.extensionCard}>
               <Ionicons name="time-outline" size={24} color={colors.yellow500} />
               <View style={styles.extensionInfo}>
@@ -753,7 +839,7 @@ export default function BookingDetailsScreen() {
         </Animated.View>
 
         {/* Bouton d'annulation pour le requester si le statut est pending */}
-        {isRequester && booking.status === 'pending' && (
+        {isRequester && bookingStatus === 'pending' && (
           <View style={styles.actions}>
             <Button
               title="Annuler la demande"
@@ -769,7 +855,7 @@ export default function BookingDetailsScreen() {
         )}
 
         {/* Actions provider si demande pending */}
-        {isProvider && booking.status === 'pending' && (
+        {isProvider && bookingStatus === 'pending' && (
           <View style={styles.actions}>
             <Button
               title="Accepter la demande"
@@ -793,7 +879,7 @@ export default function BookingDetailsScreen() {
         )}
 
         {/* Actions */}
-        {booking.status === 'accepted' && (
+        {bookingStatus === 'accepted' && (
           <View style={styles.actions}>
             {otherUser && (
               <Button
@@ -830,7 +916,7 @@ export default function BookingDetailsScreen() {
           </View>
         )}
 
-        {booking.status === 'completed' && (
+        {bookingStatus === 'completed' && (
           <View style={styles.actions}>
             {existingRating ? (
               <View style={styles.existingRatingCard}>

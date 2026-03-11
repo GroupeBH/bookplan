@@ -53,7 +53,7 @@ const getImageSource = (photoUrl: string | null | undefined, gender: 'male' | 'f
 export default function ProfileScreen() {
   const router = useRouter();
   const { currentUser } = useUser();
-  const { logout, isAuthenticated, user: authUser, updateUserProfile } = useAuth();
+  const { logout, isAuthenticated, isLoading: authLoading, user: authUser, updateUserProfile } = useAuth();
   const { getUserRatings, getUserAverageRating } = useRating();
   const { albumPhotos, getUserAlbumPhotos, addAlbumPhoto, deleteAlbumPhoto, isLoading: isLoadingAlbum } = useAlbum();
   const [userRatings, setUserRatings] = useState<any[]>([]);
@@ -170,14 +170,19 @@ export default function ProfileScreen() {
 
   // Rediriger si pas d'utilisateur (dans un useEffect pour éviter l'erreur React)
   React.useEffect(() => {
-    if (!isAuthenticated || !currentUser) {
-      // Utiliser un petit délai pour s'assurer que l'état est bien mis à jour
+    // Eviter les redirections intempestives pendant la restauration de session
+    if (authLoading) {
+      return;
+    }
+
+    // Rediriger uniquement si la session est réellement absente
+    if (!isAuthenticated && !authUser) {
       const timer = setTimeout(() => {
         router.replace('/(screens)/auth');
-      }, 100);
+      }, 600);
       return () => clearTimeout(timer);
     }
-  }, [isAuthenticated, currentUser, router]);
+  }, [authLoading, isAuthenticated, authUser, router]);
 
   const handleLogout = () => {
     Alert.alert(

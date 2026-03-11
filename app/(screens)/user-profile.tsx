@@ -19,6 +19,7 @@ import { useBooking } from '../../context/BookingContext';
 import { useLike } from '../../context/LikeContext';
 import { useRating } from '../../context/RatingContext';
 import { useUser } from '../../context/UserContext';
+import { deriveBookingStatus } from '../../lib/bookingLifecycle';
 import { getProfileImage } from '../../lib/defaultImages';
 import { supabase } from '../../lib/supabase';
 import { User } from '../../types';
@@ -114,6 +115,7 @@ export default function UserProfileScreen() {
   const [isLoadingRatings, setIsLoadingRatings] = useState(false);
   const [existingRating, setExistingRating] = useState<any>(null);
   const [averageRating, setAverageRating] = useState({ average: 0, count: 0 });
+  const [bookingClock, setBookingClock] = useState(Date.now());
   const [, setIsLoadingBooking] = useState(false);
   const [bookingActionLoading, setBookingActionLoading] = useState<'accept' | 'reject' | 'cancel' | null>(null);
   const isLoadingBookingRef = React.useRef(false);
@@ -125,26 +127,22 @@ export default function UserProfileScreen() {
   const lastFocusTimeRef = React.useRef<number>(0);
   const isSubmittingRatingRef = React.useRef(false);
 
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setBookingClock(Date.now());
+    }, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
   const isBookingStillLiveForProfile = React.useCallback((booking: any) => {
     if (!booking) return false;
-    if (booking.status !== 'pending' && booking.status !== 'accepted') {
-      return false;
-    }
-
-    const bookingDateMs = Date.parse(booking.bookingDate || '');
-    if (!Number.isFinite(bookingDateMs)) {
-      return true;
-    }
-
-    const now = Date.now();
-    if (booking.status === 'pending') {
-      return bookingDateMs > now;
-    }
-
-    const durationHours = Number(booking.durationHours);
-    const safeDuration = Number.isFinite(durationHours) && durationHours > 0 ? durationHours : 1;
-    const endMs = bookingDateMs + safeDuration * 60 * 60 * 1000;
-    return endMs > now;
+    const status = deriveBookingStatus(
+      booking.status,
+      booking.bookingDate,
+      booking.durationHours,
+      Date.now()
+    );
+    return status === 'pending' || status === 'accepted';
   }, []);
 
   const getMostRecentLiveBookingBetweenUsers = React.useCallback((list: any[]) => {
@@ -741,14 +739,14 @@ export default function UserProfileScreen() {
     
     // Si une demande est déjà en cours, ne pas permettre une nouvelle demande
     if (activeBooking) {
-      if (activeBooking.status === 'pending') {
+      if (activeBookingStatus === 'pending') {
         Alert.alert(
           'Demande en cours',
           'Vous avez déjà une demande en attente avec cet utilisateur'
         );
         return;
       }
-      if (activeBooking.status === 'accepted') {
+      if (activeBookingStatus === 'accepted') {
         Alert.alert(
           'Compagnie en cours',
           'Vous avez déjà une compagnie acceptée avec cet utilisateur'
@@ -802,6 +800,13 @@ export default function UserProfileScreen() {
 
   const handleAcceptBooking = async () => {
     if (!activeBooking || !currentUser || bookingActionLoading) return;
+    if (activeBookingStatus !== 'pending') {
+      Alert.alert('Demande cloturee', 'La date de cette demande est depassee. Elle ne peut plus etre acceptee.');
+      loadActiveBooking(true).catch(() => {
+        // Ignore refresh errors
+      });
+      return;
+    }
 
     Alert.alert(
       'Accepter la demande',
@@ -812,6 +817,17 @@ export default function UserProfileScreen() {
           text: 'Accepter',
           onPress: async () => {
             const bookingSnapshot = { ...activeBooking };
+            const snapshotStatus = deriveBookingStatus(
+              bookingSnapshot.status,
+              bookingSnapshot.bookingDate,
+              bookingSnapshot.durationHours,
+              Date.now()
+            );
+            if (snapshotStatus !== 'pending') {
+              setActiveBooking({ ...bookingSnapshot, status: snapshotStatus });
+              Alert.alert('Demande cloturee', 'La date de cette demande est depassee. Elle ne peut plus etre acceptee.');
+              return;
+            }
             setBookingActionLoading('accept');
             setActiveBooking({ ...bookingSnapshot, status: 'accepted' }); // Optimiste
             try {
@@ -840,6 +856,13 @@ export default function UserProfileScreen() {
 
   const handleRejectBooking = async () => {
     if (!activeBooking || bookingActionLoading) return;
+    if (activeBookingStatus !== 'pending') {
+      Alert.alert('Demande cloturee', 'Cette demande n est plus en attente.');
+      loadActiveBooking(true).catch(() => {
+        // Ignore refresh errors
+      });
+      return;
+    }
 
     Alert.alert(
       'Rejeter la demande',
@@ -880,6 +903,15 @@ export default function UserProfileScreen() {
 
   // Déterminer si l'utilisateur actuel est l'expéditeur (requester) ou le récepteur (provider)
   const isRequester = activeBooking && currentUser?.id === activeBooking.requesterId;
+  const activeBookingStatus = activeBooking
+    ? deriveBookingStatus(
+      activeBooking.status,
+      activeBooking.bookingDate,
+      activeBooking.durationHours,
+      bookingClock
+    )
+    : null;
+  const hasClosedBookingState = activeBookingStatus === 'expired' || activeBookingStatus === 'completed';
 
   const handleSubmitRating = async () => {
     if (rating === 0) {
@@ -1242,7 +1274,7 @@ export default function UserProfileScreen() {
           )}
 
           {/* Active Booking Section - Pending */}
-          {activeBooking && activeBooking.status === 'pending' && (
+          {activeBooking && activeBookingStatus === 'pending' && (
             <Animated.View entering={FadeIn} style={styles.bookingCard}>
               <View style={styles.bookingHeader}>
                 <Ionicons name="time-outline" size={20} color={colors.yellow400} />
@@ -1339,7 +1371,7 @@ export default function UserProfileScreen() {
           )}
 
           {/* Active Booking Section - Accepted */}
-          {activeBooking && activeBooking.status === 'accepted' && (
+          {activeBooking && activeBookingStatus === 'accepted' && (
             <Animated.View entering={FadeIn} style={styles.bookingCardAccepted}>
               <View style={styles.bookingHeader}>
                 <Ionicons name="checkmark-circle" size={20} color={colors.green500} />
@@ -1423,7 +1455,7 @@ export default function UserProfileScreen() {
           )}
 
           {/* Action Buttons - Ne s'affichent que s'il n'y a pas de demande active et si non bloqué */}
-          {!activeBooking && !isBlocked && (
+          {(!activeBooking || hasClosedBookingState) && !isBlocked && (
             <View style={styles.actions}>
               <Button
                 title={selectedUser.isAvailable ? "Demander une compagnie" : "Indisponible"}
@@ -1443,7 +1475,7 @@ export default function UserProfileScreen() {
           )}
 
           {/* Bouton message si demande acceptée */}
-          {activeBooking && activeBooking.status === 'accepted' && !isBlocked && (
+          {activeBooking && activeBookingStatus === 'accepted' && !isBlocked && (
             <View style={styles.actions}>
               <Button
                 title="Envoyer un message"
