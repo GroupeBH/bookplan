@@ -2,13 +2,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Badge } from '../../components/ui/Badge';
 import { colors } from '../../constants/colors';
 import { useOffer } from '../../context/OfferContext';
-import { Offer, OfferType } from '../../types';
+import { Offer, OfferTargetGender, OfferType } from '../../types';
 
 const OFFER_TYPE_LABELS: Record<OfferType, string> = {
   drink: 'A boire',
@@ -31,11 +31,18 @@ const isOfferAvailable = (offer: Offer, now: Date) => {
   return expiresAt.getTime() > now.getTime();
 };
 
+type OfferTypeFilter = 'all' | OfferType;
+type OfferAudienceFilter = 'any' | OfferTargetGender;
+
 export default function OffersScreen() {
   const router = useRouter();
   const { offers, isLoading, refreshOffers } = useOffer();
   const [refreshing, setRefreshing] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
+  const [typeFilter, setTypeFilter] = useState<OfferTypeFilter>('all');
+  const [audienceFilter, setAudienceFilter] = useState<OfferAudienceFilter>('any');
   const refreshOffersRef = useRef(refreshOffers);
   const isFocusRefreshingRef = useRef(false);
 
@@ -91,6 +98,56 @@ export default function OffersScreen() {
       });
   }, [offers, nowMs]);
 
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+
+  const filteredOffers = useMemo(() => {
+    return availableOffers.filter((offer) => {
+      if (typeFilter !== 'all') {
+        const offerTypes = (offer.offerTypes && offer.offerTypes.length > 0)
+          ? offer.offerTypes
+          : [offer.offerType];
+        if (!offerTypes.includes(typeFilter)) {
+          return false;
+        }
+      }
+
+      if (audienceFilter !== 'any') {
+        const targetGender = offer.targetGender ?? 'all';
+        if (targetGender !== audienceFilter) {
+          return false;
+        }
+      }
+
+      if (normalizedSearchQuery) {
+        const title = offer.title?.toLowerCase() ?? '';
+        const description = offer.description?.toLowerCase() ?? '';
+        const location = offer.location?.toLowerCase() ?? '';
+        const author = offer.author?.pseudo?.toLowerCase() ?? '';
+        const offerTypes = (offer.offerTypes && offer.offerTypes.length > 0)
+          ? offer.offerTypes
+          : [offer.offerType];
+        const typeLabels = offerTypes
+          .map((type) => OFFER_TYPE_LABELS[type]?.toLowerCase() ?? '')
+          .join(' ');
+
+        if (
+          !title.includes(normalizedSearchQuery) &&
+          !description.includes(normalizedSearchQuery) &&
+          !location.includes(normalizedSearchQuery) &&
+          !author.includes(normalizedSearchQuery) &&
+          !typeLabels.includes(normalizedSearchQuery)
+        ) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [availableOffers, typeFilter, audienceFilter, normalizedSearchQuery]);
+
+  const hasActiveFilters =
+    normalizedSearchQuery.length > 0 || typeFilter !== 'all' || audienceFilter !== 'any';
+
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
     if (Number.isNaN(date.getTime())) return 'Date non definie';
@@ -138,6 +195,12 @@ export default function OffersScreen() {
     });
   };
 
+  const resetFilters = () => {
+    setSearchQuery('');
+    setTypeFilter('all');
+    setAudienceFilter('any');
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
@@ -161,6 +224,104 @@ export default function OffersScreen() {
           />
         }
       >
+        <View style={styles.searchSection}>
+          <View style={styles.searchBar}>
+            <Ionicons name="search" size={16} color={colors.textSecondary} />
+            <TextInput
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Rechercher une offre"
+              placeholderTextColor={colors.textTertiary}
+              style={styles.searchInput}
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="search"
+            />
+            {searchQuery.trim().length > 0 ? (
+              <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Ionicons name="close-circle" size={16} color={colors.textSecondary} />
+              </TouchableOpacity>
+            ) : null}
+            <TouchableOpacity
+              style={[styles.filterToggle, showFilters && styles.filterToggleActive]}
+              onPress={() => setShowFilters((prev) => !prev)}
+              activeOpacity={0.85}
+            >
+              <Ionicons
+                name="options-outline"
+                size={14}
+                color={showFilters ? colors.pink400 : colors.textSecondary}
+              />
+              <Text style={[styles.filterToggleText, showFilters && styles.filterToggleTextActive]}>
+                Filtrer
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {showFilters ? (
+            <View style={styles.filtersContainer}>
+              <Text style={styles.filterLabel}>Type d&apos;offre</Text>
+              <View style={styles.filterRow}>
+                <TouchableOpacity
+                  style={[styles.filterChip, typeFilter === 'all' && styles.filterChipActive]}
+                  onPress={() => setTypeFilter('all')}
+                >
+                  <Text style={[styles.filterChipText, typeFilter === 'all' && styles.filterChipTextActive]}>
+                    Tous
+                  </Text>
+                </TouchableOpacity>
+                {(['drink', 'food', 'transport', 'gift'] as OfferType[]).map((type) => (
+                  <TouchableOpacity
+                    key={type}
+                    style={[styles.filterChip, typeFilter === type && styles.filterChipActive]}
+                    onPress={() => setTypeFilter(type)}
+                  >
+                    <Text style={[styles.filterChipText, typeFilter === type && styles.filterChipTextActive]}>
+                      {OFFER_TYPE_LABELS[type]}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={styles.filterLabel}>Audience</Text>
+              <View style={styles.filterRow}>
+                <TouchableOpacity
+                  style={[styles.filterChip, audienceFilter === 'any' && styles.filterChipActive]}
+                  onPress={() => setAudienceFilter('any')}
+                >
+                  <Text style={[styles.filterChipText, audienceFilter === 'any' && styles.filterChipTextActive]}>
+                    Tous
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.filterChip, audienceFilter === 'female' && styles.filterChipActive]}
+                  onPress={() => setAudienceFilter('female')}
+                >
+                  <Text style={[styles.filterChipText, audienceFilter === 'female' && styles.filterChipTextActive]}>
+                    Femmes
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.filterChip, audienceFilter === 'male' && styles.filterChipActive]}
+                  onPress={() => setAudienceFilter('male')}
+                >
+                  <Text style={[styles.filterChipText, audienceFilter === 'male' && styles.filterChipTextActive]}>
+                    Hommes
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.filterChip, audienceFilter === 'all' && styles.filterChipActive]}
+                  onPress={() => setAudienceFilter('all')}
+                >
+                  <Text style={[styles.filterChipText, audienceFilter === 'all' && styles.filterChipTextActive]}>
+                    Les deux
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : null}
+        </View>
+
         <View style={styles.summaryCard}>
           <View style={styles.summaryIconContainer}>
             <Ionicons name="sparkles-outline" size={18} color={colors.pink500} />
@@ -168,10 +329,10 @@ export default function OffersScreen() {
           <View style={styles.summaryTextContainer}>
             <Text style={styles.summaryTitle}>Offres actives maintenant</Text>
             <Text style={styles.summarySubtitle}>
-              Seulement les offres disponibles (non expirees) sont affichees.
+              {filteredOffers.length} resultat{filteredOffers.length > 1 ? 's' : ''} sur {availableOffers.length} offre{availableOffers.length > 1 ? 's' : ''} disponible{availableOffers.length > 1 ? 's' : ''}.
             </Text>
           </View>
-          <Text style={styles.summaryCount}>{availableOffers.length}</Text>
+          <Text style={styles.summaryCount}>{filteredOffers.length}</Text>
         </View>
 
         {isLoading && availableOffers.length === 0 ? (
@@ -194,8 +355,25 @@ export default function OffersScreen() {
               <Text style={styles.createButtonText}>Creer une offre</Text>
             </TouchableOpacity>
           </View>
+        ) : filteredOffers.length === 0 ? (
+          <View style={styles.emptyContainer}>
+            <Ionicons name="search-outline" size={64} color={colors.textTertiary} />
+            <Text style={styles.emptyTitle}>Aucun resultat</Text>
+            <Text style={styles.emptySubtitle}>
+              Aucune offre ne correspond a ta recherche ou a tes filtres.
+            </Text>
+            {hasActiveFilters ? (
+              <TouchableOpacity
+                style={styles.resetFiltersButton}
+                onPress={resetFilters}
+              >
+                <Ionicons name="refresh" size={18} color={colors.text} />
+                <Text style={styles.resetFiltersButtonText}>Reinitialiser les filtres</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
         ) : (
-          availableOffers.map((offer) => {
+          filteredOffers.map((offer) => {
             const offerTypesToDisplay = (offer.offerTypes && offer.offerTypes.length > 0)
               ? offer.offerTypes
               : (offer.offerType ? [offer.offerType] : []);
@@ -316,6 +494,89 @@ const styles = StyleSheet.create({
     padding: 16,
     paddingBottom: 28,
   },
+  searchSection: {
+    marginBottom: 12,
+    gap: 10,
+  },
+  searchBar: {
+    minHeight: 40,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+    backgroundColor: colors.backgroundSecondary,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  searchInput: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 14,
+    paddingVertical: 0,
+  },
+  filterToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+    backgroundColor: `${colors.background}B0`,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  filterToggleActive: {
+    borderColor: `${colors.pink500}99`,
+    backgroundColor: `${colors.pink500}22`,
+  },
+  filterToggleText: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  filterToggleTextActive: {
+    color: colors.pink400,
+  },
+  filtersContainer: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+    backgroundColor: `${colors.backgroundSecondary}D8`,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 8,
+  },
+  filterLabel: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  filterRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  filterChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+    backgroundColor: `${colors.background}A0`,
+  },
+  filterChipActive: {
+    borderColor: `${colors.pink500}99`,
+    backgroundColor: `${colors.pink500}24`,
+  },
+  filterChipText: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  filterChipTextActive: {
+    color: colors.pink400,
+  },
   summaryCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -393,6 +654,21 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#ffffff',
+  },
+  resetFiltersButton: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: colors.purple600,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  resetFiltersButtonText: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '600',
   },
   offerCard: {
     backgroundColor: colors.backgroundSecondary,

@@ -3,7 +3,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Keyboard, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, AppState, Keyboard, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
 import { Button } from '../../components/ui/Button';
@@ -30,6 +30,22 @@ export default function EditProfileScreen() {
   const descriptionFieldY = useRef<number>(0);
   const specialtyFieldY = useRef<number>(0);
   const isScrollingRef = useRef(false); // Pour éviter les appels multiples de scroll
+  const isMediaPickerOpenRef = useRef(false);
+  const appStateRef = useRef(AppState.currentState);
+  const authRedirectGraceRef = useRef(Date.now() + 1200);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      appStateRef.current = nextState;
+      if (nextState === 'active') {
+        authRedirectGraceRef.current = Date.now() + 1800;
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
 
   // Charger les données de l'utilisateur depuis authUser (qui vient de Supabase)
   // Ne charger qu'une seule fois au montage ou si les données importantes ont vraiment changé
@@ -72,8 +88,23 @@ export default function EditProfileScreen() {
         }
       }
     } else if (!authLoading && !authUser) {
+      if (isMediaPickerOpenRef.current) {
+        return;
+      }
+
+      if (appStateRef.current !== 'active') {
+        return;
+      }
+
+      if (Date.now() < authRedirectGraceRef.current) {
+        return;
+      }
+
       // Si pas d'utilisateur et pas en chargement, rediriger
-      router.back();
+      const timer = setTimeout(() => {
+        router.replace('/(screens)/auth');
+      }, 500);
+      return () => clearTimeout(timer);
     }
   }, [authUser, authLoading, isInitialized]);
 
@@ -107,6 +138,9 @@ export default function EditProfileScreen() {
 
   const handleChangePhoto = async () => {
     try {
+      isMediaPickerOpenRef.current = true;
+      authRedirectGraceRef.current = Date.now() + 5000;
+
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
         Alert.alert('Permission requise', 'Nous avons besoin de l\'accès à vos photos');
@@ -121,17 +155,24 @@ export default function EditProfileScreen() {
         allowsMultipleSelection: false,
       });
 
-      if (!result.canceled && result.assets && result.assets.length > 0 && result.assets[0]) {
-        setPhoto(result.assets[0].uri);
+      const selectedAsset = !result.canceled ? result.assets?.[0] : undefined;
+      if (selectedAsset?.uri) {
+        setPhoto(selectedAsset.uri);
       }
     } catch (error: any) {
       console.error('Error choosing photo from library:', error);
       Alert.alert('Erreur', 'Impossible d\'accéder à la galerie. Veuillez réessayer.');
+    } finally {
+      isMediaPickerOpenRef.current = false;
+      authRedirectGraceRef.current = Date.now() + 1800;
     }
   };
 
   const handleTakePhoto = async () => {
     try {
+      isMediaPickerOpenRef.current = true;
+      authRedirectGraceRef.current = Date.now() + 6000;
+
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
       if (status !== 'granted') {
         Alert.alert('Permission requise', 'Nous avons besoin de l\'accès à votre caméra');
@@ -139,17 +180,21 @@ export default function EditProfileScreen() {
       }
 
       const result = await ImagePicker.launchCameraAsync({
-        allowsEditing: true,
+        allowsEditing: Platform.OS === 'ios',
         aspect: [1, 1],
-        quality: 0.8,
+        quality: 0.7,
       });
 
-      if (!result.canceled && result.assets && result.assets.length > 0 && result.assets[0]) {
-        setPhoto(result.assets[0].uri);
+      const capturedAsset = !result.canceled ? result.assets?.[0] : undefined;
+      if (capturedAsset?.uri) {
+        setPhoto(capturedAsset.uri);
       }
     } catch (error: any) {
       console.error('Error taking photo:', error);
       Alert.alert('Erreur', 'Impossible d\'accéder à la caméra. Veuillez réessayer.');
+    } finally {
+      isMediaPickerOpenRef.current = false;
+      authRedirectGraceRef.current = Date.now() + 1800;
     }
   };
 

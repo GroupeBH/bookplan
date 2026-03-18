@@ -66,6 +66,82 @@ export function OfferProvider({ children }: { children: ReactNode }) {
   const [myOffers, setMyOffers] = useState<Offer[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
+  const isLikelySessionError = (error: any): boolean => {
+    if (!error) return false;
+
+    const code = typeof error?.code === 'string' ? error.code.toUpperCase() : '';
+    const message = String(error?.message || '').toLowerCase();
+    const status = Number(error?.status);
+
+    if (code === '42501' || message.includes('row-level security')) {
+      return false;
+    }
+
+    return (
+      status === 401 ||
+      status === 403 ||
+      code === 'PGRST301' ||
+      code === 'PGRST302' ||
+      code === 'PGRST303' ||
+      message.includes('jwt') ||
+      message.includes('token') ||
+      message.includes('not authenticated') ||
+      message.includes('auth') ||
+      message.includes('session')
+    );
+  };
+
+  const resolveOfferAuthorId = async (): Promise<{
+    authorId: string | null;
+    hasActiveSession: boolean;
+    usedFallback: boolean;
+  }> => {
+    const contextUserId = user?.id;
+    const fallbackAuthorId = isValidUUID(contextUserId) ? contextUserId : null;
+
+    try {
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      const sessionUserId = sessionData?.session?.user?.id;
+      if (!sessionError && sessionUserId && isValidUUID(sessionUserId)) {
+        return {
+          authorId: sessionUserId,
+          hasActiveSession: true,
+          usedFallback: false,
+        };
+      }
+    } catch {
+      // Ignorer et continuer avec les fallback
+    }
+
+    try {
+      const { data: refreshedData, error: refreshError } = await supabase.auth.refreshSession();
+      const refreshedUserId = refreshedData?.session?.user?.id;
+      if (!refreshError && refreshedUserId && isValidUUID(refreshedUserId)) {
+        return {
+          authorId: refreshedUserId,
+          hasActiveSession: true,
+          usedFallback: false,
+        };
+      }
+    } catch {
+      // Ignorer et continuer avec les fallback
+    }
+
+    if (fallbackAuthorId) {
+      return {
+        authorId: fallbackAuthorId,
+        hasActiveSession: false,
+        usedFallback: true,
+      };
+    }
+
+    return {
+      authorId: null,
+      hasActiveSession: false,
+      usedFallback: false,
+    };
+  };
+
   // Charger les offres au démarrage
   useEffect(() => {
     if (user) {
@@ -477,8 +553,8 @@ export function OfferProvider({ children }: { children: ReactNode }) {
         status: 'active'
       });
 
-      const { data: authUserData, error: authUserError } = await supabase.auth.getUser();
-      if (authUserError || !authUserData?.user?.id) {
+      const authResolution = await resolveOfferAuthorId();
+      if (!authResolution.authorId) {
         return {
           error: {
             message: 'Session invalide. Veuillez vous reconnecter avant de publier une offre.',
@@ -486,7 +562,10 @@ export function OfferProvider({ children }: { children: ReactNode }) {
           offer: null,
         };
       }
-      const authorId = authUserData.user.id;
+      const authorId = authResolution.authorId;
+      if (authResolution.usedFallback) {
+        console.log('⚠️ Publication offre: fallback sur user.id local (session distante indisponible)');
+      }
 
       const { data, error } = await supabase
         .from('offers')
@@ -509,11 +588,40 @@ export function OfferProvider({ children }: { children: ReactNode }) {
 
       if (error) {
         console.error('Error creating offer:', error);
+        if (isNetworkError(error)) {
+          return {
+            error: {
+              ...error,
+              message: 'Connexion instable. Veuillez verifier votre reseau puis reessayer.',
+            },
+            offer: null,
+          };
+        }
+
+        if (isLikelySessionError(error)) {
+          return {
+            error: {
+              ...error,
+              message: 'Session invalide. Veuillez vous reconnecter avant de publier une offre.',
+            },
+            offer: null,
+          };
+        }
+
         if (
           error.code === '42501' ||
           (typeof error.message === 'string' &&
             error.message.toLowerCase().includes('row-level security'))
         ) {
+          if (!authResolution.hasActiveSession) {
+            return {
+              error: {
+                ...error,
+                message: 'Session invalide. Veuillez vous reconnecter avant de publier une offre.',
+              },
+              offer: null,
+            };
+          }
           return {
             error: {
               ...error,

@@ -3,7 +3,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
-import { Alert, Image, ImageSourcePropType, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, AppState, Image, ImageSourcePropType, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ImageWithFallback } from '../../components/ImageWithFallback';
@@ -64,6 +64,9 @@ export default function ProfileScreen() {
   const isLoadingRatingsRef = React.useRef(false);
   const lastLoadTimeRef = React.useRef(0);
   const lastAuthUserIdRef = React.useRef<string | null>(null);
+  const isMediaPickerOpenRef = React.useRef(false);
+  const appStateRef = React.useRef(AppState.currentState);
+  const authRedirectGraceRef = React.useRef(Date.now() + 1200);
 
   // Charger les avis de l'utilisateur connecté
   const loadUserRatings = useCallback(async (force: boolean = false) => {
@@ -170,8 +173,33 @@ export default function ProfileScreen() {
 
   // Rediriger si pas d'utilisateur (dans un useEffect pour éviter l'erreur React)
   React.useEffect(() => {
+    const appStateSubscription = AppState.addEventListener('change', (nextState) => {
+      appStateRef.current = nextState;
+      if (nextState === 'active') {
+        authRedirectGraceRef.current = Date.now() + 1800;
+      }
+    });
+
+    return () => {
+      appStateSubscription.remove();
+    };
+  }, []);
+
+  React.useEffect(() => {
     // Eviter les redirections intempestives pendant la restauration de session
     if (authLoading) {
+      return;
+    }
+
+    if (isMediaPickerOpenRef.current) {
+      return;
+    }
+
+    if (appStateRef.current !== 'active') {
+      return;
+    }
+
+    if (Date.now() < authRedirectGraceRef.current) {
       return;
     }
 
@@ -223,14 +251,18 @@ export default function ProfileScreen() {
     }
 
     try {
+      isMediaPickerOpenRef.current = true;
+      authRedirectGraceRef.current = Date.now() + 6000;
+
       const result = await ImagePicker.launchCameraAsync({
-        allowsEditing: true,
+        allowsEditing: Platform.OS === 'ios',
         aspect: [1, 1],
-        quality: 0.8,
+        quality: 0.7,
       });
 
-      if (!result.canceled && result.assets[0]) {
-        const localUri = result.assets[0].uri;
+      const capturedAsset = !result.canceled ? result.assets?.[0] : undefined;
+      if (capturedAsset?.uri) {
+        const localUri = capturedAsset.uri;
         
         // Uploader la photo vers Supabase Storage
         try {
@@ -280,6 +312,9 @@ export default function ProfileScreen() {
     } catch (error: any) {
       console.error('Error taking album photo:', error);
       Alert.alert('Erreur', 'Impossible d\'accéder à la caméra');
+    } finally {
+      isMediaPickerOpenRef.current = false;
+      authRedirectGraceRef.current = Date.now() + 1800;
     }
   };
 
@@ -298,6 +333,9 @@ export default function ProfileScreen() {
     }
 
     try {
+      isMediaPickerOpenRef.current = true;
+      authRedirectGraceRef.current = Date.now() + 5000;
+
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: true,
@@ -305,8 +343,9 @@ export default function ProfileScreen() {
         quality: 0.8,
       });
 
-      if (!result.canceled && result.assets[0]) {
-        const localUri = result.assets[0].uri;
+      const selectedAsset = !result.canceled ? result.assets?.[0] : undefined;
+      if (selectedAsset?.uri) {
+        const localUri = selectedAsset.uri;
         
         // Uploader la photo vers Supabase Storage
         try {
@@ -356,6 +395,9 @@ export default function ProfileScreen() {
     } catch (error: any) {
       console.error('Error choosing album photo:', error);
       Alert.alert('Erreur', 'Impossible d\'accéder à la galerie');
+    } finally {
+      isMediaPickerOpenRef.current = false;
+      authRedirectGraceRef.current = Date.now() + 1800;
     }
   };
 
@@ -408,14 +450,18 @@ export default function ProfileScreen() {
     }
 
     try {
+      isMediaPickerOpenRef.current = true;
+      authRedirectGraceRef.current = Date.now() + 6000;
+
       const result = await ImagePicker.launchCameraAsync({
-        allowsEditing: true,
+        allowsEditing: Platform.OS === 'ios',
         aspect: [1, 1],
-        quality: 0.8,
+        quality: 0.7,
       });
 
-      if (!result.canceled && result.assets[0]) {
-        const localUri = result.assets[0].uri;
+      const capturedAsset = !result.canceled ? result.assets?.[0] : undefined;
+      if (capturedAsset?.uri) {
+        const localUri = capturedAsset.uri;
         console.log('📸 Photo capturée, URI locale:', localUri);
         
         // Uploader la photo vers Supabase Storage
@@ -467,6 +513,9 @@ export default function ProfileScreen() {
     } catch (error: any) {
       console.error('Error taking photo:', error);
       Alert.alert('Erreur', 'Impossible d\'accéder à la caméra');
+    } finally {
+      isMediaPickerOpenRef.current = false;
+      authRedirectGraceRef.current = Date.now() + 1800;
     }
   };
 
@@ -480,6 +529,9 @@ export default function ProfileScreen() {
     }
 
     try {
+      isMediaPickerOpenRef.current = true;
+      authRedirectGraceRef.current = Date.now() + 5000;
+
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: true,
@@ -487,8 +539,9 @@ export default function ProfileScreen() {
         quality: 0.8,
       });
 
-      if (!result.canceled && result.assets[0]) {
-        const localUri = result.assets[0].uri;
+      const selectedAsset = !result.canceled ? result.assets?.[0] : undefined;
+      if (selectedAsset?.uri) {
+        const localUri = selectedAsset.uri;
         console.log('📸 Photo choisie depuis la galerie, URI locale:', localUri);
         
         // Uploader la photo vers Supabase Storage
@@ -540,6 +593,9 @@ export default function ProfileScreen() {
     } catch (error: any) {
       console.error('Error choosing photo:', error);
       Alert.alert('Erreur', 'Impossible d\'accéder à la galerie');
+    } finally {
+      isMediaPickerOpenRef.current = false;
+      authRedirectGraceRef.current = Date.now() + 1800;
     }
   };
 

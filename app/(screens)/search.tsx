@@ -1,7 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
+import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Image, ImageSourcePropType, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, TouchableWithoutFeedback, View, useWindowDimensions } from 'react-native';
 import { PanGestureHandler, PanGestureHandlerGestureEvent } from 'react-native-gesture-handler';
 import Animated, {
@@ -21,9 +23,31 @@ import { useAuth } from '../../context/AuthContext';
 import { useBooking } from '../../context/BookingContext';
 import { useLike } from '../../context/LikeContext';
 import { useUser } from '../../context/UserContext';
+import { clampPointToDRC, DRC_CAMERA_BOUNDS, DRC_DEFAULT_REGION, isPointInDRC } from '../../lib/drcMap';
+import { isMapboxAvailable } from '../../lib/mapbox';
 import { User } from '../../types';
 
 type Filter = 'all' | 'male' | 'female';
+type SearchTab = 'discover' | 'nearby';
+
+// Import conditionnel de Mapbox
+let Mapbox: any = null;
+let MapView: any = null;
+let PointAnnotation: any = null;
+let Camera: any = null;
+
+if (isMapboxAvailable) {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mapboxModule = require('@rnmapbox/maps');
+    Mapbox = mapboxModule.default;
+    MapView = mapboxModule.MapView;
+    PointAnnotation = mapboxModule.PointAnnotation;
+    Camera = mapboxModule.Camera;
+  } catch {
+    console.warn('Failed to load Mapbox components in search screen');
+  }
+}
 
 /**
  * Fonction utilitaire pour obtenir la source d'image correcte pour React Native Image
@@ -62,13 +86,20 @@ export default function SearchScreen() {
   const router = useRouter();
   const { setSelectedUser } = useUser();
   const { user: currentAuthUser } = useAuth();
-  const { getAllUsers } = useBooking();
+  const { getAllUsers, getAvailableUsers } = useBooking();
   const { likeUser, unlikeUser, isUserLiked } = useLike();
+  const isScreenFocused = useIsFocused();
+  const [activeTab, setActiveTab] = useState<SearchTab>('discover');
   const [filter, setFilter] = useState<Filter>('all');
   const [currentIndex, setCurrentIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   const [users, setUsers] = useState<User[]>([]);
+  const [nearbyUsers, setNearbyUsers] = useState<User[]>([]);
+  const [deviceNearbyLocation, setDeviceNearbyLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [nearbyMapReady, setNearbyMapReady] = useState(false);
+  const [isLoadingNearby, setIsLoadingNearby] = useState(false);
+  const [showNearbyMap, setShowNearbyMap] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [showFilters, setShowFilters] = useState(false);
   const [ageRange, setAgeRange] = useState({ min: 18, max: 100 });
@@ -86,6 +117,12 @@ export default function SearchScreen() {
   const lastLoadTimeRef = React.useRef<number>(0);
   const hasLoadedRef = React.useRef(false);
   const hasLoadedOnceRef = React.useRef(false); // Pour charger une seule fois à l'arrivée
+  const getAvailableUsersRef = React.useRef(getAvailableUsers);
+  const nearbyLocationSubscriptionRef = React.useRef<Location.LocationSubscription | null>(null);
+  const hasLoadedNearbyOnceRef = React.useRef(false);
+  const nearbyDataSignatureRef = React.useRef('');
+  const nearbyFetchSequenceRef = React.useRef(0);
+  const isNearbyContextActiveRef = React.useRef(false);
   
   // Obtenir les dimensions de la fenêtre
   const { width: screenWidth } = useWindowDimensions();
@@ -278,6 +315,328 @@ export default function SearchScreen() {
       };
     }, [currentAuthUser?.id, loadUsers, showFilters])
   );
+
+  const setDeviceNearbyLocationSafe = useCallback((next: { lat: number; lng: number }) => {
+    setDeviceNearbyLocation((prev) => {
+      if (!prev) return next;
+      const latDiff = Math.abs(prev.lat - next.lat);
+      const lngDiff = Math.abs(prev.lng - next.lng);
+      // Evite les rerenders inutiles sur de micro-variations GPS.
+      if (latDiff < 0.00005 && lngDiff < 0.00005) {
+        return prev;
+      }
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    getAvailableUsersRef.current = getAvailableUsers;
+  }, [getAvailableUsers]);
+
+  useEffect(() => {
+    const isNearbyActive = activeTab === 'nearby' && isScreenFocused;
+    isNearbyContextActiveRef.current = isNearbyActive;
+
+    if (!isNearbyActive) {
+      // Invalide les reponses async en vol quand on quitte Recherche.
+      nearbyFetchSequenceRef.current += 1;
+    }
+  }, [activeTab, isScreenFocused]);
+
+  const refreshDeviceNearbyLocation = useCallback(async () => {
+    try {
+      let permission = await Location.getForegroundPermissionsAsync();
+
+      if (permission.status !== 'granted' && permission.canAskAgain) {
+        permission = await Location.requestForegroundPermissionsAsync();
+      }
+
+      if (permission.status !== 'granted') {
+        return;
+      }
+
+      let nextPoint: { lat: number; lng: number } | null = null;
+      const lastKnownLocation = await Location.getLastKnownPositionAsync();
+      if (lastKnownLocation?.coords) {
+        const bounded = clampPointToDRC(lastKnownLocation.coords.latitude, lastKnownLocation.coords.longitude);
+        nextPoint = { lat: bounded.lat, lng: bounded.lng };
+      }
+
+      const currentLocation = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+
+      if (currentLocation?.coords) {
+        const bounded = clampPointToDRC(currentLocation.coords.latitude, currentLocation.coords.longitude);
+        nextPoint = { lat: bounded.lat, lng: bounded.lng };
+      }
+
+      if (nextPoint && isNearbyContextActiveRef.current) {
+        setDeviceNearbyLocationSafe(nextPoint);
+        AsyncStorage.setItem('user_location', JSON.stringify(nextPoint)).catch(() => {});
+      }
+    } catch {
+      // no-op: fallback sur la position profil
+    }
+  }, [setDeviceNearbyLocationSafe]);
+
+  const nearbyCenter = useMemo(() => {
+    if (deviceNearbyLocation) {
+      return deviceNearbyLocation;
+    }
+    const lat = Number(currentAuthUser?.lat);
+    const lng = Number(currentAuthUser?.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    const bounded = clampPointToDRC(lat, lng);
+    return { lat: bounded.lat, lng: bounded.lng };
+  }, [currentAuthUser?.lat, currentAuthUser?.lng, deviceNearbyLocation]);
+  const nearbyCenterLat = nearbyCenter?.lat ?? null;
+  const nearbyCenterLng = nearbyCenter?.lng ?? null;
+
+  const loadNearbyUsers = useCallback(async (silent = false) => {
+    if (!currentAuthUser?.id || nearbyCenterLat === null || nearbyCenterLng === null) {
+      if (isNearbyContextActiveRef.current) {
+        setNearbyUsers([]);
+        if (!silent) setIsLoadingNearby(false);
+      }
+      return;
+    }
+
+    const requestSequence = ++nearbyFetchSequenceRef.current;
+    const getAvailableUsersFn = getAvailableUsersRef.current;
+    if (!getAvailableUsersFn) {
+      if (isNearbyContextActiveRef.current) {
+        setNearbyUsers([]);
+        if (!silent) setIsLoadingNearby(false);
+      }
+      return;
+    }
+
+    if (!silent && !hasLoadedNearbyOnceRef.current) {
+      setIsLoadingNearby(true);
+    }
+    try {
+      const availableNearbyUsers = await getAvailableUsersFn({
+        center: { lat: nearbyCenterLat, lng: nearbyCenterLng },
+        radiusKm: 10,
+        onlineWithinMinutes: 2,
+      });
+
+      if (
+        !isNearbyContextActiveRef.current ||
+        requestSequence !== nearbyFetchSequenceRef.current
+      ) {
+        return;
+      }
+
+      if (!Array.isArray(availableNearbyUsers)) {
+        if (!silent) {
+          setNearbyUsers([]);
+        }
+        return;
+      }
+
+      const formattedNearby: User[] = availableNearbyUsers
+        .map((u: any) => {
+          const lat = u.lat != null ? Number(u.lat) : undefined;
+          const lng = u.lng != null ? Number(u.lng) : undefined;
+          const userGender = (u.gender === 'male' || u.gender === 'female') ? u.gender : 'female';
+          const distance =
+            lat !== undefined && lng !== undefined && Number.isFinite(lat) && Number.isFinite(lng)
+              ? calculateDistance(nearbyCenterLat, nearbyCenterLng, lat, lng)
+              : undefined;
+
+          return {
+            id: u.id,
+            pseudo: u.pseudo || 'Utilisateur',
+            age: u.age || 25,
+            phone: u.phone,
+            photo: u.photo || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400',
+            description: u.description || '',
+            rating: parseFloat(u.rating) || 0,
+            reviewCount: typeof u.review_count === 'number'
+              ? u.review_count
+              : (typeof u.review_count === 'string' ? parseInt(u.review_count, 10) || 0 : 0),
+            isSubscribed: u.is_subscribed || false,
+            subscriptionStatus: u.subscription_status || 'pending',
+            lastSeen: u.last_seen || 'Hors ligne',
+            gender: userGender,
+            lat: lat !== undefined && Number.isFinite(lat) ? lat : undefined,
+            lng: lng !== undefined && Number.isFinite(lng) ? lng : undefined,
+            isAvailable: u.is_available,
+            distance,
+          } as User;
+        })
+        .filter((u) => {
+          if (u.lat === undefined || u.lng === undefined) return false;
+          if (!isPointInDRC(u.lat, u.lng)) return false;
+          if (u.distance === undefined || !Number.isFinite(u.distance)) return false;
+          if (u.distance > 10) return false;
+          return true;
+        })
+        .sort((a, b) => {
+          const aOnline = calculateOnlineStatus(a.lastSeen);
+          const bOnline = calculateOnlineStatus(b.lastSeen);
+          if (aOnline !== bOnline) {
+            return aOnline ? -1 : 1;
+          }
+          return (a.distance || 999) - (b.distance || 999);
+        });
+
+      const nextSignature = formattedNearby
+        .map((u) => `${u.id}:${u.distance?.toFixed(2) ?? 'na'}:${u.lastSeen ?? ''}`)
+        .join('|');
+      if (nextSignature !== nearbyDataSignatureRef.current) {
+        nearbyDataSignatureRef.current = nextSignature;
+        setNearbyUsers(formattedNearby);
+      }
+      hasLoadedNearbyOnceRef.current = true;
+    } catch (error) {
+      console.error('Error loading nearby users in search:', error);
+      if (!silent && !hasLoadedNearbyOnceRef.current) {
+        setNearbyUsers([]);
+      }
+    } finally {
+      if (
+        !silent &&
+        isNearbyContextActiveRef.current &&
+        requestSequence === nearbyFetchSequenceRef.current
+      ) {
+        setIsLoadingNearby(false);
+      }
+    }
+  }, [currentAuthUser?.id, nearbyCenterLat, nearbyCenterLng]);
+
+  useEffect(() => {
+    if (activeTab !== 'nearby' || !isScreenFocused) {
+      return;
+    }
+
+    const hydrateFromCache = async () => {
+      try {
+        const cachedLocationStr = await AsyncStorage.getItem('user_location');
+        if (!cachedLocationStr) return;
+        const cachedLocation = JSON.parse(cachedLocationStr);
+        if (!Number.isFinite(cachedLocation?.lat) || !Number.isFinite(cachedLocation?.lng)) return;
+        if (!isNearbyContextActiveRef.current) return;
+        const bounded = clampPointToDRC(cachedLocation.lat, cachedLocation.lng);
+        setDeviceNearbyLocationSafe({ lat: bounded.lat, lng: bounded.lng });
+      } catch {
+        // no-op
+      }
+    };
+
+    hydrateFromCache();
+  }, [activeTab, isScreenFocused, setDeviceNearbyLocationSafe]);
+
+  useEffect(() => {
+    if (activeTab !== 'nearby' || !isScreenFocused) {
+      return;
+    }
+
+    refreshDeviceNearbyLocation();
+    const gpsIntervalId = setInterval(() => {
+      refreshDeviceNearbyLocation();
+    }, 30000);
+
+    return () => {
+      clearInterval(gpsIntervalId);
+    };
+  }, [activeTab, isScreenFocused, refreshDeviceNearbyLocation]);
+
+  useEffect(() => {
+    if (activeTab !== 'nearby' || !isScreenFocused) {
+      return;
+    }
+
+    let disposed = false;
+
+    const startLocationWatch = async () => {
+      try {
+        let permission = await Location.getForegroundPermissionsAsync();
+
+        if (permission.status !== 'granted' && permission.canAskAgain) {
+          permission = await Location.requestForegroundPermissionsAsync();
+        }
+
+        if (permission.status !== 'granted') {
+          return;
+        }
+
+        const subscription = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.Balanced,
+            timeInterval: 10000,
+            distanceInterval: 10,
+          },
+          (location) => {
+            if (!isNearbyContextActiveRef.current) {
+              return;
+            }
+            const bounded = clampPointToDRC(location.coords.latitude, location.coords.longitude);
+            const nextPoint = { lat: bounded.lat, lng: bounded.lng };
+            setDeviceNearbyLocationSafe(nextPoint);
+            AsyncStorage.setItem('user_location', JSON.stringify(nextPoint)).catch(() => {});
+          }
+        );
+
+        if (disposed) {
+          subscription.remove();
+          return;
+        }
+
+        nearbyLocationSubscriptionRef.current = subscription;
+      } catch {
+        // no-op
+      }
+    };
+
+    startLocationWatch();
+
+    return () => {
+      disposed = true;
+      if (nearbyLocationSubscriptionRef.current) {
+        nearbyLocationSubscriptionRef.current.remove();
+        nearbyLocationSubscriptionRef.current = null;
+      }
+    };
+  }, [activeTab, isScreenFocused, setDeviceNearbyLocationSafe]);
+
+  useEffect(() => {
+    if (activeTab !== 'nearby' || !isScreenFocused) {
+      return;
+    }
+
+    if (hasLoadedNearbyOnceRef.current) {
+      loadNearbyUsers(true);
+    } else {
+      loadNearbyUsers();
+    }
+    const intervalId = setInterval(() => {
+      loadNearbyUsers(true);
+    }, 10000);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [activeTab, isScreenFocused, loadNearbyUsers]);
+
+  useEffect(() => {
+    if (activeTab !== 'nearby') {
+      setShowNearbyMap(false);
+      setNearbyMapReady(false);
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'nearby' || nearbyMapReady) {
+      return;
+    }
+    const readyFallbackTimer = setTimeout(() => {
+      setNearbyMapReady(true);
+    }, 1200);
+    return () => clearTimeout(readyFallbackTimer);
+  }, [activeTab, nearbyMapReady]);
 
   // Debounce de la recherche pour éviter un filtrage complet à chaque frappe.
   React.useEffect(() => {
@@ -615,6 +974,415 @@ export default function SearchScreen() {
     setCurrentIndex(0);
   }, [tempFilter, tempMaxDistance, tempMinRating, tempAgeMinText, tempAgeMaxText]); // Dépendances pour garantir que la fonction utilise les valeurs actuelles
 
+  const renderSearchTabs = () => (
+    <View style={styles.searchTabs}>
+      <TouchableOpacity
+        style={[styles.searchTabButton, activeTab === 'discover' && styles.searchTabButtonActive]}
+        onPress={() => setActiveTab('discover')}
+      >
+        <Ionicons
+          name="sparkles-outline"
+          size={16}
+          color={activeTab === 'discover' ? colors.text : colors.textSecondary}
+        />
+        <Text style={[styles.searchTabText, activeTab === 'discover' && styles.searchTabTextActive]}>
+          Decouverte
+        </Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.searchTabButton, activeTab === 'nearby' && styles.searchTabButtonActive]}
+        onPress={() => setActiveTab('nearby')}
+      >
+        <Ionicons
+          name="location-outline"
+          size={16}
+          color={activeTab === 'nearby' ? colors.text : colors.textSecondary}
+        />
+        <Text style={[styles.searchTabText, activeTab === 'nearby' && styles.searchTabTextActive]}>
+          A proximite
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  const mapCenter = nearbyCenter ?? {
+    lat: DRC_DEFAULT_REGION.latitude,
+    lng: DRC_DEFAULT_REGION.longitude,
+  };
+  const nearbyActiveCount = nearbyUsers.filter((u) => calculateOnlineStatus(u.lastSeen)).length;
+
+  const renderNearbyMap = (mapStyle: any, mapIdSuffix: 'inline' | 'modal') => {
+    if (!isMapboxAvailable || !Mapbox || !Mapbox.StyleURL || !MapView || !Camera) {
+      return (
+        <View style={styles.mapPlaceholder}>
+          <Ionicons name="map-outline" size={48} color={colors.purple400} />
+          <Text style={styles.mapPlaceholderText}>Carte non disponible</Text>
+        </View>
+      );
+    }
+
+    const visibleNearbyUsers = nearbyUsers.filter(
+      (nearbyUser) =>
+        nearbyUser.lat !== undefined &&
+        nearbyUser.lng !== undefined &&
+        isPointInDRC(nearbyUser.lat, nearbyUser.lng)
+    );
+
+    const distanceMetersBetween = (aLat: number, aLng: number, bLat: number, bLng: number) =>
+      calculateDistance(aLat, aLng, bLat, bLng) * 1000;
+
+    const offsetCoordinateByMeters = (
+      lat: number,
+      lng: number,
+      meters: number,
+      bearingRad: number
+    ) => {
+      const metersPerDegLat = 111320;
+      const metersPerDegLng = Math.max(111320 * Math.cos((lat * Math.PI) / 180), 1e-6);
+
+      const latOffset = (Math.cos(bearingRad) * meters) / metersPerDegLat;
+      const lngOffset = (Math.sin(bearingRad) * meters) / metersPerDegLng;
+
+      return {
+        lat: lat + latOffset,
+        lng: lng + lngOffset,
+      };
+    };
+
+    const hashToAngle = (input: string) => {
+      let hash = 2166136261;
+      for (let i = 0; i < input.length; i += 1) {
+        hash ^= input.charCodeAt(i);
+        hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+      }
+      const normalized = Math.abs(hash) % 360;
+      return (normalized * Math.PI) / 180;
+    };
+
+    const MIN_DISTANCE_FROM_CURRENT_M = 18;
+    const MIN_DISTANCE_BETWEEN_USERS_M = 14;
+    const MAX_VISUAL_SHIFT_M = 42;
+
+    const placedMarkers: { lat: number; lng: number }[] = [];
+
+    const nearbyMarkerData = visibleNearbyUsers.map((nearbyUser) => {
+      const originalLat = nearbyUser.lat as number;
+      const originalLng = nearbyUser.lng as number;
+
+      let markerLat = originalLat;
+      let markerLng = originalLng;
+
+      const initialDistanceFromCurrent = distanceMetersBetween(
+        mapCenter.lat,
+        mapCenter.lng,
+        originalLat,
+        originalLng
+      );
+
+      const overlapsCurrent = () =>
+        distanceMetersBetween(mapCenter.lat, mapCenter.lng, markerLat, markerLng) <
+        MIN_DISTANCE_FROM_CURRENT_M;
+
+      const overlapsOtherMarker = () =>
+        placedMarkers.some(
+          (placed) =>
+            distanceMetersBetween(placed.lat, placed.lng, markerLat, markerLng) <
+            MIN_DISTANCE_BETWEEN_USERS_M
+        );
+
+      if (overlapsCurrent() || overlapsOtherMarker()) {
+        const baseAngle = hashToAngle(nearbyUser.id);
+        const directionFromCurrent =
+          initialDistanceFromCurrent > 0.5
+            ? Math.atan2(originalLng - mapCenter.lng, originalLat - mapCenter.lat)
+            : baseAngle;
+
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          const pushFromCurrent = Math.max(
+            0,
+            MIN_DISTANCE_FROM_CURRENT_M - initialDistanceFromCurrent
+          );
+          const shiftMeters = Math.min(MAX_VISUAL_SHIFT_M, 6 + pushFromCurrent + attempt * 4);
+          const angle = directionFromCurrent + attempt * (Math.PI / 6);
+          const candidate = offsetCoordinateByMeters(originalLat, originalLng, shiftMeters, angle);
+
+          if (!isPointInDRC(candidate.lat, candidate.lng)) {
+            continue;
+          }
+
+          markerLat = candidate.lat;
+          markerLng = candidate.lng;
+
+          if (!overlapsCurrent() && !overlapsOtherMarker()) {
+            break;
+          }
+        }
+      }
+
+      placedMarkers.push({ lat: markerLat, lng: markerLng });
+
+      return {
+        user: nearbyUser,
+        markerLat,
+        markerLng,
+      };
+    });
+
+    return (
+      <MapView
+        style={mapStyle}
+        styleURL={Mapbox.StyleURL.Street}
+        logoEnabled={false}
+        attributionEnabled={false}
+        onDidFinishLoadingMap={() => {
+          if (!nearbyMapReady) {
+            setTimeout(() => setNearbyMapReady(true), 100);
+          }
+        }}
+      >
+        <Camera
+          maxBounds={DRC_CAMERA_BOUNDS}
+          centerCoordinate={[mapCenter.lng, mapCenter.lat]}
+          zoomLevel={13}
+          animationMode="moveTo"
+          animationDuration={0}
+        />
+        {PointAnnotation
+          ? nearbyMarkerData.map(({ user: nearbyUser, markerLat, markerLng }) => (
+                <PointAnnotation
+                  key={`nearby-map-${mapIdSuffix}-${nearbyUser.id}`}
+                  id={`nearby-map-${mapIdSuffix}-${nearbyUser.id}`}
+                  coordinate={[markerLng, markerLat]}
+                  anchor={{ x: 0.5, y: 0.5 }}
+                >
+                  <View style={styles.nearbyMapUserMarker}>
+                    <Ionicons name="person-outline" size={12} color="#ffffff" />
+                  </View>
+                </PointAnnotation>
+              ))
+          : null}
+        {PointAnnotation &&
+        Number.isFinite(mapCenter.lat) &&
+        Number.isFinite(mapCenter.lng) ? (
+          <PointAnnotation
+            id={`nearby-current-user-${mapIdSuffix}`}
+            coordinate={[mapCenter.lng, mapCenter.lat]}
+            anchor={{ x: 0.5, y: 0.5 }}
+          >
+            <View style={styles.nearbyMapCurrentMarker}>
+              <Ionicons name="person" size={14} color="#ffffff" />
+            </View>
+          </PointAnnotation>
+        ) : null}
+      </MapView>
+    );
+  };
+
+  if (activeTab === 'nearby') {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => router.back()}>
+            <Ionicons name="arrow-back" size={24} color={colors.textSecondary} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Recherche</Text>
+          <TouchableOpacity
+            onPress={() => setShowNearbyMap(true)}
+          >
+            <Ionicons
+              name="map-outline"
+              size={24}
+              color={colors.textSecondary}
+            />
+          </TouchableOpacity>
+        </View>
+
+        {renderSearchTabs()}
+
+        <ScrollView
+          style={styles.nearbyContentScroll}
+          contentContainerStyle={styles.nearbyContentScrollInner}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.proximityIntroCard}>
+            <Text style={styles.proximityIntroTitle}>Profils connectes autour de toi</Text>
+            <Text style={styles.proximityIntroSubtitle}>
+              Affichage en direct des profils en ligne dans un rayon de 10 km.
+            </Text>
+          </View>
+
+          <View style={styles.nearbyToolbar}>
+            <View style={styles.nearbyPillsRow}>
+              <View style={styles.nearbyCountPill}>
+                <Ionicons name="people-outline" size={14} color={colors.pink500} />
+                <Text style={styles.nearbyCountText} numberOfLines={1}>
+                  {nearbyUsers.length} profil{nearbyUsers.length > 1 ? 's' : ''} trouves
+                </Text>
+              </View>
+              <View style={styles.nearbyActivePill}>
+                <Ionicons name="radio-button-on" size={10} color={colors.green400} />
+                <Text style={styles.nearbyActiveText} numberOfLines={1}>
+                  {nearbyActiveCount} actif{nearbyActiveCount > 1 ? 's' : ''} maintenant
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          {isLoadingNearby ? (
+            <View style={styles.nearbyLiveHint}>
+              <Ionicons name="sync-outline" size={12} color={colors.textSecondary} />
+              <Text style={styles.nearbyLiveHintText}>Mise a jour en direct...</Text>
+            </View>
+          ) : null}
+
+          {nearbyCenter ? (
+            <View style={styles.nearbyInlineMapSection}>
+              <View style={styles.nearbyInlineMapHeader}>
+                <Text style={styles.nearbyInlineMapTitle}>Carte des profils a proximite</Text>
+                <TouchableOpacity onPress={() => setShowNearbyMap(true)} activeOpacity={0.8}>
+                  <Text style={styles.nearbyInlineMapLink}>Agrandir</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={styles.nearbyInlineMapContainer}>
+                {renderNearbyMap(styles.nearbyInlineMap, 'inline')}
+              </View>
+            </View>
+          ) : null}
+
+          {nearbyCenter ? (
+            <View style={styles.nearbyListHeader}>
+              <Text style={styles.nearbyListTitle}>Profils a proximite (temps reel)</Text>
+            </View>
+          ) : null}
+
+          {!nearbyCenter ? (
+            <View style={styles.nearbyStateCard}>
+              <Text style={styles.nearbyStateTitle}>Position indisponible</Text>
+              <Text style={styles.nearbyStateSubtitle}>
+                Active la localisation pour afficher les profils a proximite.
+              </Text>
+            </View>
+          ) : isLoadingNearby && nearbyUsers.length === 0 ? (
+            <View style={styles.nearbyStateCard}>
+              <Text style={styles.nearbyStateTitle}>Chargement des profils proches...</Text>
+            </View>
+          ) : nearbyUsers.length === 0 ? (
+            <View style={styles.nearbyStateCard}>
+              <Text style={styles.nearbyStateTitle}>Aucun profil a proximite</Text>
+              <Text style={styles.nearbyStateSubtitle}>
+                Aucun profil detecte dans un rayon de 10 km pour le moment.
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.nearbyCardsList}>
+              {nearbyUsers.map((nearbyUser) => {
+              const nearbyImageSource = getImageSource(nearbyUser.photo, nearbyUser.gender || 'female');
+              const isNearbyRemoteImage =
+                !!nearbyImageSource &&
+                typeof nearbyImageSource === 'object' &&
+                'uri' in nearbyImageSource;
+              const isNearbyOnline = calculateOnlineStatus(nearbyUser.lastSeen);
+              const nearbyStatusLabel = isNearbyOnline ? 'Actif maintenant' : 'Hors ligne';
+
+              return (
+                <TouchableOpacity
+                  key={nearbyUser.id}
+                  style={styles.nearbyCard}
+                  activeOpacity={0.8}
+                  onPress={() => handleViewProfile(nearbyUser)}
+                >
+                  <View style={styles.nearbyCardImageWrap}>
+                    {isNearbyRemoteImage ? (
+                      <ImageWithFallback source={nearbyImageSource} style={styles.nearbyCardImage} />
+                    ) : (
+                      <Image source={nearbyImageSource} style={styles.nearbyCardImage} resizeMode="cover" />
+                    )}
+                    {calculateOnlineStatus(nearbyUser.lastSeen) ? <View style={styles.nearbyOnlineDot} /> : null}
+                  </View>
+                  <View style={styles.nearbyCardBody}>
+                    <View style={styles.nearbyCardHeader}>
+                      <Text style={styles.nearbyCardName}>{nearbyUser.pseudo}</Text>
+                      <View
+                        style={[
+                          styles.nearbyStatusPill,
+                          isNearbyOnline
+                            ? styles.nearbyStatusPillOnline
+                            : styles.nearbyStatusPillOffline,
+                        ]}
+                      >
+                        <View
+                          style={[
+                            styles.nearbyStatusDot,
+                            { backgroundColor: isNearbyOnline ? colors.green500 : colors.textTertiary },
+                          ]}
+                        />
+                        <Text
+                          style={[
+                            styles.nearbyStatusText,
+                            isNearbyOnline
+                              ? styles.nearbyStatusTextOnline
+                              : styles.nearbyStatusTextOffline,
+                          ]}
+                        >
+                          {nearbyStatusLabel}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={styles.nearbyCardDescription} numberOfLines={1}>
+                      {nearbyUser.description?.trim() || 'Aucune description'}
+                    </Text>
+                    <View style={styles.nearbyMetaRow}>
+                      <View style={styles.nearbyMetaItem}>
+                        <Ionicons name="location-outline" size={12} color={colors.textSecondary} />
+                        <Text style={styles.nearbyMetaText}>
+                          {nearbyUser.distance !== undefined ? `${nearbyUser.distance.toFixed(1)} km` : 'N/A'}
+                        </Text>
+                      </View>
+                      <View style={styles.nearbyMetaItem}>
+                        <Ionicons name="star" size={12} color={colors.yellow500} />
+                        <Text style={styles.nearbyMetaText}>
+                          {(nearbyUser.rating || 0).toFixed(1)}
+                        </Text>
+                      </View>
+                      <View style={styles.nearbyMetaItem}>
+                        <Ionicons name="person-outline" size={12} color={colors.textSecondary} />
+                        <Text style={styles.nearbyMetaText}>{nearbyUser.age} ans</Text>
+                      </View>
+                    </View>
+                  </View>
+                  <View style={styles.nearbyCardArrowWrap}>
+                    <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+                  </View>
+                </TouchableOpacity>
+              );
+              })}
+            </View>
+          )}
+        </ScrollView>
+
+        <Modal
+          statusBarTranslucent
+          visible={showNearbyMap}
+          transparent={false}
+          animationType="slide"
+          onRequestClose={() => setShowNearbyMap(false)}
+        >
+          <SafeAreaView style={styles.proximityMapModal}>
+            <View style={styles.proximityMapHeader}>
+              <Text style={styles.proximityMapTitle}>Carte des profils a proximite</Text>
+              <TouchableOpacity onPress={() => setShowNearbyMap(false)}>
+                <Ionicons name="close" size={24} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.proximityMapBody}>
+              {renderNearbyMap(styles.proximityMap, 'modal')}
+            </View>
+          </SafeAreaView>
+        </Modal>
+      </SafeAreaView>
+    );
+  }
+
   if (isLoading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -625,6 +1393,7 @@ export default function SearchScreen() {
           <Text style={styles.headerTitle}>Recherche</Text>
           <View style={{ width: 24 }} />
         </View>
+        {renderSearchTabs()}
         <View style={styles.emptyContainer}>
           <Text style={styles.emptyTitle}>Chargement...</Text>
         </View>
@@ -645,6 +1414,7 @@ export default function SearchScreen() {
             <Ionicons name="options-outline" size={24} color={colors.textSecondary} />
           </TouchableOpacity>
         </View>
+        {renderSearchTabs()}
 
         {/* Search Bar */}
         <View style={styles.searchContainer}>
@@ -940,6 +1710,7 @@ export default function SearchScreen() {
             <Ionicons name="options-outline" size={24} color={colors.textSecondary} />
           </TouchableOpacity>
         </View>
+        {renderSearchTabs()}
 
         {/* Search Bar */}
         <View style={styles.searchContainer}>
@@ -1235,6 +2006,7 @@ export default function SearchScreen() {
             <Ionicons name="options-outline" size={24} color={colors.textSecondary} />
           </TouchableOpacity>
         </View>
+        {renderSearchTabs()}
 
         {/* Search Bar */}
         <Pressable onPress={(e) => e.stopPropagation()}>
@@ -1606,6 +2378,385 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '600',
     color: colors.text,
+  },
+  searchTabs: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderSecondary,
+    backgroundColor: colors.background,
+  },
+  searchTabButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+    paddingVertical: 10,
+    backgroundColor: colors.backgroundSecondary,
+  },
+  searchTabButtonActive: {
+    backgroundColor: colors.pink600,
+    borderColor: colors.pink600,
+  },
+  searchTabText: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  searchTabTextActive: {
+    color: colors.text,
+  },
+  disabledMapButton: {
+    opacity: 0.5,
+  },
+  nearbyToolbar: {
+    marginHorizontal: 24,
+    marginBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+  },
+  nearbyPillsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'nowrap',
+    width: '100%',
+  },
+  nearbyCountPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    flex: 1,
+    minWidth: 0,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: `${colors.pink500}44`,
+    backgroundColor: `${colors.pink500}18`,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  nearbyActivePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    flex: 1,
+    minWidth: 0,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: `${colors.green500}66`,
+    backgroundColor: `${colors.green500}20`,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  nearbyCountText: {
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  nearbyActiveText: {
+    color: colors.green400,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  nearbyLiveHint: {
+    marginHorizontal: 24,
+    marginBottom: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  nearbyLiveHintText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  nearbyInlineMapSection: {
+    marginHorizontal: 24,
+    marginBottom: 10,
+    gap: 8,
+  },
+  nearbyInlineMapHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  nearbyInlineMapTitle: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  nearbyInlineMapLink: {
+    color: colors.pink500,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  nearbyInlineMapContainer: {
+    height: 230,
+    borderRadius: 14,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+    backgroundColor: colors.backgroundTertiary,
+  },
+  nearbyListHeader: {
+    marginHorizontal: 24,
+    marginBottom: 6,
+  },
+  nearbyListTitle: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  nearbyInlineMap: {
+    flex: 1,
+  },
+  proximityIntroCard: {
+    marginTop: 12,
+    marginHorizontal: 24,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+    backgroundColor: `${colors.backgroundSecondary}B8`,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 4,
+  },
+  proximityIntroTitle: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  proximityIntroSubtitle: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  nearbyContentScroll: {
+    flex: 1,
+  },
+  nearbyContentScrollInner: {
+    paddingBottom: 24,
+  },
+  nearbyScroll: {
+    flex: 1,
+  },
+  nearbyScrollContent: {
+    paddingHorizontal: 24,
+    paddingTop: 8,
+    paddingBottom: 24,
+    gap: 10,
+  },
+  nearbyStateCard: {
+    marginHorizontal: 24,
+    marginTop: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+    backgroundColor: `${colors.backgroundSecondary}B8`,
+    gap: 6,
+  },
+  nearbyStateTitle: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  nearbyStateSubtitle: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  nearbyCardsList: {
+    paddingHorizontal: 24,
+    paddingTop: 8,
+    paddingBottom: 24,
+    gap: 10,
+  },
+  nearbyCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+    backgroundColor: `${colors.backgroundSecondary}D8`,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  nearbyCardImageWrap: {
+    position: 'relative',
+  },
+  nearbyCardImage: {
+    width: 54,
+    height: 54,
+    borderRadius: 12,
+  },
+  nearbyOnlineDot: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    borderWidth: 2,
+    borderColor: colors.background,
+    backgroundColor: colors.green500,
+  },
+  nearbyCardBody: {
+    flex: 1,
+    gap: 4,
+  },
+  nearbyCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  nearbyStatusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  nearbyStatusPillOnline: {
+    borderColor: `${colors.green500}88`,
+    backgroundColor: `${colors.green500}24`,
+  },
+  nearbyStatusPillOffline: {
+    borderColor: colors.border,
+    backgroundColor: `${colors.backgroundTertiary}E0`,
+  },
+  nearbyStatusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  nearbyStatusText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  nearbyStatusTextOnline: {
+    color: colors.green400,
+  },
+  nearbyStatusTextOffline: {
+    color: colors.textSecondary,
+  },
+  nearbyCardName: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '700',
+    flex: 1,
+  },
+  nearbyCardDescription: {
+    color: colors.textSecondary,
+    fontSize: 13,
+  },
+  nearbyMetaRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 2,
+  },
+  nearbyMetaItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  nearbyMetaText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  nearbyCardArrowWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 20,
+  },
+  proximityMapModal: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  proximityMapHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderSecondary,
+    backgroundColor: `${colors.backgroundSecondary}B0`,
+  },
+  proximityMapTitle: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  proximityMapBody: {
+    flex: 1,
+  },
+  proximityMap: {
+    flex: 1,
+  },
+  nearbyMapCurrentMarker: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.pink500,
+    borderWidth: 3,
+    borderColor: '#ffffff',
+    shadowColor: colors.pink500,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.5,
+    shadowRadius: 4,
+    elevation: 6,
+    zIndex: 20,
+  },
+  nearbyMapUserMarker: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.purple400,
+    borderWidth: 2,
+    borderColor: '#ffffff',
+    shadowColor: colors.purple500,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+    elevation: 3,
+  },
+  mapPlaceholder: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.backgroundTertiary,
+    gap: 8,
+  },
+  mapPlaceholderText: {
+    color: colors.textSecondary,
+    fontSize: 14,
+    fontWeight: '600',
   },
   filters: {
     flexDirection: 'row',

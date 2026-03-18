@@ -5,7 +5,7 @@ import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import * as Location from 'expo-location';
 import { usePathname, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, AppState, Image, Linking, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, AppState, Image, Linking, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Badge } from '../../components/ui/Badge';
 import { colors } from '../../constants/colors';
@@ -20,7 +20,7 @@ import { getDefaultProfileImage } from '../../lib/defaultImages';
 import { clampPointToDRC, DRC_CAMERA_BOUNDS, isPointInDRC } from '../../lib/drcMap';
 import { isMapboxAvailable } from '../../lib/mapbox';
 import { supabase } from '../../lib/supabase';
-import { Offer, OfferType, User } from '../../types';
+import { Offer, OfferTargetGender, OfferType, User } from '../../types';
 
 // Import conditionnel de Mapbox
 let Mapbox: any = null;
@@ -42,6 +42,7 @@ if (isMapboxAvailable) {
 }
 
 type Tab = 'home' | 'search' | 'messages' | 'notifications' | 'profile';
+type OfferMapGenderFilter = 'any' | OfferTargetGender;
 
 const PROXIMITY_RADIUS_KM = 10;
 const ONLINE_WINDOW_MINUTES = 2;
@@ -68,105 +69,9 @@ const isOfferAvailable = (offer: Offer, now: Date) => {
   return expiresAt.getTime() > now.getTime();
 };
 
-/**
- * Fonction utilitaire pour obtenir la source d'image correcte pour React Native Image
- * Ã¨ Ã      / ()      Ã©
- */
-const getImageSource = (photoUrl: string | null | undefined, gender: 'male' | 'female' = 'female') => {
-  // Ã©      v
-  if (photoUrl && typeof photoUrl === 'string' && photoUrl.trim() !== '') {
-    const trimmedUrl = photoUrl.trim();
-    
-    // Rejeter les URIs locales (file://) - elles ne sont pas accessibles depuis d'autres appareils
-    if (trimmedUrl.startsWith('file://')) {
-      console.warn(`URI locale detectee (non accessible): ${trimmedUrl.substring(0, 50)}... - Utilisation de l'image par defaut`);
-      return gender === 'male' 
-        ? require('../../assets/images/avatar_men.png')
-        : require('../../assets/images/avatar_woman.png');
-    }
-    
-    // Si c'est une URL HTTP/HTTPS valide (Supabase Storage, etc.)
-    // Accepter toutes les URLs HTTPS et HTTP (sauf les URLs locales du serveur Expo)
-    if (trimmedUrl.startsWith('https://') || 
-        (trimmedUrl.startsWith('http://') && 
-         !trimmedUrl.includes('10.0.2.2') && 
-         !trimmedUrl.includes('localhost') &&
-         !trimmedUrl.includes('127.0.0.1') &&
-         !trimmedUrl.includes('/assets/'))) {
-      return { uri: trimmedUrl };
-    }
-  }
-  
-  // ,  '  Ã©   
-  return gender === 'male' 
-    ? require('../../assets/images/avatar_men.png')
-    : require('../../assets/images/avatar_woman.png');
-};
-
-//  Ã©Ã©    
-const UserCallout = React.memo(({ 
-  user, 
-  onViewProfile, 
-  onClose 
-}: { 
-  user: User; 
-  onViewProfile: (user: User) => void;
-  onClose: () => void;
-}) => {
-  const imageSource = useMemo(() => {
-    const rawPhoto = (user as any).rawPhoto || user.photo || null;
-    return getImageSource(rawPhoto, user.gender);
-  }, [(user as any).rawPhoto, user.photo, user.gender]);
-
-  const handlePress = useCallback(() => {
-    onClose();
-    onViewProfile(user);
-  }, [user, onClose, onViewProfile]);
-
-  return (
-    <View style={styles.calloutContainer}>
-      <View style={styles.calloutHeader}>
-        <Image
-          source={imageSource}
-          style={styles.calloutImage}
-          resizeMode="cover"
-        />
-        <View style={styles.calloutInfo}>
-          <Text style={styles.calloutName}>{user.pseudo}</Text>
-          <View style={styles.calloutDistance}>
-            <Ionicons name="location" size={12} color={colors.textSecondary} />
-            <Text style={styles.calloutDistanceText}>
-              {user.distance !== undefined ? `${user.distance.toFixed(2)} km` : 'N/A'}
-            </Text>
-          </View>
-        </View>
-      </View>
-      <TouchableOpacity
-        style={styles.calloutButton}
-        onPress={handlePress}
-        activeOpacity={0.7}
-      >
-        <Text style={styles.calloutButtonText}>Profil</Text>
-        <Ionicons name="chevron-forward" size={16} color="#ffffff" />
-      </TouchableOpacity>
-    </View>
-  );
-}, (prevProps, nextProps) => {
-  //  Ã©  Ã©v  - 
-  const prevRawPhoto = (prevProps.user as any).rawPhoto || prevProps.user.photo;
-  const nextRawPhoto = (nextProps.user as any).rawPhoto || nextProps.user.photo;
-  return prevProps.user.id === nextProps.user.id &&
-         prevRawPhoto === nextRawPhoto &&
-         prevProps.user.pseudo === nextProps.user.pseudo &&
-         prevProps.user.distance === nextProps.user.distance &&
-         prevProps.user.gender === nextProps.user.gender;
-});
-
-UserCallout.displayName = 'UserCallout';
-
 export default function Dashboard() {
   const router = useRouter();
-  const { currentUser, setSelectedUser } = useUser();
+  const { currentUser } = useUser();
   const { isAuthenticated, isLoading, user, updateLocation } = useAuth();
   const { getAvailableUsers } = useBooking();
   const { getUserAverageRating } = useRating();
@@ -182,13 +87,16 @@ export default function Dashboard() {
     }, 0);
   }, [conversations]);
   const [activeTab, setActiveTab] = useState<Tab>('home');
-  const [availableUsers, setAvailableUsers] = useState<User[]>([]);
+  const [, setAvailableUsers] = useState<User[]>([]);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
-  const [userRatings, setUserRatings] = useState<Map<string, { average: number; count: number }>>(new Map());
+  const [, setUserRatings] = useState<Map<string, { average: number; count: number }>>(new Map());
   const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(null);
-  const [selectedUserForCallout, setSelectedUserForCallout] = useState<User | null>(null);
   const [mapReady, setMapReady] = useState(false);
+  const [offerMapSearchQuery, setOfferMapSearchQuery] = useState('');
+  const [offerMapGenderFilter, setOfferMapGenderFilter] = useState<OfferMapGenderFilter>('any');
+  const [showMapFilters, setShowMapFilters] = useState(false);
+  const [isMapExpanded, setIsMapExpanded] = useState(false);
   const isScreenFocused = useIsFocused();
 
   const authCheckRef = useRef({ timeoutId: null as ReturnType<typeof setTimeout> | null });
@@ -290,23 +198,6 @@ export default function Dashboard() {
     return toBoundedLocation(userLocation.lat, userLocation.lng);
   }, [userLocation, toBoundedLocation]);
 
-  const nearbyUsers = useMemo(() => {
-    return availableUsers.filter((u) => {
-      return (
-        u.lat !== undefined &&
-        u.lat !== null &&
-        u.lng !== undefined &&
-        u.lng !== null &&
-        isPointInDRC(u.lat, u.lng) &&
-        u.distance !== undefined &&
-        Number.isFinite(u.distance) &&
-        u.distance >= 0 &&
-        u.distance <= PROXIMITY_RADIUS_KM &&
-        isUserOnlineNow(u.lastSeen)
-      );
-    });
-  }, [availableUsers, isUserOnlineNow]);
-
   const availableOffers = useMemo(() => {
     const now = new Date(nowMs);
     return offers
@@ -319,7 +210,85 @@ export default function Dashboard() {
       });
   }, [offers, nowMs]);
 
-  const offersPreview = useMemo(() => availableOffers.slice(0, 3), [availableOffers]);
+  const offersPreview = useMemo(() => availableOffers, [availableOffers]);
+  const normalizedOfferMapSearchQuery = offerMapSearchQuery.trim().toLowerCase();
+
+  const nearbyOffersOnMap = useMemo(() => {
+    if (!boundedUserLocation) {
+      return [];
+    }
+
+    const calculateDistanceKm = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+      const R = 6371;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    };
+
+    return availableOffers
+      .map((offer) => {
+        const lat = offer.lat != null ? Number(offer.lat) : Number.NaN;
+        const lng = offer.lng != null ? Number(offer.lng) : Number.NaN;
+
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+        if (!isPointInDRC(lat, lng)) return null;
+
+        const distance = calculateDistanceKm(boundedUserLocation.lat, boundedUserLocation.lng, lat, lng);
+        if (!Number.isFinite(distance) || distance > PROXIMITY_RADIUS_KM) return null;
+
+        return { offer, distance, lat, lng };
+      })
+      .filter((entry): entry is { offer: Offer; distance: number; lat: number; lng: number } => !!entry)
+      .sort((a, b) => a.distance - b.distance);
+  }, [availableOffers, boundedUserLocation?.lat, boundedUserLocation?.lng]);
+
+  const filteredNearbyOffersOnMap = useMemo(() => {
+    const genderFilteredOffers = nearbyOffersOnMap.filter(({ offer }) => {
+      if (offerMapGenderFilter === 'any') {
+        return true;
+      }
+
+      const targetGender = offer.targetGender ?? 'all';
+      return targetGender === offerMapGenderFilter;
+    });
+
+    if (!normalizedOfferMapSearchQuery) {
+      return genderFilteredOffers;
+    }
+
+    return genderFilteredOffers.filter(({ offer }) => {
+      const title = offer.title?.toLowerCase() ?? '';
+      const location = offer.location?.toLowerCase() ?? '';
+      const author = offer.author?.pseudo?.toLowerCase() ?? '';
+      const offerTypes = (offer.offerTypes && offer.offerTypes.length > 0)
+        ? offer.offerTypes
+        : [offer.offerType];
+      const typeLabels = offerTypes
+        .map((type) => OFFER_TYPE_LABELS[type]?.toLowerCase() ?? '')
+        .join(' ');
+
+      return (
+        title.includes(normalizedOfferMapSearchQuery) ||
+        location.includes(normalizedOfferMapSearchQuery) ||
+        author.includes(normalizedOfferMapSearchQuery) ||
+        typeLabels.includes(normalizedOfferMapSearchQuery)
+      );
+    });
+  }, [nearbyOffersOnMap, normalizedOfferMapSearchQuery, offerMapGenderFilter]);
+
+  const mapFocusedOffer = useMemo(() => {
+    const shouldFocusOnSearchResult =
+      normalizedOfferMapSearchQuery.length > 0 || offerMapGenderFilter !== 'any';
+    if (!shouldFocusOnSearchResult || filteredNearbyOffersOnMap.length === 0) {
+      return null;
+    }
+    return filteredNearbyOffersOnMap[0];
+  }, [filteredNearbyOffersOnMap, normalizedOfferMapSearchQuery, offerMapGenderFilter]);
 
   const formatOfferTimeLeft = useCallback((expiresAt: string) => {
     const end = new Date(expiresAt);
@@ -353,6 +322,25 @@ export default function Dashboard() {
       refreshOffers();
     }, [])
   );
+
+  useEffect(() => {
+    if (!isAuthenticated || !isScreenFocused) return;
+
+    const channel = supabase
+      .channel(`dashboard-offers-live-${user?.id ?? 'anon'}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'offers' },
+        () => {
+          refreshOffers().catch(() => {});
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel).catch(() => {});
+    };
+  }, [isAuthenticated, isScreenFocused, refreshOffers, user?.id]);
 
   // Ã©/Ãª        
   useFocusEffect(
@@ -473,7 +461,7 @@ export default function Dashboard() {
         }
         lastLocationRef.current = userLocation;
         loadAvailableUsers(userLocation);
-      }, ) //    v    Ã©v    Ã©
+      }, 450); // Debounce court pour limiter les requetes
 
       //    Ã      
       activeTimersRef.current.add(debounceTimer);
@@ -893,30 +881,14 @@ export default function Dashboard() {
     return R * c;
   };
 
-  const handleViewProfile = useCallback((user: User) => {
-    setSelectedUser(user);
-    router.push('/(screens)/user-profile');
-  }, [setSelectedUser, router]);
-
   //  Ã©   Ã©  
-  const handleMarkerSelect = useCallback((markerId: string, user?: User) => {
-    if (markerId === 'current-user') {
-      setSelectedMarkerId(prev => prev === markerId ? null : markerId);
-      setSelectedUserForCallout(null);
-    } else if (user) {
-      //  Ã©    ' Ã©Ã©
-      setSelectedMarkerId(markerId);
-      setSelectedUserForCallout(user);
-    } else {
-      setSelectedMarkerId(prev => prev === markerId ? null : markerId);
-      setSelectedUserForCallout(null);
-    }
+  const handleMarkerSelect = useCallback((markerId: string) => {
+    setSelectedMarkerId((prev) => (prev === markerId ? null : markerId));
   }, []);
 
   // Handler pour fermer le callout
   const handleCloseCallout = useCallback(() => {
     setSelectedMarkerId(null);
-    setSelectedUserForCallout(null);
   }, []);
 
   const handleTabClick = (tab: Tab) => {
@@ -971,6 +943,137 @@ export default function Dashboard() {
 
       {/* Map Section */}
       <View style={styles.mapSection}>
+        <View style={styles.mapSearchBar}>
+          <Ionicons name="search" size={16} color={colors.textSecondary} />
+          <TextInput
+            value={offerMapSearchQuery}
+            onChangeText={setOfferMapSearchQuery}
+            placeholder="Rechercher une offre sur la carte"
+            placeholderTextColor={colors.textTertiary}
+            style={styles.mapSearchInput}
+            autoCorrect={false}
+            autoCapitalize="none"
+            returnKeyType="search"
+          />
+          {offerMapSearchQuery.trim().length > 0 ? (
+            <TouchableOpacity onPress={() => setOfferMapSearchQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="close-circle" size={16} color={colors.textSecondary} />
+            </TouchableOpacity>
+          ) : null}
+          <TouchableOpacity
+            style={[
+              styles.mapFilterToggle,
+              (showMapFilters || offerMapGenderFilter !== 'any') && styles.mapFilterToggleActive,
+            ]}
+            onPress={() => setShowMapFilters((prev) => !prev)}
+            activeOpacity={0.85}
+          >
+            <Ionicons
+              name="options-outline"
+              size={14}
+              color={(showMapFilters || offerMapGenderFilter !== 'any') ? colors.pink400 : colors.textSecondary}
+            />
+            <Text
+              style={[
+                styles.mapFilterToggleText,
+                (showMapFilters || offerMapGenderFilter !== 'any') && styles.mapFilterToggleTextActive,
+              ]}
+            >
+              Filtrer
+            </Text>
+          </TouchableOpacity>
+        </View>
+        <View style={styles.mapSearchMetaRow}>
+          <Text style={styles.mapSearchMetaText}>
+            {filteredNearbyOffersOnMap.length} offre{filteredNearbyOffersOnMap.length > 1 ? 's' : ''} a proximite (10 km)
+          </Text>
+          <TouchableOpacity
+            style={styles.mapExpandButton}
+            onPress={() => setIsMapExpanded(true)}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="expand-outline" size={14} color={colors.pink400} />
+            <Text style={styles.mapExpandButtonText}>Agrandir</Text>
+          </TouchableOpacity>
+        </View>
+        {mapFocusedOffer ? (
+          <Text style={styles.mapSearchFocusText} numberOfLines={1}>
+            Focus: {mapFocusedOffer.offer.title}
+          </Text>
+        ) : null}
+        {showMapFilters ? (
+          <View style={styles.mapFilterRow}>
+            <TouchableOpacity
+              style={[
+                styles.mapFilterChip,
+                offerMapGenderFilter === 'any' && styles.mapFilterChipActive,
+              ]}
+              onPress={() => setOfferMapGenderFilter('any')}
+              activeOpacity={0.85}
+            >
+              <Text
+                style={[
+                  styles.mapFilterChipText,
+                  offerMapGenderFilter === 'any' && styles.mapFilterChipTextActive,
+                ]}
+              >
+                Tous
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.mapFilterChip,
+                offerMapGenderFilter === 'female' && styles.mapFilterChipActive,
+              ]}
+              onPress={() => setOfferMapGenderFilter('female')}
+              activeOpacity={0.85}
+            >
+              <Text
+                style={[
+                  styles.mapFilterChipText,
+                  offerMapGenderFilter === 'female' && styles.mapFilterChipTextActive,
+                ]}
+              >
+                Femmes
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.mapFilterChip,
+                offerMapGenderFilter === 'male' && styles.mapFilterChipActive,
+              ]}
+              onPress={() => setOfferMapGenderFilter('male')}
+              activeOpacity={0.85}
+            >
+              <Text
+                style={[
+                  styles.mapFilterChipText,
+                  offerMapGenderFilter === 'male' && styles.mapFilterChipTextActive,
+                ]}
+              >
+                Hommes
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.mapFilterChip,
+                offerMapGenderFilter === 'all' && styles.mapFilterChipActive,
+              ]}
+              onPress={() => setOfferMapGenderFilter('all')}
+              activeOpacity={0.85}
+            >
+              <Text
+                style={[
+                  styles.mapFilterChipText,
+                  offerMapGenderFilter === 'all' && styles.mapFilterChipTextActive,
+                ]}
+              >
+                Les deux
+              </Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
         {!isMapboxAvailable || !MapView ? (
           <View style={styles.mapPlaceholder}>
             <Ionicons name="map-outline" size={48} color={colors.purple400} />
@@ -994,10 +1097,14 @@ export default function Dashboard() {
           >
             <Camera
               maxBounds={DRC_CAMERA_BOUNDS}
-              centerCoordinate={[boundedUserLocation.lng, boundedUserLocation.lat]}
-              zoomLevel={13}
-              animationMode="flyTo"
-              animationDuration={2000}
+              centerCoordinate={
+                mapFocusedOffer
+                  ? [mapFocusedOffer.lng, mapFocusedOffer.lat]
+                  : [boundedUserLocation.lng, boundedUserLocation.lat]
+              }
+              zoomLevel={mapFocusedOffer ? 14 : 13}
+              animationMode={mapFocusedOffer ? 'flyTo' : 'moveTo'}
+              animationDuration={mapFocusedOffer ? 650 : 0}
             />
             
             {/*   '  - zx Ã©vÃ©  Ãª - */}
@@ -1016,89 +1123,22 @@ export default function Dashboard() {
               </PointAnnotation>
             ) : null}
 
-            {/*      - zx    Ãª     */}
-            {mapReady ? (() => {
-              const validUsers = nearbyUsers.filter((nearbyUser) => {
-                return (
-                  nearbyUser.lat !== undefined &&
-                  nearbyUser.lat !== null &&
-                  nearbyUser.lng !== undefined &&
-                  nearbyUser.lng !== null &&
-                  isPointInDRC(nearbyUser.lat, nearbyUser.lng)
-                );
-              });
-
-              //    Ã  .  ( Ã¨ )
-              const usersAtZero = validUsers.filter(u => 
-                u.distance === 0 || (u.distance !== undefined && u.distance < 0.001)
-              );
-              const usersAtZeroCount = usersAtZero.length;
-
-              // Ã©  x    Ã  . 
-              let zeroIndex = 0;
-
-              return validUsers.map((user) => {
-                //    Ã  .  (Ãª ), Ã© Ã©Ã¨        
-                let latOffset = 0;
-                let lngOffset = 0;
-                
-                if (user.distance === 0 || (user.distance !== undefined && user.distance < 0.001)) {
-                  // Ã©      
-                  //     v . Ã© (v  Ã¨) - z   Ãª  v  Ã©Ã©
-                  const radius = 0.0015;
-                  // Angle en radians pour placer les marqueurs en cercle
-                  //     ' Ã  .   Ã© Ã©
-                  //  Ã   Ã© (Ã  )    
-                  const angle = usersAtZeroCount > 1 ? (zeroIndex * 2 * Math.PI) / usersAtZeroCount : Math.PI / 4; // Par defaut a 45 degres si seul
-                  // Calculer les offsets en latitude et longitude
-                  //     Ãª Ã©          
-                  const lat = user.lat || (boundedUserLocation?.lat || 0);
-                  const latRad = lat * Math.PI / 180;
-                  latOffset = radius * Math.cos(angle);
-                  lngOffset = radius * Math.sin(angle) / Math.cos(latRad); // Ajustement pour la projection Mercator
-                  
-                  zeroIndex++;
-                }
-                
-                // Ã©   Ã©  v v    
-                const rawUserLat = (user.lat || 0) + latOffset;
-                const rawUserLng = (user.lng || 0) + lngOffset;
-                const boundedMarkerPoint = clampPointToDRC(rawUserLat, rawUserLng);
-                const userLat = boundedMarkerPoint.lat;
-                const userLng = boundedMarkerPoint.lng;
-                
-                // Ã©   Ã©v   x
-                if (!PointAnnotation || !boundedUserLocation ||
-                    userLat === 0 || userLng === 0 ||
-                    isNaN(userLat) || isNaN(userLng) ||
-                    !isFinite(userLat) || !isFinite(userLng) ||
-                    user.lat === undefined || user.lat === null ||
-                    user.lng === undefined || user.lng === null) {
-                  return null;
-                }
-                return (
+            {mapReady && PointAnnotation
+              ? filteredNearbyOffersOnMap.map(({ offer, lat, lng }) => (
                   <PointAnnotation
-                    key={user.id}
-                    id={`user-${user.id}`}
-                    coordinate={[userLng, userLat]}
+                    key={`offer-map-${offer.id}`}
+                    id={`offer-map-${offer.id}`}
+                    coordinate={[lng, lat]}
                     anchor={{ x: 0.5, y: 0.5 }}
-                    onSelected={() => handleMarkerSelect(`user-${user.id}`, user)}
+                    onSelected={() => handleOpenOffer(offer)}
                   >
-                    <View style={styles.userMarker}>
-                      <Image
-                        source={getImageSource((user as any).rawPhoto || user.photo, user.gender)}
-                        style={styles.markerImage}
-                        resizeMode="cover"
-                        defaultSource={user.gender === 'male' 
-                          ? require('../../assets/images/avatar_men.png')
-                          : require('../../assets/images/avatar_woman.png')}
-                      />
-                      {isUserOnlineNow(user.lastSeen) ? <View style={styles.onlineIndicator} /> : null}
+                    <View style={styles.offerMapMarker}>
+                      <Ionicons name="gift" size={16} color="#ffffff" />
                     </View>
                   </PointAnnotation>
-                );
-              }).filter(Boolean); // Filtrer les valeurs null
-            })() : null}
+                ))
+              : null}
+
           </MapView>
         ) : (
           <View style={styles.mapPlaceholder}>
@@ -1108,30 +1148,221 @@ export default function Dashboard() {
         )}
       </View>
 
-      {/*      - ' Ã© */}
       <Modal
         statusBarTranslucent
-        visible={selectedUserForCallout !== null}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={handleCloseCallout}
+        visible={isMapExpanded}
+        transparent={false}
+        animationType="slide"
+        onRequestClose={() => setIsMapExpanded(false)}
       >
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={handleCloseCallout}
-        >
-          <View style={styles.modalContent} onStartShouldSetResponder={() => true}>
-            {selectedUserForCallout && (
-              <UserCallout 
-                user={selectedUserForCallout} 
-                onViewProfile={handleViewProfile}
-                onClose={handleCloseCallout}
+        <SafeAreaView style={styles.mapExpandedModal}>
+          <View style={styles.mapExpandedContent}>
+            <View style={styles.mapSearchBar}>
+              <Ionicons name="search" size={16} color={colors.textSecondary} />
+              <TextInput
+                value={offerMapSearchQuery}
+                onChangeText={setOfferMapSearchQuery}
+                placeholder="Rechercher une offre sur la carte"
+                placeholderTextColor={colors.textTertiary}
+                style={styles.mapSearchInput}
+                autoCorrect={false}
+                autoCapitalize="none"
+                returnKeyType="search"
               />
-            )}
+              {offerMapSearchQuery.trim().length > 0 ? (
+                <TouchableOpacity onPress={() => setOfferMapSearchQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Ionicons name="close-circle" size={16} color={colors.textSecondary} />
+                </TouchableOpacity>
+              ) : null}
+              <TouchableOpacity
+                style={[
+                  styles.mapFilterToggle,
+                  (showMapFilters || offerMapGenderFilter !== 'any') && styles.mapFilterToggleActive,
+                ]}
+                onPress={() => setShowMapFilters((prev) => !prev)}
+                activeOpacity={0.85}
+              >
+                <Ionicons
+                  name="options-outline"
+                  size={14}
+                  color={(showMapFilters || offerMapGenderFilter !== 'any') ? colors.pink400 : colors.textSecondary}
+                />
+                <Text
+                  style={[
+                    styles.mapFilterToggleText,
+                    (showMapFilters || offerMapGenderFilter !== 'any') && styles.mapFilterToggleTextActive,
+                  ]}
+                >
+                  Filtrer
+                </Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.mapSearchMetaRow}>
+              <Text style={styles.mapSearchMetaText}>
+                {filteredNearbyOffersOnMap.length} offre{filteredNearbyOffersOnMap.length > 1 ? 's' : ''} a proximite (10 km)
+              </Text>
+              <TouchableOpacity
+                style={styles.mapExpandButton}
+                onPress={() => setIsMapExpanded(false)}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="contract-outline" size={14} color={colors.pink400} />
+                <Text style={styles.mapExpandButtonText}>Reduire</Text>
+              </TouchableOpacity>
+            </View>
+            {mapFocusedOffer ? (
+              <Text style={styles.mapSearchFocusText} numberOfLines={1}>
+                Focus: {mapFocusedOffer.offer.title}
+              </Text>
+            ) : null}
+            {showMapFilters ? (
+              <View style={styles.mapFilterRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.mapFilterChip,
+                    offerMapGenderFilter === 'any' && styles.mapFilterChipActive,
+                  ]}
+                  onPress={() => setOfferMapGenderFilter('any')}
+                  activeOpacity={0.85}
+                >
+                  <Text
+                    style={[
+                      styles.mapFilterChipText,
+                      offerMapGenderFilter === 'any' && styles.mapFilterChipTextActive,
+                    ]}
+                  >
+                    Tous
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.mapFilterChip,
+                    offerMapGenderFilter === 'female' && styles.mapFilterChipActive,
+                  ]}
+                  onPress={() => setOfferMapGenderFilter('female')}
+                  activeOpacity={0.85}
+                >
+                  <Text
+                    style={[
+                      styles.mapFilterChipText,
+                      offerMapGenderFilter === 'female' && styles.mapFilterChipTextActive,
+                    ]}
+                  >
+                    Femmes
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.mapFilterChip,
+                    offerMapGenderFilter === 'male' && styles.mapFilterChipActive,
+                  ]}
+                  onPress={() => setOfferMapGenderFilter('male')}
+                  activeOpacity={0.85}
+                >
+                  <Text
+                    style={[
+                      styles.mapFilterChipText,
+                      offerMapGenderFilter === 'male' && styles.mapFilterChipTextActive,
+                    ]}
+                  >
+                    Hommes
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.mapFilterChip,
+                    offerMapGenderFilter === 'all' && styles.mapFilterChipActive,
+                  ]}
+                  onPress={() => setOfferMapGenderFilter('all')}
+                  activeOpacity={0.85}
+                >
+                  <Text
+                    style={[
+                      styles.mapFilterChipText,
+                      offerMapGenderFilter === 'all' && styles.mapFilterChipTextActive,
+                    ]}
+                  >
+                    Les deux
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+
+            <View style={styles.mapExpandedCanvas}>
+              {!isMapboxAvailable || !MapView ? (
+                <View style={styles.mapPlaceholder}>
+                  <Ionicons name="map-outline" size={48} color={colors.purple400} />
+                  <Text style={styles.mapPlaceholderText}>Carte non disponible</Text>
+                  <Text style={styles.mapPlaceholderSubtext}>
+                       ÃƒÂ©v     x.{''}
+                    xÃƒÂ©z   -- v
+                  </Text>
+                </View>
+              ) : boundedUserLocation && boundedUserLocation.lng !== undefined && boundedUserLocation.lat !== undefined && Mapbox && Mapbox.StyleURL && MapView && Camera ? (
+                <MapView
+                  styleURL={Mapbox.StyleURL.Street}
+                  style={styles.mapExpandedMap}
+                  logoEnabled={false}
+                  attributionEnabled={false}
+                  onPress={handleCloseCallout}
+                  onDidFinishLoadingMap={() => {
+                    setTimeout(() => setMapReady(true), 100);
+                  }}
+                >
+                  <Camera
+                    maxBounds={DRC_CAMERA_BOUNDS}
+                    centerCoordinate={
+                      mapFocusedOffer
+                        ? [mapFocusedOffer.lng, mapFocusedOffer.lat]
+                        : [boundedUserLocation.lng, boundedUserLocation.lat]
+                    }
+                    zoomLevel={mapFocusedOffer ? 14 : 13}
+                    animationMode={mapFocusedOffer ? 'flyTo' : 'moveTo'}
+                    animationDuration={mapFocusedOffer ? 650 : 0}
+                  />
+
+                  {mapReady && PointAnnotation && boundedUserLocation &&
+                  boundedUserLocation.lng !== undefined && boundedUserLocation.lat !== undefined &&
+                  isFinite(boundedUserLocation.lng) && isFinite(boundedUserLocation.lat) ? (
+                    <PointAnnotation
+                      id="current-user-expanded"
+                      coordinate={[boundedUserLocation.lng, boundedUserLocation.lat]}
+                      anchor={{ x: 0.5, y: 0.5 }}
+                      onSelected={() => handleMarkerSelect('current-user')}
+                    >
+                      <View style={styles.currentUserMarker}>
+                        <Ionicons name="person" size={20} color="#ffffff" />
+                      </View>
+                    </PointAnnotation>
+                  ) : null}
+
+                  {mapReady && PointAnnotation
+                    ? filteredNearbyOffersOnMap.map(({ offer, lat, lng }) => (
+                        <PointAnnotation
+                          key={`offer-map-expanded-${offer.id}`}
+                          id={`offer-map-expanded-${offer.id}`}
+                          coordinate={[lng, lat]}
+                          anchor={{ x: 0.5, y: 0.5 }}
+                          onSelected={() => handleOpenOffer(offer)}
+                        >
+                          <View style={styles.offerMapMarker}>
+                            <Ionicons name="gift" size={16} color="#ffffff" />
+                          </View>
+                        </PointAnnotation>
+                      ))
+                    : null}
+                </MapView>
+              ) : (
+                <View style={styles.mapPlaceholder}>
+                  <Ionicons name="location" size={24} color={colors.purple400} style={{ opacity: 0.5 }} />
+                  <Text style={styles.mapPlaceholderText}>Chargement de la carte...</Text>
+                </View>
+              )}
+            </View>
           </View>
-        </TouchableOpacity>
+        </SafeAreaView>
       </Modal>
+
 
       {/* Modal simple pour "Moi" */}
       <Modal
@@ -1181,20 +1412,32 @@ export default function Dashboard() {
             onPress={() => router.push('/(screens)/create-offer')}
           >
             <Ionicons name="add-circle" size={24} color={colors.pink500} />
-            <Text style={styles.offerTabContentText}>Creer une nouvelle offre</Text>
+            <Text style={styles.offerTabContentText}>Publier une nouvelle offre</Text>
             <Ionicons name="chevron-forward" size={20} color={colors.textTertiary} />
           </TouchableOpacity>
 
           <TouchableOpacity
             style={[styles.offerTabContent, styles.offerTabContentPink]}
-            onPress={() => router.push('/(screens)/offers')}
+            onPress={() => router.push('/(screens)/my-offers')}
           >
             <Ionicons name="gift" size={24} color="#ffffff" />
             <Text style={[styles.offerTabContentText, styles.offerTabContentTextPink]}>
-              Voir toutes les offres
+              Voir mes offres
             </Text>
             <Ionicons name="chevron-forward" size={20} color="#ffffff" />
           </TouchableOpacity>
+
+          <View style={styles.offersListHeader}>
+            <Text style={styles.offersListTitle}>Offres</Text>
+            <TouchableOpacity
+              style={styles.offersListLinkButton}
+              onPress={() => router.push('/(screens)/offers')}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.offersListLinkText}>Voir toutes</Text>
+              <Ionicons name="chevron-forward" size={14} color={colors.pink500} />
+            </TouchableOpacity>
+          </View>
 
           {offersPreview.length > 0 ? (
             <View style={styles.offersPreviewList}>
@@ -1270,71 +1513,6 @@ export default function Dashboard() {
           )}
         </View>
 
-        <Text style={styles.sectionTitle}>Ã€ proximitÃ©</Text>
-        {nearbyUsers.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Ionicons name="people-outline" size={48} color={colors.textTertiary} />
-            <Text style={styles.emptyStateText}>
-              {userLocation 
-                ? 'Aucun utilisateur disponible dans un rayon de 10 km'
-                : 'En attente de votre position...'}
-            </Text>
-          </View>
-        ) : (
-          nearbyUsers.map((user) => (
-          <TouchableOpacity
-            key={user.id}
-            style={styles.userCard}
-            onPress={() => handleViewProfile(user)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.userImageContainer}>
-              <Image
-                source={getImageSource((user as any).rawPhoto || user.photo, user.gender)}
-                style={styles.userImage}
-                resizeMode="cover"
-                defaultSource={user.gender === 'male' 
-                  ? require('../../assets/images/avatar_men.png')
-                  : require('../../assets/images/avatar_woman.png')}
-              />
-              {isUserOnlineNow(user.lastSeen) ? <View style={styles.onlineBadge} /> : null}
-            </View>
-            <View style={styles.userInfo}>
-              <View style={styles.userHeader}>
-                <Text style={styles.userName}>{user.pseudo}</Text>
-                <Text style={styles.userSeparator}>Â·</Text>
-                <Text style={styles.userAge}>{user.age} ans</Text>
-              </View>
-              {user.description && user.description.trim() ? (
-                <Text style={styles.userDescription} numberOfLines={1}>
-                  {user.description}
-                </Text>
-              ) : (
-                <Text style={styles.userDescription} numberOfLines={1}>
-                  Aucune description
-                </Text>
-              )}
-              <View style={styles.userMeta}>
-                <View style={styles.metaItem}>
-                  <Ionicons name="location" size={12} color={colors.textTertiary} />
-                  <Text style={styles.metaText}>
-                    {user.distance !== undefined ? `${user.distance.toFixed(2)} km` : 'N/A'}
-                  </Text>
-                </View>
-                <View style={styles.metaItem}>
-                  <Ionicons name="star" size={12} color={colors.yellow500} />
-                  <Text style={styles.metaText}>
-                    {(userRatings.get(user.id)?.average || user.rating || 0).toFixed(1)}
-                  </Text>
-                  <Text style={styles.metaTextSecondary}>
-                    ({userRatings.get(user.id)?.count || user.reviewCount || 0})
-                  </Text>
-                </View>
-              </View>
-            </View>
-          </TouchableOpacity>
-          ))
-        )}
         <View style={{ height: 20 }} />
       </ScrollView>
 
@@ -1486,7 +1664,30 @@ const styles = StyleSheet.create({
   offerTabContentTextPink: {
     color: '#ffffff',
   },
+  offersListHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 20,
+  },
+  offersListTitle: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  offersListLinkButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 2,
+  },
+  offersListLinkText: {
+    color: colors.pink500,
+    fontSize: 12,
+    fontWeight: '600',
+  },
   offersPreviewList: {
+    marginTop: 14,
     gap: 10,
   },
   offerPreviewCard: {
@@ -1565,6 +1766,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   offersEmptyCard: {
+    marginTop: 14,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
@@ -1580,12 +1782,134 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   mapSection: {
-    height: 256,
+    height: 316,
     backgroundColor: colors.backgroundTertiary,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
+  mapSearchBar: {
+    marginHorizontal: 12,
+    marginTop: 8,
+    marginBottom: 6,
+    minHeight: 38,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+    backgroundColor: `${colors.backgroundSecondary}E8`,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  mapSearchInput: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 13,
+    paddingVertical: 0,
+  },
+  mapFilterToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+    backgroundColor: `${colors.background}AA`,
+  },
+  mapFilterToggleActive: {
+    borderColor: `${colors.pink500}99`,
+    backgroundColor: `${colors.pink500}22`,
+  },
+  mapFilterToggleText: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  mapFilterToggleTextActive: {
+    color: colors.pink400,
+  },
+  mapSearchMetaRow: {
+    marginHorizontal: 12,
+    marginBottom: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  mapSearchMetaText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  mapExpandButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: `${colors.pink500}88`,
+    backgroundColor: `${colors.pink500}20`,
+  },
+  mapExpandButtonText: {
+    color: colors.pink400,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  mapSearchFocusText: {
+    marginHorizontal: 12,
+    marginBottom: 6,
+    color: colors.pink400,
+    fontSize: 11,
+    fontWeight: '600',
+    textAlign: 'left',
+  },
+  mapFilterRow: {
+    marginHorizontal: 12,
+    marginBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  mapFilterChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.borderSecondary,
+    backgroundColor: `${colors.backgroundSecondary}E8`,
+  },
+  mapFilterChipActive: {
+    borderColor: `${colors.pink500}99`,
+    backgroundColor: `${colors.pink500}25`,
+  },
+  mapFilterChipText: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  mapFilterChipTextActive: {
+    color: colors.pink400,
+  },
   map: {
+    flex: 1,
+    width: '100%',
+  },
+  mapExpandedModal: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  mapExpandedContent: {
+    flex: 1,
+    backgroundColor: colors.backgroundTertiary,
+  },
+  mapExpandedCanvas: {
+    flex: 1,
+  },
+  mapExpandedMap: {
     flex: 1,
     width: '100%',
   },
@@ -1624,6 +1948,21 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 5,
     zIndex: 10,
+  },
+  offerMapMarker: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: colors.pink500,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#ffffff',
+    shadowColor: colors.pink500,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 3,
+    elevation: 4,
   },
   userMarker: {
     width: 40,

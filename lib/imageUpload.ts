@@ -16,6 +16,33 @@ export async function uploadImageToStorage(
   bucketName: string = 'avatars'
 ): Promise<{ url: string | null; error: any }> {
   try {
+    // Vérifier/rafraîchir la session avant upload pour éviter un upload en rôle anon (bloqué par RLS).
+    let { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) {
+      const { data: refreshed, error: refreshError } = await supabase.auth.refreshSession();
+      if (refreshError || !refreshed?.session?.user) {
+        return {
+          url: null,
+          error: {
+            message: 'Session invalide. Veuillez vous reconnecter avant de modifier la photo.',
+            code: 'SESSION_INVALID',
+          },
+        };
+      }
+      session = refreshed.session;
+    }
+
+    // S'assurer que l'utilisateur connecté correspond au dossier/fichier uploadé.
+    if (session.user.id !== userId) {
+      return {
+        url: null,
+        error: {
+          message: 'Session utilisateur incohérente. Veuillez vous reconnecter.',
+          code: 'SESSION_USER_MISMATCH',
+        },
+      };
+    }
+
     // Déterminer le type MIME à partir de l'extension
     const fileExtension = localUri.split('.').pop()?.toLowerCase() || 'jpg';
     const mimeType = fileExtension === 'png' ? 'image/png' : 'image/jpeg';
@@ -62,7 +89,7 @@ export async function uploadImageToStorage(
     const bytes = base64ToUint8Array(base64);
 
     // Upload vers Supabase Storage
-    const { data, error } = await supabase.storage
+    const { error } = await supabase.storage
       .from(bucketName) // Nom du bucket (avatars ou albums)
       .upload(filePath, bytes, {
         contentType: mimeType,
@@ -75,6 +102,16 @@ export async function uploadImageToStorage(
       if (error.message?.includes('Bucket not found') || error.message?.includes('The resource was not found')) {
         console.error(`❌ Bucket "${bucketName}" non trouvé dans Supabase Storage. Veuillez créer le bucket "${bucketName}" dans votre projet Supabase.`);
         return { url: null, error: { message: `Bucket "${bucketName}" non trouvé. Veuillez créer le bucket dans Supabase Storage.` } };
+      }
+      if (error.message?.toLowerCase().includes('row-level security policy')) {
+        return {
+          url: null,
+          error: {
+            message: 'Permissions insuffisantes pour uploader la photo (RLS Storage). Applique la migration SQL 051.',
+            code: 'STORAGE_RLS_DENIED',
+            original: error,
+          },
+        };
       }
       return { url: null, error };
     }
@@ -93,4 +130,3 @@ export async function uploadImageToStorage(
     return { url: null, error };
   }
 }
-
